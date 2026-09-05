@@ -274,6 +274,13 @@
       "when": 1788502357321,
       "tag": "0038_newsletter_partial_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1788621900193,
+      "tag": "0039_newsletter_block_editor",
+      "breakpoints": true
     }
   ]
 }
