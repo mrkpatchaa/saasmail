@@ -15,14 +15,14 @@ export function snoozeInHours(hours: number): number {
   return unixSeconds(new Date(Date.now() + hours * 60 * 60 * 1000));
 }
 
-function tomorrowAtEight(): number {
+export function tomorrowAtEight(): number {
   const date = new Date();
   date.setDate(date.getDate() + 1);
   date.setHours(8, 0, 0, 0);
   return unixSeconds(date);
 }
 
-function nextMondayAtEight(): number {
+export function nextMondayAtEight(): number {
   const date = new Date();
   const days = (8 - date.getDay()) % 7 || 7;
   date.setDate(date.getDate() + days);

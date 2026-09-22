@@ -12,6 +12,15 @@ import { onMailRefresh } from "@/lib/mail-events";
 import { showToast } from "@/lib/toast";
 
 const PAGE_SIZE = 50;
+export const MAIL_BULK_CHUNK_SIZE = 500;
+
+export function chunkMailRefs(refs: string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let index = 0; index < refs.length; index += MAIL_BULK_CHUNK_SIZE) {
+    chunks.push(refs.slice(index, index + MAIL_BULK_CHUNK_SIZE));
+  }
+  return chunks;
+}
 
 export type SystemFolder =
   | "inbox"
@@ -59,6 +68,7 @@ export function useMailMessages({
   const [showCampaignSends, setShowCampaignSends] = useState(false);
   const [showNewMessages, setShowNewMessages] = useState(false);
   const [actionBusyRef, setActionBusyRef] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const seenAttemptedRef = useRef(new Set<string>());
   const listScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -191,6 +201,211 @@ export function useMailMessages({
     } finally {
       setActionBusyRef((current) => (current === message.ref ? null : current));
     }
+  }
+
+  async function runBulkAction(
+    selectedMessages: MailMessage[],
+    update: (current: MailMessage) => MailMessage,
+    request: (refs: string[]) => Promise<unknown>,
+    options?: { removeAfterSuccess?: boolean; errorMessage?: string },
+  ): Promise<boolean> {
+    if (selectedMessages.length === 0) return false;
+
+    const before = messages;
+    const selectedRefs = new Set(
+      selectedMessages.map((message) => message.ref),
+    );
+    setMessages((current) =>
+      current.map((message) =>
+        selectedRefs.has(message.ref) ? update(message) : message,
+      ),
+    );
+    setBulkBusy(true);
+    try {
+      const refs = selectedMessages.map((message) => message.ref);
+      await request(refs);
+      if (options?.removeAfterSuccess) {
+        setMessages((current) =>
+          current.filter((message) => !selectedRefs.has(message.ref)),
+        );
+        if (selectedRef && selectedRefs.has(selectedRef)) onClearSelected();
+      }
+      return true;
+    } catch (error) {
+      setMessages(before);
+      showToast({
+        kind: "error",
+        message: options?.errorMessage ?? "Couldn’t update selected messages",
+        description: error instanceof Error ? error.message : undefined,
+      });
+      return false;
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function forEachRefChunk(
+    refs: string[],
+    request: (chunk: string[]) => Promise<unknown>,
+  ) {
+    for (const chunk of chunkMailRefs(refs)) {
+      await request(chunk);
+    }
+  }
+
+  async function bulkSetSeen(
+    selectedMessages: MailMessage[],
+    seen: boolean,
+  ): Promise<boolean> {
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { seen }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMessageState({ refs: chunk, seen }),
+        ),
+      {
+        errorMessage: seen
+          ? "Couldn’t mark messages as seen"
+          : "Couldn’t mark messages as unseen",
+      },
+    );
+  }
+
+  async function bulkSetStarred(
+    selectedMessages: MailMessage[],
+    starred: boolean,
+  ): Promise<boolean> {
+    const starredAt = starred ? unixSeconds(new Date()) : null;
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { starredAt }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMessageState({ refs: chunk, starred }),
+        ),
+      {
+        removeAfterSuccess: systemFolder === "starred" && !starred,
+        errorMessage: "Couldn’t update selected stars",
+      },
+    );
+  }
+
+  async function bulkSetArchived(
+    selectedMessages: MailMessage[],
+    archived: boolean,
+  ): Promise<boolean> {
+    const archivedAt = archived ? unixSeconds(new Date()) : null;
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { archivedAt }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMessageState({ refs: chunk, archived }),
+        ),
+      {
+        removeAfterSuccess:
+          (systemFolder === "inbox" && archived) ||
+          (systemFolder === "archive" && !archived),
+        errorMessage: archived
+          ? "Couldn’t archive selected messages"
+          : "Couldn’t unarchive selected messages",
+      },
+    );
+  }
+
+  async function bulkSetSpam(
+    selectedMessages: MailMessage[],
+    spam: boolean,
+  ): Promise<boolean> {
+    const spamAt = spam ? unixSeconds(new Date()) : null;
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { spamAt }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMessageState({ refs: chunk, spam }),
+        ),
+      {
+        removeAfterSuccess:
+          (systemFolder === "junk" && !spam) ||
+          ((systemFolder === "inbox" || systemFolder === "archive") && spam),
+        errorMessage: spam
+          ? "Couldn’t mark selected messages as spam"
+          : "Couldn’t remove selected messages from spam",
+      },
+    );
+  }
+
+  async function bulkSetTrashed(
+    selectedMessages: MailMessage[],
+    trashed: boolean,
+  ): Promise<boolean> {
+    const trashedAt = trashed ? unixSeconds(new Date()) : null;
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { trashedAt }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMessageState({ refs: chunk, trashed }),
+        ),
+      {
+        removeAfterSuccess:
+          (systemFolder === "trash" && !trashed) ||
+          (systemFolder !== "trash" && trashed) ||
+          Boolean(mailboxId && trashed),
+        errorMessage: trashed
+          ? "Couldn’t trash selected messages"
+          : "Couldn’t restore selected messages",
+      },
+    );
+  }
+
+  async function bulkSnooze(
+    selectedMessages: MailMessage[],
+    until: number,
+  ): Promise<boolean> {
+    return runBulkAction(
+      selectedMessages,
+      (current) => patchMessageState(current, { snoozedUntil: until }),
+      (refs) => forEachRefChunk(refs, (chunk) => snoozeMessages(chunk, until)),
+      {
+        removeAfterSuccess: systemFolder === "inbox",
+        errorMessage: "Couldn’t snooze selected messages",
+      },
+    );
+  }
+
+  async function bulkMoveToMailbox(
+    selectedMessages: MailMessage[],
+    targetId: string,
+  ): Promise<boolean> {
+    const remove = Array.from(
+      new Set(
+        selectedMessages.flatMap((message) =>
+          message.state.mailboxIds.filter((id) => id !== targetId),
+        ),
+      ),
+    );
+    return runBulkAction(
+      selectedMessages,
+      (current) =>
+        patchMessageState(current, {
+          mailboxIds: [targetId],
+        }),
+      (refs) =>
+        forEachRefChunk(refs, (chunk) =>
+          setMailboxMembership({
+            refs: chunk,
+            add: [targetId],
+            remove: remove.length > 0 ? remove : undefined,
+          }),
+        ),
+      {
+        removeAfterSuccess: Boolean(mailboxId && mailboxId !== targetId),
+        errorMessage: "Couldn’t move selected messages",
+      },
+    );
   }
 
   async function toggleStar(message: MailMessage) {
@@ -362,6 +577,7 @@ export function useMailMessages({
     showNewMessages,
     setShowNewMessages,
     actionBusyRef,
+    bulkBusy,
     listScrollRef,
     loadMessages,
     toggleStar,
@@ -371,5 +587,12 @@ export function useMailMessages({
     snoozeMessage,
     moveToMailbox,
     removeFromCurrentMailbox,
+    bulkSetSeen,
+    bulkSetStarred,
+    bulkSetArchived,
+    bulkSetSpam,
+    bulkSetTrashed,
+    bulkSnooze,
+    bulkMoveToMailbox,
   };
 }

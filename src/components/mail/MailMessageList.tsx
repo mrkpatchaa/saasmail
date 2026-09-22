@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { ArrowLeft, MailOpen, Paperclip, Search, Star } from "lucide-react";
 import type { MailMessage } from "@/lib/api";
 import type { SystemFolder } from "@/hooks/useMailMessages";
@@ -41,16 +41,20 @@ function snoozedLabel(timestamp: number): string {
 interface MailMessageRowProps {
   message: MailMessage;
   selected: boolean;
+  checked: boolean;
   busy: boolean;
   onSelect: (ref: string) => void;
+  onToggleSelected: (ref: string) => void;
   onToggleStar: (message: MailMessage) => void;
 }
 
 export function MailMessageRow({
   message,
   selected,
+  checked,
   busy,
   onSelect,
+  onToggleSelected,
   onToggleStar,
 }: MailMessageRowProps) {
   const unseen = message.direction === "inbound" && !message.state.seen;
@@ -74,6 +78,14 @@ export function MailMessageRow({
       }`}
     >
       <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          aria-label="Select message"
+          checked={checked}
+          onChange={() => onToggleSelected(message.ref)}
+          onClick={(event) => event.stopPropagation()}
+          className="h-3.5 w-3.5 shrink-0 rounded border-border"
+        />
         <span
           className={`min-w-0 flex-1 truncate text-xs text-text-primary ${
             unseen ? "font-bold" : "font-medium"
@@ -153,11 +165,15 @@ interface MailMessageListProps {
   nextCursor: string | null;
   selectedRef: string | null;
   actionBusyRef: string | null;
+  selectedRefs: ReadonlySet<string>;
+  selectionBar?: ReactNode;
   onBackToFolders: () => void;
   onSearch: (value: string) => void;
   onReachedTop: () => void;
   onRefreshNewMessages: () => void;
   onSelectMessage: (ref: string) => void;
+  onToggleSelected: (ref: string) => void;
+  onToggleSelectAll: () => void;
   onToggleStar: (message: MailMessage) => void;
   onLoadMore: (cursor: string) => void;
 }
@@ -177,11 +193,15 @@ export default function MailMessageList({
   nextCursor,
   selectedRef,
   actionBusyRef,
+  selectedRefs,
+  selectionBar,
   onBackToFolders,
   onSearch,
   onReachedTop,
   onRefreshNewMessages,
   onSelectMessage,
+  onToggleSelected,
+  onToggleSelectAll,
   onToggleStar,
   onLoadMore,
 }: MailMessageListProps) {
@@ -191,6 +211,17 @@ export default function MailMessageList({
     >
       <div className="border-b border-border p-3">
         <div className="mb-2 flex items-center gap-2">
+          <input
+            type="checkbox"
+            aria-label="Select all loaded messages"
+            checked={
+              messages.length > 0 &&
+              messages.every((message) => selectedRefs.has(message.ref))
+            }
+            onChange={onToggleSelectAll}
+            disabled={messages.length === 0}
+            className="h-3.5 w-3.5 shrink-0 rounded border-border"
+          />
           <button
             type="button"
             onClick={onBackToFolders}
@@ -228,6 +259,8 @@ export default function MailMessageList({
         </label>
       </div>
 
+      {selectionBar}
+
       {showNewMessages && (
         <div className="border-b border-border bg-bg-subtle p-2">
           <button
@@ -262,8 +295,10 @@ export default function MailMessageList({
                 key={message.ref}
                 message={message}
                 selected={selectedRef === message.ref}
+                checked={selectedRefs.has(message.ref)}
                 busy={actionBusyRef === message.ref}
                 onSelect={onSelectMessage}
+                onToggleSelected={onToggleSelected}
                 onToggleStar={onToggleStar}
               />
             ))}

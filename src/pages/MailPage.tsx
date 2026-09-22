@@ -5,6 +5,7 @@ import MailFolderRail, {
 } from "@/components/mail/MailFolderRail";
 import MailMessageList from "@/components/mail/MailMessageList";
 import MailReadingPane from "@/components/mail/MailReadingPane";
+import MailSelectionBar from "@/components/mail/MailSelectionBar";
 import {
   fetchMailboxes,
   fetchStats,
@@ -40,6 +41,7 @@ export default function MailPage() {
   const [mobilePane, setMobilePane] = useState<MobilePane>(
     searchParams.get("m") ? "reader" : "list",
   );
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
 
   const inbox = params.inbox;
   const folder = params.folder;
@@ -146,6 +148,10 @@ export default function MailPage() {
     setMobilePane("list");
   }
 
+  useEffect(() => {
+    setSelectedRefs(new Set());
+  }, [inbox, mailboxId, systemFolder]);
+
   function openSystemFolder(nextFolder: SystemFolder) {
     if (!inbox) return;
     navigate({
@@ -173,6 +179,56 @@ export default function MailPage() {
     selectedRef,
     onClearSelected: clearSelection,
   });
+
+  const selectedMessages = mail.messages.filter((message) =>
+    selectedRefs.has(message.ref),
+  );
+  const allSelected =
+    mail.messages.length > 0 &&
+    mail.messages.every((message) => selectedRefs.has(message.ref));
+  const canArchiveSpam =
+    selectedMessages.length > 0 &&
+    selectedMessages.every((message) => message.direction === "inbound");
+  const markSeen =
+    selectedMessages.length > 0 &&
+    !selectedMessages.every((message) => message.state.seen);
+  const star =
+    selectedMessages.length > 0 &&
+    !selectedMessages.every((message) => message.state.starredAt !== null);
+  const archive =
+    selectedMessages.length > 0 &&
+    !selectedMessages.every((message) => message.state.archivedAt !== null);
+  const spam =
+    selectedMessages.length > 0 &&
+    !selectedMessages.every((message) => message.state.spamAt !== null);
+  const trash =
+    selectedMessages.length > 0 &&
+    !selectedMessages.every((message) => message.state.trashedAt !== null);
+
+  function toggleSelected(ref: string) {
+    setSelectedRefs((current) => {
+      const next = new Set(current);
+      if (next.has(ref)) next.delete(ref);
+      else next.add(ref);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedRefs((current) => {
+      const next = new Set(current);
+      if (allSelected) {
+        for (const message of mail.messages) next.delete(message.ref);
+      } else {
+        for (const message of mail.messages) next.add(message.ref);
+      }
+      return next;
+    });
+  }
+
+  async function runBulk(action: () => Promise<boolean>) {
+    if (await action()) setSelectedRefs(new Set());
+  }
 
   const currentMailbox = mailboxId
     ? (mailboxes.find((mailbox) => mailbox.id === mailboxId) ?? null)
@@ -241,6 +297,46 @@ export default function MailPage() {
           nextCursor={mail.nextCursor}
           selectedRef={selectedRef}
           actionBusyRef={mail.actionBusyRef}
+          selectedRefs={selectedRefs}
+          selectionBar={
+            <MailSelectionBar
+              count={selectedMessages.length}
+              busy={mail.bulkBusy}
+              canArchiveSpam={canArchiveSpam}
+              markSeen={markSeen}
+              star={star}
+              archive={archive}
+              spam={spam}
+              trash={trash}
+              mailboxes={mailboxes}
+              onSeen={() =>
+                void runBulk(() => mail.bulkSetSeen(selectedMessages, markSeen))
+              }
+              onStar={() =>
+                void runBulk(() => mail.bulkSetStarred(selectedMessages, star))
+              }
+              onArchive={() =>
+                void runBulk(() =>
+                  mail.bulkSetArchived(selectedMessages, archive),
+                )
+              }
+              onSpam={() =>
+                void runBulk(() => mail.bulkSetSpam(selectedMessages, spam))
+              }
+              onTrash={() =>
+                void runBulk(() => mail.bulkSetTrashed(selectedMessages, trash))
+              }
+              onSnooze={(until) =>
+                void runBulk(() => mail.bulkSnooze(selectedMessages, until))
+              }
+              onMove={(targetId) =>
+                void runBulk(() =>
+                  mail.bulkMoveToMailbox(selectedMessages, targetId),
+                )
+              }
+              onClear={() => setSelectedRefs(new Set())}
+            />
+          }
           onBackToFolders={() => setMobilePane("folders")}
           onSearch={updateSearch}
           onReachedTop={() => mail.setShowNewMessages(false)}
@@ -249,6 +345,8 @@ export default function MailPage() {
             void mail.loadMessages(null, false);
           }}
           onSelectMessage={selectMessage}
+          onToggleSelected={toggleSelected}
+          onToggleSelectAll={toggleSelectAll}
           onToggleStar={(message) => void mail.toggleStar(message)}
           onLoadMore={(cursor) => void mail.loadMessages(cursor, true)}
         />
