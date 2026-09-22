@@ -163,7 +163,9 @@ function personalStateSelect(query: MessageQuery): SQL {
     CASE WHEN mus.message_id IS NULL THEN 0 ELSE 1 END AS user_state_present`;
 }
 
-function mailboxFolderId(folder: MessageFolder | undefined): string | undefined {
+function mailboxFolderId(
+  folder: MessageFolder | undefined,
+): string | undefined {
   return typeof folder === "object" ? folder.mailboxId : undefined;
 }
 
@@ -212,9 +214,7 @@ function stateScope(
     const spam =
       query.includeSpam === false ? sql`AND mms.spam_at IS NULL` : sql``;
     const trashed =
-      query.includeTrashed === false
-        ? sql`AND mms.trashed_at IS NULL`
-        : sql``;
+      query.includeTrashed === false ? sql`AND mms.trashed_at IS NULL` : sql``;
     folderScope = sql`${archived} ${spam} ${trashed}`;
   }
 
@@ -513,22 +513,22 @@ function toUnified(
     message = adaptReceived(selected);
   } else {
     const selected: SentSelect = {
-    id: row.id,
-    personId: row.person_id,
-    fromAddress: row.inbox,
-    toAddress: row.to_email,
-    subject: row.subject,
-    bodyHtml: row.body_html,
-    bodyText: row.body_text,
-    inReplyTo: row.in_reply_to,
-    messageId: row.message_id,
-    status: row.delivery_status ?? "sent",
-    cc: row.cc,
-    conversationId: row.conversation_id,
-    campaignId: row.campaign_id,
-    sequenceId: row.sequence_id,
-    sequenceEnrollmentId: row.sequence_enrollment_id,
-    sentAt: row.occurred_at,
+      id: row.id,
+      personId: row.person_id,
+      fromAddress: row.inbox,
+      toAddress: row.to_email,
+      subject: row.subject,
+      bodyHtml: row.body_html,
+      bodyText: row.body_text,
+      inReplyTo: row.in_reply_to,
+      messageId: row.message_id,
+      status: row.delivery_status ?? "sent",
+      cc: row.cc,
+      conversationId: row.conversation_id,
+      campaignId: row.campaign_id,
+      sequenceId: row.sequence_id,
+      sequenceEnrollmentId: row.sequence_enrollment_id,
+      sentAt: row.occurred_at,
       personName: row.to_name,
     };
     message = adaptSent(selected);

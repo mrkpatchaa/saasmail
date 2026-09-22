@@ -132,8 +132,9 @@ describe("message state reads", () => {
       trashed: true,
     });
     expect(
-      (await queryMessages(db, { isAdmin: true }, { folder: "trash" })).messages
-        .map((message) => message.ref.id),
+      (
+        await queryMessages(db, { isAdmin: true }, { folder: "trash" })
+      ).messages.map((message) => message.ref.id),
     ).toContain("junk-trash");
     expect(
       (await queryMessages(db, { isAdmin: true }, { folder: "junk" })).messages,
@@ -143,8 +144,9 @@ describe("message state reads", () => {
       trashed: false,
     });
     expect(
-      (await queryMessages(db, { isAdmin: true }, { folder: "junk" })).messages
-        .map((message) => message.ref.id),
+      (
+        await queryMessages(db, { isAdmin: true }, { folder: "junk" })
+      ).messages.map((message) => message.ref.id),
     ).toContain("junk-trash");
   });
 
@@ -182,20 +184,24 @@ describe("message state reads", () => {
       },
     ]);
 
-    const page = await queryMessages(db, { isAdmin: true }, {
-      viewer: { userId },
-      unseen: true,
-      withState: true,
-    });
+    const page = await queryMessages(
+      db,
+      { isAdmin: true },
+      {
+        viewer: { userId },
+        unseen: true,
+        withState: true,
+      },
+    );
     expect(page.messages.map((message) => message.ref.id).sort()).toEqual(
       ["legacy-unread", "row-unseen"].sort(),
     );
-    expect(page.messages.every((message) => message.ref.kind === "received")).toBe(
-      true,
-    );
-    expect(page.messages.every((message) => message.state?.seen === false)).toBe(
-      true,
-    );
+    expect(
+      page.messages.every((message) => message.ref.kind === "received"),
+    ).toBe(true);
+    expect(
+      page.messages.every((message) => message.state?.seen === false),
+    ).toBe(true);
   });
 
   it("rejects starred and unseen filters without a viewer", async () => {
@@ -208,8 +214,14 @@ describe("message state reads", () => {
   });
 
   it("keeps personal stars private between viewers", async () => {
-    const a = await createTestUser({ id: "star-a", email: "star-a@example.com" });
-    const b = await createTestUser({ id: "star-b", email: "star-b@example.com" });
+    const a = await createTestUser({
+      id: "star-a",
+      email: "star-a@example.com",
+    });
+    const b = await createTestUser({
+      id: "star-b",
+      email: "star-b@example.com",
+    });
     await seedReceived("star-message");
     await setUserState(
       getDb(),
@@ -218,14 +230,22 @@ describe("message state reads", () => {
       { starred: true },
     );
 
-    const aPage = await queryMessages(getDb(), { isAdmin: true }, {
-      viewer: { userId: a.userId },
-      starred: true,
-    });
-    const bPage = await queryMessages(getDb(), { isAdmin: true }, {
-      viewer: { userId: b.userId },
-      starred: true,
-    });
+    const aPage = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        viewer: { userId: a.userId },
+        starred: true,
+      },
+    );
+    const bPage = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        viewer: { userId: b.userId },
+        starred: true,
+      },
+    );
     expect(aPage.messages.map((message) => message.ref.id)).toEqual([
       "star-message",
     ]);
@@ -251,7 +271,11 @@ describe("message state reads", () => {
       { add: [mailbox.id] },
     );
 
-    const page = await queryMessages(db, { isAdmin: true }, { withState: true });
+    const page = await queryMessages(
+      db,
+      { isAdmin: true },
+      { withState: true },
+    );
     const message = page.messages.find((item) => item.ref.id === "stateful");
     expect(message?.state).toMatchObject({
       seen: true,
@@ -294,9 +318,13 @@ describe("message state reads", () => {
       { add: [mailbox.id] },
     );
 
-    const adminPage = await queryMessages(getDb(), { isAdmin: true }, {
-      folder: { mailboxId: mailbox.id },
-    });
+    const adminPage = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        folder: { mailboxId: mailbox.id },
+      },
+    );
     expect(adminPage.messages.map((message) => message.ref.id)).toEqual([
       "custom-message",
     ]);
@@ -378,18 +406,26 @@ describe("message state reads", () => {
       campaignId: "campaign-1",
     });
 
-    const hidden = await queryMessages(getDb(), { isAdmin: true }, {
-      folder: "sent",
-      excludeCampaignSends: true,
-    });
+    const hidden = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        folder: "sent",
+        excludeCampaignSends: true,
+      },
+    );
     expect(hidden.messages.map((message) => message.ref.id)).toEqual([
       "ordinary-send",
     ]);
 
-    const included = await queryMessages(getDb(), { isAdmin: true }, {
-      folder: "sent",
-      excludeCampaignSends: false,
-    });
+    const included = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        folder: "sent",
+        excludeCampaignSends: false,
+      },
+    );
     expect(included.messages.map((message) => message.ref.id).sort()).toEqual(
       ["ordinary-send", "campaign-send"].sort(),
     );
@@ -416,17 +452,25 @@ describe("message state reads", () => {
       })),
     );
 
-    const first = await queryMessages(db, { isAdmin: true }, {
-      folder: "inbox",
-      inboxes: [INBOX],
-      limit: 2,
-    });
-    const second = await queryMessages(db, { isAdmin: true }, {
-      folder: "inbox",
-      inboxes: [INBOX],
-      limit: 2,
-      cursor: first.nextCursor!,
-    });
+    const first = await queryMessages(
+      db,
+      { isAdmin: true },
+      {
+        folder: "inbox",
+        inboxes: [INBOX],
+        limit: 2,
+      },
+    );
+    const second = await queryMessages(
+      db,
+      { isAdmin: true },
+      {
+        folder: "inbox",
+        inboxes: [INBOX],
+        limit: 2,
+        cursor: first.nextCursor!,
+      },
+    );
     expect(first.messages.map((message) => message.ref.id)).toEqual(["c", "b"]);
     expect(second.messages.map((message) => message.ref.id)).toEqual(["a"]);
   });
@@ -464,11 +508,15 @@ describe("message state reads", () => {
       updatedAt: 1,
     });
 
-    const page = await queryMessages(getDb(), { isAdmin: true }, {
-      viewer: { userId },
-      withState: true,
-      folder: "sent",
-    });
+    const page = await queryMessages(
+      getDb(),
+      { isAdmin: true },
+      {
+        viewer: { userId },
+        withState: true,
+        folder: "sent",
+      },
+    );
     expect(page.messages[0].state?.seen).toBe(true);
   });
 });

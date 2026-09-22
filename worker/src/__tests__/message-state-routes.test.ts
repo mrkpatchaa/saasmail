@@ -10,10 +10,7 @@ import {
   getDb,
 } from "./helpers";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
-import {
-  createMailbox,
-  setMailboxMembership,
-} from "../lib/messages/state";
+import { createMailbox, setMailboxMembership } from "../lib/messages/state";
 
 const INBOX = "support@saasmail.test";
 
@@ -146,12 +143,10 @@ describe("message state routes", () => {
       recipient: INBOX,
       messageId: "mut@example.com",
     });
-    const mailbox = await createMailbox(
-      getDb(),
-      { isAdmin: true },
-      userId,
-      { inbox: INBOX, name: "Projects" },
-    );
+    const mailbox = await createMailbox(getDb(), { isAdmin: true }, userId, {
+      inbox: INBOX,
+      name: "Projects",
+    });
 
     expect(
       (
@@ -259,12 +254,10 @@ describe("message state routes", () => {
 
   it("rejects folder and mailboxId together as an invalid query", async () => {
     const { apiKey, userId } = await admin();
-    const mailbox = await createMailbox(
-      getDb(),
-      { isAdmin: true },
-      userId,
-      { inbox: INBOX, name: "Custom" },
-    );
+    const mailbox = await createMailbox(getDb(), { isAdmin: true }, userId, {
+      inbox: INBOX,
+      name: "Custom",
+    });
     const res = await authFetch(
       `/api/messages?folder=inbox&mailboxId=${mailbox.id}`,
       { apiKey },
@@ -274,19 +267,20 @@ describe("message state routes", () => {
 
   it("applies mailbox membership only to matching messages", async () => {
     const { apiKey, userId } = await admin();
-    await createTestPerson({ id: "member-person", email: "member@example.com" });
+    await createTestPerson({
+      id: "member-person",
+      email: "member@example.com",
+    });
     await createTestEmail({
       id: "member-message",
       personId: "member-person",
       recipient: INBOX,
       messageId: "member-message@example.com",
     });
-    const mailbox = await createMailbox(
-      getDb(),
-      { isAdmin: true },
-      userId,
-      { inbox: INBOX, name: "Membership" },
-    );
+    const mailbox = await createMailbox(getDb(), { isAdmin: true }, userId, {
+      inbox: INBOX,
+      name: "Membership",
+    });
     await setMailboxMembership(
       getDb(),
       { isAdmin: true },

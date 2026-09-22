@@ -272,7 +272,9 @@ export function buildMcpServer(ctx: McpContext): McpServer {
       annotations: { readOnlyHint: true, title: "List Messages" },
       inputSchema: {
         inbox: z.string().optional(),
-        folder: z.enum(["inbox", "sent", "archive", "junk", "trash"]).optional(),
+        folder: z
+          .enum(["inbox", "sent", "archive", "junk", "trash"])
+          .optional(),
         mailboxId: z.string().optional(),
         starred: z.boolean().optional(),
         unseen: z.boolean().optional(),

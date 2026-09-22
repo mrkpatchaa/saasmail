@@ -359,7 +359,11 @@ export async function listMailboxes(
   if (allowed.inboxes.length === 0) return [];
 
   const rows: (typeof mailboxes.$inferSelect)[] = [];
-  for (let start = 0; start < allowed.inboxes.length; start += LOOKUP_BATCH_SIZE) {
+  for (
+    let start = 0;
+    start < allowed.inboxes.length;
+    start += LOOKUP_BATCH_SIZE
+  ) {
     rows.push(
       ...(await db
         .select()
@@ -387,7 +391,8 @@ export async function updateMailbox(
   const update: { name?: string; sortOrder?: number; updatedAt: number } = {
     updatedAt,
   };
-  if (changes.name !== undefined) update.name = normalizeMailboxName(changes.name);
+  if (changes.name !== undefined)
+    update.name = normalizeMailboxName(changes.name);
   if (changes.sortOrder !== undefined) update.sortOrder = changes.sortOrder;
 
   await db.update(mailboxes).set(update).where(eq(mailboxes.id, mailboxId));

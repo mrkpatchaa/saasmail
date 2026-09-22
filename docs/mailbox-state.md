@@ -28,14 +28,14 @@ mailbox rows.
 
 ## Folder definitions
 
-| Folder | Messages included |
-| --- | --- |
-| Inbox | Received only; not archived, spam, or trashed |
-| Sent | Sent only; not trashed. Campaign sends are excluded by default on the HTTP/MCP Sent surface |
-| Archive | Received only; archived, not spam or trashed |
-| Junk | Received only; spam, not trashed |
-| Trash | Received and sent with trash state |
-| Custom mailbox | Members of that mailbox, not trashed, scoped to the mailbox inbox |
+| Folder         | Messages included                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------- |
+| Inbox          | Received only; not archived, spam, or trashed                                               |
+| Sent           | Sent only; not trashed. Campaign sends are excluded by default on the HTTP/MCP Sent surface |
+| Archive        | Received only; archived, not spam or trashed                                                |
+| Junk           | Received only; spam, not trashed                                                            |
+| Trash          | Received and sent with trash state                                                          |
+| Custom mailbox | Members of that mailbox, not trashed, scoped to the mailbox inbox                           |
 
 A message that is both spam and trashed appears in Trash. Removing the trash
 state makes it visible in Junk again.

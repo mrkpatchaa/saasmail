@@ -90,7 +90,9 @@ function parseRefs(values: string[]): MessageRef[] {
   });
 }
 
-function stateError(error: unknown): { status: 400 | 404; message: string } | null {
+function stateError(
+  error: unknown,
+): { status: 400 | 404; message: string } | null {
   if (error instanceof MessageStateAccessError) {
     return { status: 404, message: error.message };
   }
