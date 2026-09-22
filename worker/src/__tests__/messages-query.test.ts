@@ -466,8 +466,8 @@ describe("queryMessages", () => {
       createdAt: index + 1,
     }));
 
-    for (let start = 0; start < rows.length; start += 50) {
-      await db.insert(sentEmails).values(rows.slice(start, start + 50));
+    for (let start = 0; start < rows.length; start += 10) {
+      await db.insert(sentEmails).values(rows.slice(start, start + 10));
     }
 
     const page = await queryMessages(
