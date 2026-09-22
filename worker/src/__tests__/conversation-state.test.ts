@@ -37,7 +37,9 @@ describe("conversation snooze state", () => {
     expect(
       conversationKeyOf({ conversationId: null, personId: "person-1" }),
     ).toBe("p:person-1");
-    expect(conversationKeyOf({ conversationId: null, personId: null })).toBeNull();
+    expect(
+      conversationKeyOf({ conversationId: null, personId: null }),
+    ).toBeNull();
   });
 
   it("keeps SQL and TypeScript conversation-key derivation in lockstep", async () => {
@@ -281,7 +283,10 @@ describe("conversation snooze state", () => {
       id: "delete-admin",
       email: "delete-admin@example.com",
     });
-    await createTestPerson({ id: "delete-person", email: "delete@example.com" });
+    await createTestPerson({
+      id: "delete-person",
+      email: "delete@example.com",
+    });
     await createTestEmail({
       id: "delete-message",
       personId: "delete-person",
@@ -289,22 +294,24 @@ describe("conversation snooze state", () => {
       messageId: "delete-message@example.com",
     });
     const now = Math.floor(Date.now() / 1000);
-    await getDb().insert(inboxConversationState).values([
-      {
-        inbox: INBOX,
-        conversationKey: "p:delete-person",
-        snoozedUntil: now + 3600,
-        snoozedBy: userId,
-        updatedAt: now,
-      },
-      {
-        inbox: INBOX,
-        conversationKey: "group-survives",
-        snoozedUntil: now + 3600,
-        snoozedBy: userId,
-        updatedAt: now,
-      },
-    ]);
+    await getDb()
+      .insert(inboxConversationState)
+      .values([
+        {
+          inbox: INBOX,
+          conversationKey: "p:delete-person",
+          snoozedUntil: now + 3600,
+          snoozedBy: userId,
+          updatedAt: now,
+        },
+        {
+          inbox: INBOX,
+          conversationKey: "group-survives",
+          snoozedUntil: now + 3600,
+          snoozedBy: userId,
+          updatedAt: now,
+        },
+      ]);
 
     const response = await authFetch("/api/people/delete-person", {
       apiKey,
@@ -328,13 +335,15 @@ describe("conversation snooze state", () => {
       messageId: "blocked-message@example.com",
     });
     const now = Math.floor(Date.now() / 1000);
-    await getDb().insert(inboxConversationState).values({
-      inbox: INBOX,
-      conversationKey: "p:blocked-person",
-      snoozedUntil: now + 3600,
-      snoozedBy: userId,
-      updatedAt: now,
-    });
+    await getDb()
+      .insert(inboxConversationState)
+      .values({
+        inbox: INBOX,
+        conversationKey: "p:blocked-person",
+        snoozedUntil: now + 3600,
+        snoozedBy: userId,
+        updatedAt: now,
+      });
     await getDb().insert(blocklist).values({
       id: "block-1",
       type: "domain",

@@ -516,10 +516,9 @@ describe("message state reads", () => {
       { isAdmin: true },
       { folder: "inbox", inboxes: [INBOX], now: until + 1 },
     );
-    expect(expiredInbox.messages.map((message) => message.ref.id).sort()).toEqual([
-      "snooze-a",
-      "snooze-b",
-    ]);
+    expect(
+      expiredInbox.messages.map((message) => message.ref.id).sort(),
+    ).toEqual(["snooze-a", "snooze-b"]);
 
     const expiredSnoozed = await queryMessages(
       db,

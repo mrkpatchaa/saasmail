@@ -450,11 +450,7 @@ function receivedArm(
       mms.archived_at AS archived_at,
       mms.spam_at AS spam_at,
       mms.trashed_at AS trashed_at,
-      ${snoozeStateSelect(
-        query,
-        sql`e.conversation_id`,
-        sql`e.person_id`,
-      )}
+      ${snoozeStateSelect(query, sql`e.conversation_id`, sql`e.person_id`)}
     FROM emails e
     ${search.join}
     LEFT JOIN people p ON p.id = e.person_id
@@ -534,11 +530,7 @@ function sentArm(
       mms.archived_at AS archived_at,
       mms.spam_at AS spam_at,
       mms.trashed_at AS trashed_at,
-      ${snoozeStateSelect(
-        query,
-        sql`se.conversation_id`,
-        sql`se.person_id`,
-      )}
+      ${snoozeStateSelect(query, sql`se.conversation_id`, sql`se.person_id`)}
     FROM sent_emails se
     LEFT JOIN people p ON p.id = se.person_id
     LEFT JOIN mailbox_message_state mms

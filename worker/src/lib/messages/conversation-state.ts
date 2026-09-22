@@ -1,23 +1,10 @@
-import {
-  and,
-  eq,
-  inArray,
-  sql,
-  type SQL,
-  type SQLWrapper,
-} from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../../db/emails.schema";
 import { inboxConversationState } from "../../db/inbox-conversation-state.schema";
 import { sentEmails } from "../../db/sent-emails.schema";
-import {
-  isInboxAllowed,
-  type AllowedInboxes,
-} from "../inbox-permissions";
-import {
-  InvalidMessageStateError,
-  MessageStateAccessError,
-} from "./state";
+import { isInboxAllowed, type AllowedInboxes } from "../inbox-permissions";
+import { InvalidMessageStateError, MessageStateAccessError } from "./state";
 import type { MessageRef, UnifiedMessage } from "./types";
 
 const LOOKUP_BATCH_SIZE = 40;
@@ -39,7 +26,9 @@ export function conversationKeySql(alias: {
   conversationId: SQLWrapper;
   personId: SQLWrapper;
 }): SQL<string | null> {
-  return sql<string | null>`COALESCE(${alias.conversationId}, 'p:' || ${alias.personId})`;
+  return sql<
+    string | null
+  >`COALESCE(${alias.conversationId}, 'p:' || ${alias.personId})`;
 }
 
 export function conversationKeyOf(
