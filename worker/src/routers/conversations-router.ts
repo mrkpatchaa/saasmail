@@ -4,7 +4,6 @@ import { emails } from "../db/emails.schema";
 import { people } from "../db/people.schema";
 import { json200Response } from "../lib/helpers";
 import { queryMessages } from "../lib/messages/query";
-import type { UnifiedMessage } from "../lib/messages/types";
 import { EmailSchema } from "./emails-router";
 import type { Variables } from "../variables";
 
@@ -51,22 +50,17 @@ conversationsRouter.openapi(listConversationEmailsRoute, async (c) => {
   const { id } = c.req.valid("param");
   const allowed = c.get("allowedInboxes")!;
 
-  // The route historically returns the entire conversation. queryMessages
-  // intentionally caps one page at 100, so walk its cursor until exhausted.
-  const messages: UnifiedMessage[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await queryMessages(db, allowed, {
-      conversationId: id,
-      order: "asc",
-      limit: 100,
-      cursor,
-      withAttachmentCounts: true,
-      withAttachments: true,
-    });
-    messages.push(...page.messages);
-    cursor = page.nextCursor ?? undefined;
-  } while (cursor);
+  // This endpoint historically returns the entire conversation. The unified
+  // service supports an explicit unbounded read for internal callers so the
+  // message union/sort runs once rather than once per 100-row chunk.
+  const page = await queryMessages(db, allowed, {
+    conversationId: id,
+    order: "asc",
+    limit: null,
+    withAttachmentCounts: true,
+    withAttachments: true,
+  });
+  const messages = page.messages;
 
   if (messages.length === 0) {
     return c.json({ error: "Conversation not found" }, 404);
