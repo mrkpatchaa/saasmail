@@ -36,7 +36,8 @@ const MailboxSchema = z.object({
 function isDuplicateMailboxError(error: unknown): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 4 && current; depth += 1) {
-    const message = current instanceof Error ? current.message : String(current);
+    const message =
+      current instanceof Error ? current.message : String(current);
     if (
       message.includes("UNIQUE constraint failed") ||
       message.includes("SQLITE_CONSTRAINT_UNIQUE")
