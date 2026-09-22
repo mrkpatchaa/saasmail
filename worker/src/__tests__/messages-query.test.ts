@@ -10,6 +10,9 @@ import { attachments } from "../db/attachments.schema";
 import { blocklist } from "../db/blocklist.schema";
 import { emails } from "../db/emails.schema";
 import { sentEmails } from "../db/sent-emails.schema";
+import { campaignRecipients } from "../db/campaign-recipients.schema";
+import { outboxEmails } from "../db/outbox-emails.schema";
+import { sequenceEmails } from "../db/sequence-emails.schema";
 import { InvalidCursorError } from "../lib/messages/cursor";
 import { queryMessages } from "../lib/messages/query";
 
@@ -382,4 +385,107 @@ describe("queryMessages", () => {
       ),
     ).rejects.toThrow("cursor or offset");
   });
+  it("never turns delivery ledgers or outbox rows into duplicate messages", async () => {
+    const db = getDb();
+
+    await db.insert(sentEmails).values([
+      {
+        id: "campaign-visible",
+        personId: null,
+        fromAddress: "marketing@saasmail.test",
+        toAddress: "subscriber@example.com",
+        subject: "Campaign",
+        bodyText: "Campaign body",
+        status: "sent",
+        campaignId: "campaign-1",
+        sentAt: 300,
+        createdAt: 300,
+      },
+      {
+        id: "sequence-visible",
+        personId: null,
+        fromAddress: "sales@saasmail.test",
+        toAddress: "lead@example.com",
+        subject: "Sequence",
+        bodyText: "Sequence body",
+        status: "sent",
+        sentAt: 200,
+        createdAt: 200,
+      },
+    ]);
+
+    await db.insert(campaignRecipients).values({
+      id: "campaign-ledger",
+      campaignId: "campaign-1",
+      contactId: "contact-1",
+      email: "subscriber@example.com",
+      status: "sent",
+      idempotencyKey: "campaign-1:contact-1",
+      sentEmailId: "campaign-visible",
+      queuedAt: 100,
+      processedAt: 301,
+    });
+
+    await db.insert(sequenceEmails).values({
+      id: "sequence-ledger",
+      enrollmentId: "enrollment-1",
+      stepOrder: 0,
+      templateSlug: "follow-up",
+      scheduledAt: 100,
+      status: "sent",
+      sentAt: 200,
+      sentEmailId: "sequence-visible",
+    });
+
+    await db.insert(outboxEmails).values({
+      id: "pending-outbox",
+      sentEmailId: "not-yet-visible",
+      sequenceEmailId: "sequence-pending",
+      fromAddress: "sales@saasmail.test",
+      toAddress: "pending@example.com",
+      subject: "Pending",
+      bodyText: "Pending body",
+      status: "pending",
+      attempts: 0,
+      createdAt: 400,
+      updatedAt: 400,
+    });
+
+    const page = await queryMessages(db, { isAdmin: true }, { limit: 10 });
+
+    expect(page.messages.map((message) => message.ref.id)).toEqual([
+      "campaign-visible",
+      "sequence-visible",
+    ]);
+  });
+
+  it("supports offsets beyond the search wrapper's 500-row ceiling", async () => {
+    const db = getDb();
+    const rows = Array.from({ length: 505 }, (_, index) => ({
+      id: `deep-${String(index).padStart(3, "0")}`,
+      personId: null,
+      fromAddress: "archive@saasmail.test",
+      toAddress: "someone@example.com",
+      subject: "Archived",
+      status: "sent",
+      sentAt: index + 1,
+      createdAt: index + 1,
+    }));
+
+    for (let start = 0; start < rows.length; start += 50) {
+      await db.insert(sentEmails).values(rows.slice(start, start + 50));
+    }
+
+    const page = await queryMessages(
+      db,
+      { isAdmin: true },
+      { inboxes: ["archive@saasmail.test"], offset: 500, limit: 5 },
+    );
+
+    expect(page.messages).toHaveLength(5);
+    expect(page.messages.map((message) => message.occurredAt)).toEqual([
+      5, 4, 3, 2, 1,
+    ]);
+  });
+
 });

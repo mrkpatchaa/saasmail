@@ -12,6 +12,7 @@ import {
 } from "./helpers";
 import { sentEmails } from "../db/sent-emails.schema";
 import { emails } from "../db/emails.schema";
+import { inboxPermissions } from "../db/inbox-permissions.schema";
 
 describe("conversations router", () => {
   let apiKey: string;
@@ -119,6 +120,47 @@ describe("conversations router", () => {
       expect(received).toBeDefined();
       expect(received!.type).toBe("received");
       expect(received!.fromAddress).toBe("external@example.com");
+    });
+
+    it("authorizes mixed-case stored inbox addresses through normalized scoping", async () => {
+      const db = getDb();
+      const { userId, apiKey: memberKey } = await createTestUser({
+        id: "conversation-member",
+        role: "member",
+        email: "conversation-member@example.com",
+      });
+      await db.insert(inboxPermissions).values({
+        userId,
+        email: "support@saasmail.test",
+        createdAt: 1,
+        createdBy: userId,
+      });
+      await createTestPerson({
+        id: "case-person",
+        email: "case@example.com",
+      });
+      await db.insert(emails).values({
+        id: "case-recv",
+        personId: "case-person",
+        recipient: "Support@saasmail.test",
+        subject: "Mixed case inbox",
+        bodyText: "Hello",
+        rawHeaders: "{}",
+        messageId: "case-recv@example.com",
+        isRead: 0,
+        conversationId: "case-conversation",
+        receivedAt: 100,
+        createdAt: 100,
+      });
+
+      const res = await authFetch(
+        "/api/conversations/case-conversation/emails",
+        { apiKey: memberKey },
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { emails: Array<{ id: string }> };
+      expect(body.emails.map((email) => email.id)).toEqual(["case-recv"]);
     });
   });
 });
