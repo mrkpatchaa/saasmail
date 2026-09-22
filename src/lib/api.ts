@@ -363,6 +363,8 @@ export async function fetchMessages(params?: {
   mailboxId?: string;
   starred?: boolean;
   unseen?: boolean;
+  includeTrashed?: boolean;
+  includeSpam?: boolean;
   personId?: string;
   q?: string;
   cursor?: string;
@@ -375,6 +377,12 @@ export async function fetchMessages(params?: {
   if (params?.mailboxId) qs.set("mailboxId", params.mailboxId);
   if (params?.starred !== undefined) qs.set("starred", String(params.starred));
   if (params?.unseen !== undefined) qs.set("unseen", String(params.unseen));
+  if (params?.includeTrashed !== undefined) {
+    qs.set("includeTrashed", String(params.includeTrashed));
+  }
+  if (params?.includeSpam !== undefined) {
+    qs.set("includeSpam", String(params.includeSpam));
+  }
   if (params?.personId) qs.set("personId", params.personId);
   if (params?.q) qs.set("q", params.q);
   if (params?.cursor) qs.set("cursor", params.cursor);

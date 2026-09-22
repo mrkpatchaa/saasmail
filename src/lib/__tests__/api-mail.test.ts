@@ -35,6 +35,8 @@ describe("mail api client", () => {
       inbox: "team@example.com",
       folder: "snoozed",
       starred: true,
+      includeTrashed: false,
+      includeSpam: false,
     });
     await fetchMailboxes("team@example.com");
     await createMailbox({
@@ -54,7 +56,7 @@ describe("mail api client", () => {
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      "/api/messages?inbox=team%40example.com&folder=snoozed&starred=true",
+      "/api/messages?inbox=team%40example.com&folder=snoozed&starred=true&includeTrashed=false&includeSpam=false",
       { credentials: "include" },
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
