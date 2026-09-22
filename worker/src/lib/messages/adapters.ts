@@ -31,6 +31,7 @@ export type SentSelect = {
   conversationId: string | null;
   campaignId: string | null;
   sentAt: number;
+  personName: string | null;
 };
 
 export function parseCc(raw: string | null | undefined): MailAddress[] {
@@ -60,10 +61,12 @@ export function adaptReceived(row: ReceivedSelect): UnifiedMessage {
     conversationId: row.conversationId,
     messageId: row.messageId,
     inReplyTo: null,
-    from: {
-      email: row.personEmail ?? "",
-      name: row.personName,
-    },
+    from: row.personEmail
+      ? {
+          email: row.personEmail,
+          name: row.personName,
+        }
+      : null,
     to: { email: row.recipient },
     cc: parseCc(row.cc),
     subject: row.subject,
@@ -86,7 +89,10 @@ export function adaptSent(row: SentSelect): UnifiedMessage {
     messageId: row.messageId,
     inReplyTo: row.inReplyTo,
     from: { email: row.fromAddress },
-    to: { email: row.toAddress },
+    to: {
+      email: row.toAddress,
+      name: row.personName,
+    },
     cc: parseCc(row.cc),
     subject: row.subject,
     bodyText: row.bodyText,

@@ -50,6 +50,26 @@ describe("message adapters", () => {
     });
   });
 
+  it("keeps an orphaned received sender nullable instead of inventing an address", () => {
+    const row: ReceivedSelect = {
+      id: "recv-orphan",
+      personId: "missing-person",
+      recipient: "support@example.com",
+      subject: "Orphan",
+      bodyHtml: null,
+      bodyText: "Hello",
+      messageId: null,
+      isRead: 1,
+      cc: null,
+      conversationId: null,
+      receivedAt: 124,
+      personEmail: null,
+      personName: null,
+    };
+
+    expect(adaptReceived(row).from).toBeNull();
+  });
+
   it("adapts a sent row into the unified contract", () => {
     const row: SentSelect = {
       id: "sent-1",
@@ -66,6 +86,7 @@ describe("message adapters", () => {
       conversationId: null,
       campaignId: "campaign-1",
       sentAt: 456,
+      personName: "Subscriber",
     };
 
     expect(adaptSent(row)).toEqual({
@@ -77,7 +98,7 @@ describe("message adapters", () => {
       messageId: "sent-1@example.com",
       inReplyTo: "prior@example.com",
       from: { email: "support@example.com" },
-      to: { email: "subscriber@example.com" },
+      to: { email: "subscriber@example.com", name: "Subscriber" },
       cc: [],
       subject: "Campaign",
       bodyText: "Hello",
