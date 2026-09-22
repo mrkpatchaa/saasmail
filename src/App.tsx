@@ -16,6 +16,7 @@ import ConsentPage from "@/pages/ConsentPage";
 import OnboardingPage from "@/pages/OnboardingPage";
 import InboxPage from "@/pages/InboxPage";
 import MailPage from "@/pages/MailPage";
+import DefaultHomeRoute from "@/components/DefaultHomeRoute";
 import TemplatesPage from "@/pages/TemplatesPage";
 import TemplateEditorPage from "@/pages/TemplateEditorPage";
 import SetupPasskeyPage from "@/pages/SetupPasskeyPage";
@@ -193,6 +194,7 @@ function App() {
                 <Route path="/outbox" element={<OutboxPage />} />
                 {/* Deep link from Web Push notifications — see
                     worker/src/do/notifications.ts where data.url is set. */}
+                <Route path="/" element={<DefaultHomeRoute />} />
                 <Route path="/mail" element={<MailPage />} />
                 <Route
                   path="/mail/:inbox/f/:mailboxId"
