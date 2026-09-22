@@ -7,6 +7,7 @@ import { attachments } from "../../db/attachments.schema";
 import { people } from "../../db/people.schema";
 import { parseCc } from "../messages/adapters";
 import { queryMessages } from "../messages/query";
+import type { UnifiedMessage } from "../messages/types";
 import type { AllowedInboxes } from "../inbox-permissions";
 import { isInboxAllowed } from "../inbox-permissions";
 
@@ -135,7 +136,7 @@ export async function listPersonEmails(
   const offset = Math.max((page - 1) * limit, 0);
   const requested = Math.max(Math.floor(limit), 0);
 
-  const unified = [];
+  const unified: UnifiedMessage[] = [];
   let consumed = 0;
   while (consumed < requested) {
     const chunkSize = Math.min(100, requested - consumed);

@@ -4,6 +4,7 @@ import { emails } from "../db/emails.schema";
 import { people } from "../db/people.schema";
 import { json200Response } from "../lib/helpers";
 import { queryMessages } from "../lib/messages/query";
+import type { UnifiedMessage } from "../lib/messages/types";
 import { EmailSchema } from "./emails-router";
 import type { Variables } from "../variables";
 
@@ -52,7 +53,7 @@ conversationsRouter.openapi(listConversationEmailsRoute, async (c) => {
 
   // The route historically returns the entire conversation. queryMessages
   // intentionally caps one page at 100, so walk its cursor until exhausted.
-  const messages = [];
+  const messages: UnifiedMessage[] = [];
   let cursor: string | undefined;
   do {
     const page = await queryMessages(db, allowed, {

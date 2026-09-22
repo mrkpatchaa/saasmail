@@ -75,21 +75,33 @@ export async function searchEmails(
     return { hits: [], hasMore: false, truncated: false };
   }
 
-  const page = await queryMessages(db, allowed, {
-    search: q,
-    searchMode: "fulltext",
-    excludeBlocked: true,
-    inboxes: inbox !== undefined ? [inbox] : undefined,
-    personId,
-    after,
-    before,
-    offset,
-    limit: effectiveLimit,
-  });
+  const messages = [];
+  let consumed = 0;
+  let hasMoreBeyondWindow = false;
+
+  while (consumed < effectiveLimit) {
+    const chunkSize = Math.min(100, effectiveLimit - consumed);
+    const page = await queryMessages(db, allowed, {
+      search: q,
+      searchMode: "fulltext",
+      excludeBlocked: true,
+      inboxes: inbox !== undefined ? [inbox] : undefined,
+      personId,
+      after,
+      before,
+      offset: offset + consumed,
+      limit: chunkSize,
+    });
+
+    messages.push(...page.messages);
+    consumed += page.messages.length;
+    hasMoreBeyondWindow = page.hasMore;
+    if (!page.hasMore || page.messages.length === 0) break;
+  }
 
   const personIds = [
     ...new Set(
-      page.messages
+      messages
         .map((message) => message.personId)
         .filter((id): id is string => !!id),
     ),
@@ -107,7 +119,7 @@ export async function searchEmails(
       : [];
   const personById = new Map(personRows.map((person) => [person.id, person]));
 
-  const hits: SearchHit[] = page.messages.map((message) => {
+  const hits: SearchHit[] = messages.map((message) => {
     const person = message.personId
       ? personById.get(message.personId)
       : undefined;
@@ -126,10 +138,10 @@ export async function searchEmails(
     };
   });
 
-  const reachedCeiling = offset + effectiveLimit >= MAX_SCAN;
+  const reachedCeiling = offset + consumed >= MAX_SCAN;
   return {
     hits,
-    hasMore: reachedCeiling ? false : page.hasMore,
-    truncated: reachedCeiling && page.hasMore,
+    hasMore: reachedCeiling ? false : hasMoreBeyondWindow,
+    truncated: reachedCeiling && hasMoreBeyondWindow,
   };
 }
