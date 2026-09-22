@@ -11,7 +11,7 @@ import {
 } from "./adapters";
 import { decodeCursor, encodeCursor } from "./cursor";
 import type { MessageCursorV1 } from "./cursor";
-import type { MessageKind, UnifiedMessage } from "./types";
+import type { AttachmentRow, MessageKind, UnifiedMessage } from "./types";
 
 export type MessageSearchMode = "subject" | "fulltext";
 
@@ -25,7 +25,8 @@ export interface MessageQuery {
   search?: string;
   searchMode?: MessageSearchMode;
   excludeBlocked?: boolean;
-  limit?: number;
+  /** Null requests the full matching result set; numeric limits are not service-capped. */
+  limit?: number | null;
   cursor?: string;
   offset?: number;
   order?: "desc" | "asc";
@@ -322,27 +323,34 @@ function attachmentWhere(messages: UnifiedMessage[]): SQL | undefined {
   return clauses.length === 1 ? clauses[0] : or(...clauses);
 }
 
+const ATTACHMENT_BATCH_SIZE = 90;
+
 async function enrichAttachments(
   db: DrizzleD1Database<any>,
   messages: UnifiedMessage[],
   withCounts: boolean,
   withAttachments: boolean,
 ): Promise<void> {
-  const where = attachmentWhere(messages);
-  if (!where || (!withCounts && !withAttachments)) return;
+  if (messages.length === 0 || (!withCounts && !withAttachments)) return;
 
   const key = (kind: MessageKind, id: string) => `${kind}:${id}`;
 
   if (withAttachments) {
-    const rows = await db.select().from(attachments).where(where);
-    const grouped = new Map<string, (typeof rows)[number][]>();
+    const grouped = new Map<string, AttachmentRow[]>();
 
-    for (const row of rows) {
-      const kind: MessageKind = row.kind === "sent" ? "sent" : "received";
-      const groupKey = key(kind, row.emailId);
-      const current = grouped.get(groupKey) ?? [];
-      current.push(row);
-      grouped.set(groupKey, current);
+    for (let start = 0; start < messages.length; start += ATTACHMENT_BATCH_SIZE) {
+      const batch = messages.slice(start, start + ATTACHMENT_BATCH_SIZE);
+      const where = attachmentWhere(batch);
+      if (!where) continue;
+
+      const rows = await db.select().from(attachments).where(where);
+      for (const row of rows) {
+        const kind: MessageKind = row.kind === "sent" ? "sent" : "received";
+        const groupKey = key(kind, row.emailId);
+        const current = grouped.get(groupKey) ?? [];
+        current.push(row);
+        grouped.set(groupKey, current);
+      }
     }
 
     for (const message of messages) {
@@ -354,20 +362,26 @@ async function enrichAttachments(
     return;
   }
 
-  const rows = await db
-    .select({
-      emailId: attachments.emailId,
-      kind: attachments.kind,
-      count: sql<number>`COUNT(*)`,
-    })
-    .from(attachments)
-    .where(where)
-    .groupBy(attachments.emailId, attachments.kind);
-
   const counts = new Map<string, number>();
-  for (const row of rows) {
-    const kind: MessageKind = row.kind === "sent" ? "sent" : "received";
-    counts.set(key(kind, row.emailId), row.count);
+  for (let start = 0; start < messages.length; start += ATTACHMENT_BATCH_SIZE) {
+    const batch = messages.slice(start, start + ATTACHMENT_BATCH_SIZE);
+    const where = attachmentWhere(batch);
+    if (!where) continue;
+
+    const rows = await db
+      .select({
+        emailId: attachments.emailId,
+        kind: attachments.kind,
+        count: sql<number>`COUNT(*)`,
+      })
+      .from(attachments)
+      .where(where)
+      .groupBy(attachments.emailId, attachments.kind);
+
+    for (const row of rows) {
+      const kind: MessageKind = row.kind === "sent" ? "sent" : "received";
+      counts.set(key(kind, row.emailId), row.count);
+    }
   }
 
   for (const message of messages) {
@@ -406,7 +420,10 @@ export async function queryMessages(
     throw new Error("queryMessages accepts cursor or offset, not both");
   }
 
-  const limit = Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 100);
+  const limit =
+    query.limit === null
+      ? null
+      : Math.max(Math.floor(query.limit ?? 50), 1);
   const offset = Math.max(Math.floor(query.offset ?? 0), 0);
   const orderDirection = query.order === "asc" ? "asc" : "desc";
   const decodedCursor =
@@ -418,16 +435,19 @@ export async function queryMessages(
       ? sql`ORDER BY occurred_at ASC, id ASC, kind ASC`
       : sql`ORDER BY occurred_at DESC, id DESC, kind ASC`;
 
+  const limitClause =
+    limit === null ? sql`LIMIT -1` : sql`LIMIT ${limit + 1}`;
   const rows = await db.all<RawMessageRow>(sql`
     SELECT * FROM (${union})
     ${cursorWhere}
     ${order}
-    LIMIT ${limit + 1}
+    ${limitClause}
     OFFSET ${decodedCursor ? 0 : offset}
   `);
 
-  const hasMore = rows.length > limit;
-  const messages = rows.slice(0, limit).map(toUnified);
+  const hasMore = limit !== null && rows.length > limit;
+  const visibleRows = limit === null ? rows : rows.slice(0, limit);
+  const messages = visibleRows.map(toUnified);
 
   await enrichAttachments(
     db,
@@ -436,7 +456,8 @@ export async function queryMessages(
     query.withAttachments ?? false,
   );
 
-  const last = rows[Math.min(limit, rows.length) - 1];
+  const last =
+    limit === null ? undefined : rows[Math.min(limit, rows.length) - 1];
   const nextCursor =
     hasMore && last
       ? encodeCursor({
