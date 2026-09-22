@@ -122,7 +122,6 @@ describe("conversations router", () => {
       expect(received!.fromAddress).toBe("external@example.com");
     });
 
-
     it("returns conversations longer than 100 messages in one response", async () => {
       const db = getDb();
       await createTestPerson({

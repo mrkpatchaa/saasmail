@@ -495,9 +495,7 @@ describe("queryMessages", () => {
     }));
 
     for (let start = 0; start < messageRows.length; start += 10) {
-      await db
-        .insert(sentEmails)
-        .values(messageRows.slice(start, start + 10));
+      await db.insert(sentEmails).values(messageRows.slice(start, start + 10));
     }
 
     const page = await queryMessages(
@@ -514,9 +512,8 @@ describe("queryMessages", () => {
     expect(page.messages).toHaveLength(125);
     expect(page.hasMore).toBe(false);
     expect(page.nextCursor).toBeNull();
-    expect(page.messages.every((message) => message.attachmentCount === 0)).toBe(
-      true,
-    );
+    expect(
+      page.messages.every((message) => message.attachmentCount === 0),
+    ).toBe(true);
   });
-
 });

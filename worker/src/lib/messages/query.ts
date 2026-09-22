@@ -338,7 +338,11 @@ async function enrichAttachments(
   if (withAttachments) {
     const grouped = new Map<string, AttachmentRow[]>();
 
-    for (let start = 0; start < messages.length; start += ATTACHMENT_BATCH_SIZE) {
+    for (
+      let start = 0;
+      start < messages.length;
+      start += ATTACHMENT_BATCH_SIZE
+    ) {
       const batch = messages.slice(start, start + ATTACHMENT_BATCH_SIZE);
       const where = attachmentWhere(batch);
       if (!where) continue;
@@ -421,9 +425,7 @@ export async function queryMessages(
   }
 
   const limit =
-    query.limit === null
-      ? null
-      : Math.max(Math.floor(query.limit ?? 50), 1);
+    query.limit === null ? null : Math.max(Math.floor(query.limit ?? 50), 1);
   const offset = Math.max(Math.floor(query.offset ?? 0), 0);
   const orderDirection = query.order === "asc" ? "asc" : "desc";
   const decodedCursor =
@@ -435,8 +437,7 @@ export async function queryMessages(
       ? sql`ORDER BY occurred_at ASC, id ASC, kind ASC`
       : sql`ORDER BY occurred_at DESC, id DESC, kind ASC`;
 
-  const limitClause =
-    limit === null ? sql`LIMIT -1` : sql`LIMIT ${limit + 1}`;
+  const limitClause = limit === null ? sql`LIMIT -1` : sql`LIMIT ${limit + 1}`;
   const rows = await db.all<RawMessageRow>(sql`
     SELECT * FROM (${union})
     ${cursorWhere}
