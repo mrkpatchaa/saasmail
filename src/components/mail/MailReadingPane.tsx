@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Archive,
   ArrowLeft,
@@ -62,6 +62,7 @@ interface MailReadingPaneProps {
   selectedRef: string | null;
   selectedMessage: MailMessage | null;
   actionBusyRef: string | null;
+  replyRequestKey: number;
   mailboxes: Mailbox[];
   mailboxId?: string;
   currentMailboxName?: string;
@@ -84,6 +85,7 @@ export default function MailReadingPane({
   selectedRef,
   selectedMessage,
   actionBusyRef,
+  replyRequestKey,
   mailboxes,
   mailboxId,
   currentMailboxName,
@@ -103,11 +105,25 @@ export default function MailReadingPane({
   const [replyOpen, setReplyOpen] = useState(false);
   const [customSnoozeOpen, setCustomSnoozeOpen] = useState(false);
   const [customSnoozeValue, setCustomSnoozeValue] = useState("");
+  const lastReplyRequestKey = useRef(0);
 
   useEffect(() => {
     setReplyOpen(false);
     setCustomSnoozeOpen(false);
   }, [selectedRef]);
+
+  useEffect(() => {
+    if (
+      replyRequestKey === 0 ||
+      replyRequestKey === lastReplyRequestKey.current
+    ) {
+      return;
+    }
+    lastReplyRequestKey.current = replyRequestKey;
+    if (selectedMessage?.direction === "inbound") {
+      setReplyOpen(true);
+    }
+  }, [replyRequestKey, selectedMessage?.direction, selectedMessage?.ref]);
 
   function openCustomSnooze() {
     setCustomSnoozeValue(toLocalDateTimeInput(snoozeInHours(3)));

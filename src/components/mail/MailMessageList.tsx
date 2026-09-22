@@ -41,6 +41,7 @@ function snoozedLabel(timestamp: number): string {
 interface MailMessageRowProps {
   message: MailMessage;
   selected: boolean;
+  active: boolean;
   checked: boolean;
   busy: boolean;
   onSelect: (ref: string) => void;
@@ -51,6 +52,7 @@ interface MailMessageRowProps {
 export function MailMessageRow({
   message,
   selected,
+  active,
   checked,
   busy,
   onSelect,
@@ -74,7 +76,11 @@ export function MailMessageRow({
         }
       }}
       className={`border-b border-border px-3 py-3 text-left transition-colors hover:bg-bg-subtle ${
-        selected ? "bg-bg-muted" : ""
+        selected
+          ? "bg-bg-muted"
+          : active
+            ? "bg-bg-subtle ring-1 ring-inset ring-border"
+            : ""
       }`}
     >
       <div className="flex items-center gap-2">
@@ -164,6 +170,7 @@ interface MailMessageListProps {
   messages: MailMessage[];
   nextCursor: string | null;
   selectedRef: string | null;
+  activeRef: string | null;
   actionBusyRef: string | null;
   selectedRefs: ReadonlySet<string>;
   selectionBar?: ReactNode;
@@ -192,6 +199,7 @@ export default function MailMessageList({
   messages,
   nextCursor,
   selectedRef,
+  activeRef,
   actionBusyRef,
   selectedRefs,
   selectionBar,
@@ -295,6 +303,7 @@ export default function MailMessageList({
                 key={message.ref}
                 message={message}
                 selected={selectedRef === message.ref}
+                active={activeRef === message.ref}
                 checked={selectedRefs.has(message.ref)}
                 busy={actionBusyRef === message.ref}
                 onSelect={onSelectMessage}

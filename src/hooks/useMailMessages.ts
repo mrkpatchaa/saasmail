@@ -211,7 +211,6 @@ export function useMailMessages({
   ): Promise<boolean> {
     if (selectedMessages.length === 0) return false;
 
-    const before = messages;
     const selectedRefs = new Set(
       selectedMessages.map((message) => message.ref),
     );
@@ -232,7 +231,7 @@ export function useMailMessages({
       }
       return true;
     } catch (error) {
-      setMessages(before);
+      await loadMessages(null, false);
       showToast({
         kind: "error",
         message: options?.errorMessage ?? "Couldn’t update selected messages",

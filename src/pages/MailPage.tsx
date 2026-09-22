@@ -7,6 +7,13 @@ import MailMessageList from "@/components/mail/MailMessageList";
 import MailReadingPane from "@/components/mail/MailReadingPane";
 import MailSelectionBar from "@/components/mail/MailSelectionBar";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   fetchMailboxes,
   fetchStats,
   type Mailbox,
@@ -42,6 +49,11 @@ export default function MailPage() {
     searchParams.get("m") ? "reader" : "list",
   );
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [keyboardRef, setKeyboardRef] = useState<string | null>(
+    searchParams.get("m"),
+  );
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [replyRequestKey, setReplyRequestKey] = useState(0);
 
   const inbox = params.inbox;
   const folder = params.folder;
@@ -125,6 +137,7 @@ export default function MailPage() {
   }
 
   function selectMessage(ref: string) {
+    setKeyboardRef(ref);
     setSearchParams(
       (previous) => {
         const next = new URLSearchParams(previous);
@@ -150,6 +163,7 @@ export default function MailPage() {
 
   useEffect(() => {
     setSelectedRefs(new Set());
+    setKeyboardRef(null);
   }, [inbox, mailboxId, systemFolder]);
 
   function openSystemFolder(nextFolder: SystemFolder) {
@@ -206,6 +220,7 @@ export default function MailPage() {
     !selectedMessages.every((message) => message.state.trashedAt !== null);
 
   function toggleSelected(ref: string) {
+    setKeyboardRef(ref);
     setSelectedRefs((current) => {
       const next = new Set(current);
       if (next.has(ref)) next.delete(ref);
@@ -229,6 +244,109 @@ export default function MailPage() {
   async function runBulk(action: () => Promise<boolean>) {
     if (await action()) setSelectedRefs(new Set());
   }
+
+  useEffect(() => {
+    function editableTarget(target: EventTarget | null): boolean {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable ||
+        Boolean(target.closest("[contenteditable='true']"))
+      );
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (editableTarget(event.target)) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.shiftKey && event.key !== "?" && event.key !== "#") return;
+
+      const currentRef = keyboardRef ?? selectedRef;
+      const currentIndex = currentRef
+        ? mail.messages.findIndex((message) => message.ref === currentRef)
+        : -1;
+
+      if (event.key === "j" || event.key === "k") {
+        if (mail.messages.length === 0) return;
+        event.preventDefault();
+        const nextIndex =
+          event.key === "j"
+            ? Math.min(
+                currentIndex < 0 ? 0 : currentIndex + 1,
+                mail.messages.length - 1,
+              )
+            : Math.max(
+                currentIndex < 0 ? mail.messages.length - 1 : currentIndex - 1,
+                0,
+              );
+        setKeyboardRef(mail.messages[nextIndex]?.ref ?? null);
+        setMobilePane("list");
+        return;
+      }
+
+      const targetMessage =
+        mail.messages.find(
+          (message) => message.ref === (keyboardRef ?? selectedRef),
+        ) ?? null;
+
+      if (event.key === "Enter" || event.key === "o") {
+        if (!targetMessage) return;
+        event.preventDefault();
+        selectMessage(targetMessage.ref);
+        return;
+      }
+      if (event.key === "u") {
+        if (!selectedRef) return;
+        event.preventDefault();
+        clearSelection();
+        return;
+      }
+      if (event.key === "x") {
+        if (!targetMessage) return;
+        event.preventDefault();
+        toggleSelected(targetMessage.ref);
+        return;
+      }
+      if (event.key === "e") {
+        if (!targetMessage || targetMessage.direction !== "inbound") return;
+        event.preventDefault();
+        void mail.toggleArchive(targetMessage);
+        return;
+      }
+      if (event.key === "s") {
+        if (!targetMessage) return;
+        event.preventDefault();
+        void mail.toggleStar(targetMessage);
+        return;
+      }
+      if (event.key === "#") {
+        if (!targetMessage) return;
+        event.preventDefault();
+        void mail.toggleTrash(targetMessage);
+        return;
+      }
+      if (event.key === "r") {
+        if (
+          !mail.selectedMessage ||
+          mail.selectedMessage.direction !== "inbound"
+        ) {
+          return;
+        }
+        event.preventDefault();
+        setReplyRequestKey((current) => current + 1);
+        return;
+      }
+      if (event.key === "?") {
+        event.preventDefault();
+        setShortcutsOpen(true);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [keyboardRef, mail.messages, mail.selectedMessage, selectedRef]);
 
   const currentMailbox = mailboxId
     ? (mailboxes.find((mailbox) => mailbox.id === mailboxId) ?? null)
@@ -262,155 +380,200 @@ export default function MailPage() {
   }
 
   return (
-    <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 px-0 pb-3 pt-2 sm:px-4 md:px-6">
-      <div className="flex min-h-[420px] flex-1 overflow-hidden bg-card sm:rounded-[8px] sm:ring-1 sm:ring-border">
-        <MailFolderRail
-          visible={mobilePane === "folders"}
-          inbox={inbox}
-          senderIdentities={stats.senderIdentities}
-          mailboxes={mailboxes}
-          mailboxId={mailboxId}
-          systemFolder={systemFolder}
-          onInboxChange={(nextInbox) => {
-            navigate(mailPath(nextInbox, "inbox"));
-            setMobilePane("list");
-          }}
-          onOpenSystemFolder={openSystemFolder}
-          onOpenMailbox={openMailbox}
-          onMailboxCreated={(mailbox) =>
-            setMailboxes((current) => [...current, mailbox])
-          }
-          onMailboxUpdated={(mailbox) =>
-            setMailboxes((current) =>
-              current.map((item) => (item.id === mailbox.id ? mailbox : item)),
-            )
-          }
-          onMailboxDeleted={(deletedId) => {
-            const removed = new Set([deletedId]);
-            let changed = true;
-            while (changed) {
-              changed = false;
-              for (const mailbox of mailboxes) {
-                if (
-                  mailbox.parentId &&
-                  removed.has(mailbox.parentId) &&
-                  !removed.has(mailbox.id)
-                ) {
-                  removed.add(mailbox.id);
-                  changed = true;
+    <>
+      <div className="mx-auto flex min-h-0 w-full max-w-[1600px] flex-1 px-0 pb-3 pt-2 sm:px-4 md:px-6">
+        <div className="flex min-h-[420px] flex-1 overflow-hidden bg-card sm:rounded-[8px] sm:ring-1 sm:ring-border">
+          <MailFolderRail
+            visible={mobilePane === "folders"}
+            inbox={inbox}
+            senderIdentities={stats.senderIdentities}
+            mailboxes={mailboxes}
+            mailboxId={mailboxId}
+            systemFolder={systemFolder}
+            onInboxChange={(nextInbox) => {
+              navigate(mailPath(nextInbox, "inbox"));
+              setMobilePane("list");
+            }}
+            onOpenSystemFolder={openSystemFolder}
+            onOpenMailbox={openMailbox}
+            onMailboxCreated={(mailbox) =>
+              setMailboxes((current) => [...current, mailbox])
+            }
+            onMailboxUpdated={(mailbox) =>
+              setMailboxes((current) =>
+                current.map((item) =>
+                  item.id === mailbox.id ? mailbox : item,
+                ),
+              )
+            }
+            onMailboxDeleted={(deletedId) => {
+              const removed = new Set([deletedId]);
+              let changed = true;
+              while (changed) {
+                changed = false;
+                for (const mailbox of mailboxes) {
+                  if (
+                    mailbox.parentId &&
+                    removed.has(mailbox.parentId) &&
+                    !removed.has(mailbox.id)
+                  ) {
+                    removed.add(mailbox.id);
+                    changed = true;
+                  }
                 }
               }
-            }
-            setMailboxes((current) =>
-              current.filter((mailbox) => !removed.has(mailbox.id)),
-            );
-            if (mailboxId && removed.has(mailboxId)) {
-              navigate(mailPath(inbox, "inbox"));
-              setMobilePane("list");
-            }
-          }}
-        />
+              setMailboxes((current) =>
+                current.filter((mailbox) => !removed.has(mailbox.id)),
+              );
+              if (mailboxId && removed.has(mailboxId)) {
+                navigate(mailPath(inbox, "inbox"));
+                setMobilePane("list");
+              }
+            }}
+          />
 
-        <MailMessageList
-          visible={mobilePane === "list"}
-          currentFolderLabel={currentFolderLabel}
-          systemFolder={systemFolder}
-          query={query}
-          showCampaignSends={mail.showCampaignSends}
-          onShowCampaignSendsChange={mail.setShowCampaignSends}
-          showNewMessages={mail.showNewMessages}
-          listScrollRef={mail.listScrollRef}
-          loading={mail.loading}
-          loadingMore={mail.loadingMore}
-          messages={mail.messages}
-          nextCursor={mail.nextCursor}
-          selectedRef={selectedRef}
-          actionBusyRef={mail.actionBusyRef}
-          selectedRefs={selectedRefs}
-          selectionBar={
-            <MailSelectionBar
-              count={selectedMessages.length}
-              busy={mail.bulkBusy}
-              canArchiveSpam={canArchiveSpam}
-              markSeen={markSeen}
-              star={star}
-              archive={archive}
-              spam={spam}
-              trash={trash}
-              mailboxes={mailboxes}
-              onSeen={() =>
-                void runBulk(() => mail.bulkSetSeen(selectedMessages, markSeen))
-              }
-              onStar={() =>
-                void runBulk(() => mail.bulkSetStarred(selectedMessages, star))
-              }
-              onArchive={() =>
-                void runBulk(() =>
-                  mail.bulkSetArchived(selectedMessages, archive),
-                )
-              }
-              onSpam={() =>
-                void runBulk(() => mail.bulkSetSpam(selectedMessages, spam))
-              }
-              onTrash={() =>
-                void runBulk(() => mail.bulkSetTrashed(selectedMessages, trash))
-              }
-              onSnooze={(until) =>
-                void runBulk(() => mail.bulkSnooze(selectedMessages, until))
-              }
-              onMove={(targetId) =>
-                void runBulk(() =>
-                  mail.bulkMoveToMailbox(selectedMessages, targetId),
-                )
-              }
-              onClear={() => setSelectedRefs(new Set())}
-            />
-          }
-          onBackToFolders={() => setMobilePane("folders")}
-          onSearch={updateSearch}
-          onReachedTop={() => mail.setShowNewMessages(false)}
-          onRefreshNewMessages={() => {
-            mail.listScrollRef.current?.scrollTo({ top: 0 });
-            void mail.loadMessages(null, false);
-          }}
-          onSelectMessage={selectMessage}
-          onToggleSelected={toggleSelected}
-          onToggleSelectAll={toggleSelectAll}
-          onToggleStar={(message) => void mail.toggleStar(message)}
-          onLoadMore={(cursor) => void mail.loadMessages(cursor, true)}
-        />
+          <MailMessageList
+            visible={mobilePane === "list"}
+            currentFolderLabel={currentFolderLabel}
+            systemFolder={systemFolder}
+            query={query}
+            showCampaignSends={mail.showCampaignSends}
+            onShowCampaignSendsChange={mail.setShowCampaignSends}
+            showNewMessages={mail.showNewMessages}
+            listScrollRef={mail.listScrollRef}
+            loading={mail.loading}
+            loadingMore={mail.loadingMore}
+            messages={mail.messages}
+            nextCursor={mail.nextCursor}
+            selectedRef={selectedRef}
+            activeRef={keyboardRef}
+            actionBusyRef={mail.actionBusyRef}
+            selectedRefs={selectedRefs}
+            selectionBar={
+              <MailSelectionBar
+                count={selectedMessages.length}
+                busy={mail.bulkBusy}
+                canArchiveSpam={canArchiveSpam}
+                markSeen={markSeen}
+                star={star}
+                archive={archive}
+                spam={spam}
+                trash={trash}
+                mailboxes={mailboxes}
+                onSeen={() =>
+                  void runBulk(() =>
+                    mail.bulkSetSeen(selectedMessages, markSeen),
+                  )
+                }
+                onStar={() =>
+                  void runBulk(() =>
+                    mail.bulkSetStarred(selectedMessages, star),
+                  )
+                }
+                onArchive={() =>
+                  void runBulk(() =>
+                    mail.bulkSetArchived(selectedMessages, archive),
+                  )
+                }
+                onSpam={() =>
+                  void runBulk(() => mail.bulkSetSpam(selectedMessages, spam))
+                }
+                onTrash={() =>
+                  void runBulk(() =>
+                    mail.bulkSetTrashed(selectedMessages, trash),
+                  )
+                }
+                onSnooze={(until) =>
+                  void runBulk(() => mail.bulkSnooze(selectedMessages, until))
+                }
+                onMove={(targetId) =>
+                  void runBulk(() =>
+                    mail.bulkMoveToMailbox(selectedMessages, targetId),
+                  )
+                }
+                onClear={() => setSelectedRefs(new Set())}
+              />
+            }
+            onBackToFolders={() => setMobilePane("folders")}
+            onSearch={updateSearch}
+            onReachedTop={() => mail.setShowNewMessages(false)}
+            onRefreshNewMessages={() => {
+              mail.listScrollRef.current?.scrollTo({ top: 0 });
+              void mail.loadMessages(null, false);
+            }}
+            onSelectMessage={selectMessage}
+            onToggleSelected={toggleSelected}
+            onToggleSelectAll={toggleSelectAll}
+            onToggleStar={(message) => void mail.toggleStar(message)}
+            onLoadMore={(cursor) => void mail.loadMessages(cursor, true)}
+          />
 
-        <MailReadingPane
-          visible={mobilePane === "reader"}
-          selectedRef={selectedRef}
-          selectedMessage={mail.selectedMessage}
-          actionBusyRef={mail.actionBusyRef}
-          mailboxes={mailboxes}
-          mailboxId={mailboxId}
-          currentMailboxName={currentMailbox?.name}
-          senderIdentities={stats.senderIdentities}
-          internalDomains={internalDomains}
-          onBack={clearSelection}
-          onToggleStar={(message) => void mail.toggleStar(message)}
-          onToggleArchive={(message) => void mail.toggleArchive(message)}
-          onToggleSpam={(message) => void mail.toggleSpam(message)}
-          onToggleTrash={(message) => void mail.toggleTrash(message)}
-          onSnooze={(message, until) => void mail.snoozeMessage(message, until)}
-          onMoveToMailbox={(message, targetId) =>
-            void mail.moveToMailbox(message, targetId)
-          }
-          onRemoveFromCurrentMailbox={(message) =>
-            void mail.removeFromCurrentMailbox(message)
-          }
-          onOpenCustomer={(message) => {
-            if (!message.personId) return;
-            navigate(
-              `/inbox/${encodeURIComponent(message.inbox)}/${encodeURIComponent(message.personId)}`,
-            );
-          }}
-          onRefresh={() => void mail.loadMessages(null, false)}
-        />
+          <MailReadingPane
+            visible={mobilePane === "reader"}
+            selectedRef={selectedRef}
+            selectedMessage={mail.selectedMessage}
+            actionBusyRef={mail.actionBusyRef}
+            replyRequestKey={replyRequestKey}
+            mailboxes={mailboxes}
+            mailboxId={mailboxId}
+            currentMailboxName={currentMailbox?.name}
+            senderIdentities={stats.senderIdentities}
+            internalDomains={internalDomains}
+            onBack={clearSelection}
+            onToggleStar={(message) => void mail.toggleStar(message)}
+            onToggleArchive={(message) => void mail.toggleArchive(message)}
+            onToggleSpam={(message) => void mail.toggleSpam(message)}
+            onToggleTrash={(message) => void mail.toggleTrash(message)}
+            onSnooze={(message, until) =>
+              void mail.snoozeMessage(message, until)
+            }
+            onMoveToMailbox={(message, targetId) =>
+              void mail.moveToMailbox(message, targetId)
+            }
+            onRemoveFromCurrentMailbox={(message) =>
+              void mail.removeFromCurrentMailbox(message)
+            }
+            onOpenCustomer={(message) => {
+              if (!message.personId) return;
+              navigate(
+                `/inbox/${encodeURIComponent(message.inbox)}/${encodeURIComponent(message.personId)}`,
+              );
+            }}
+            onRefresh={() => void mail.loadMessages(null, false)}
+          />
+        </div>
       </div>
-    </div>
+
+      <Dialog open={shortcutsOpen} onOpenChange={setShortcutsOpen}>
+        <DialogContent data-testid="mail-shortcuts-dialog" className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Mail keyboard shortcuts</DialogTitle>
+            <DialogDescription>
+              Shortcuts work while focus is outside form fields and editors.
+            </DialogDescription>
+          </DialogHeader>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+            {[
+              ["j / k", "Next / previous message"],
+              ["Enter / o", "Open message"],
+              ["u", "Back to list"],
+              ["x", "Toggle selection"],
+              ["e", "Archive"],
+              ["s", "Star"],
+              ["#", "Trash"],
+              ["r", "Reply"],
+              ["?", "Show shortcuts"],
+            ].map(([keys, label]) => (
+              <div key={keys} className="contents">
+                <dt className="font-mono text-xs font-semibold text-text-primary">
+                  {keys}
+                </dt>
+                <dd className="text-text-secondary">{label}</dd>
+              </div>
+            ))}
+          </dl>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
