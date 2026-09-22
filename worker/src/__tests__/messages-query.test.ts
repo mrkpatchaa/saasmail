@@ -1,11 +1,6 @@
 import { describe, expect, it, beforeAll, beforeEach } from "vitest";
 import { eq } from "drizzle-orm";
-import {
-  applyMigrations,
-  cleanDb,
-  createTestPerson,
-  getDb,
-} from "./helpers";
+import { applyMigrations, cleanDb, createTestPerson, getDb } from "./helpers";
 import { attachments } from "../db/attachments.schema";
 import { blocklist } from "../db/blocklist.schema";
 import { emails } from "../db/emails.schema";
@@ -293,11 +288,7 @@ describe("queryMessages", () => {
       });
     }
 
-    const first = await queryMessages(
-      db,
-      { isAdmin: true },
-      { limit: 2 },
-    );
+    const first = await queryMessages(db, { isAdmin: true }, { limit: 2 });
     expect(first.messages.map((message) => message.ref.id)).toEqual(["a", "b"]);
     expect(first.hasMore).toBe(true);
     expect(first.nextCursor).not.toBeNull();
@@ -320,7 +311,10 @@ describe("queryMessages", () => {
       { isAdmin: true },
       { limit: 2, cursor: first.nextCursor! },
     );
-    expect(second.messages.map((message) => message.ref.id)).toEqual(["c", "d"]);
+    expect(second.messages.map((message) => message.ref.id)).toEqual([
+      "c",
+      "d",
+    ]);
     expect(second.hasMore).toBe(false);
     expect(second.nextCursor).toBeNull();
   });
@@ -487,5 +481,4 @@ describe("queryMessages", () => {
       5, 4, 3, 2, 1,
     ]);
   });
-
 });

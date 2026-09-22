@@ -169,8 +169,7 @@ export async function listPersonEmails(
     subject: message.subject,
     bodyHtml: message.bodyHtml,
     bodyText: message.bodyText,
-    isRead:
-      message.isRead === null ? null : message.isRead ? 1 : 0,
+    isRead: message.isRead === null ? null : message.isRead ? 1 : 0,
     cc: message.cc,
     timestamp: message.occurredAt,
     status: message.delivery?.status ?? null,
@@ -179,9 +178,15 @@ export async function listPersonEmails(
     attachments: message.attachments ?? [],
   }));
 
-  const inboxAddrs = [...new Set(result.map((email) =>
-    email.type === "received" ? email.recipient : email.fromAddress,
-  ).filter((email): email is string => !!email))];
+  const inboxAddrs = [
+    ...new Set(
+      result
+        .map((email) =>
+          email.type === "received" ? email.recipient : email.fromAddress,
+        )
+        .filter((email): email is string => !!email),
+    ),
+  ];
 
   const identities =
     inboxAddrs.length > 0

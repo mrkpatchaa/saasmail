@@ -106,8 +106,7 @@ conversationsRouter.openapi(listConversationEmailsRoute, async (c) => {
     subject: message.subject,
     bodyHtml: message.bodyHtml,
     bodyText: message.bodyText,
-    isRead:
-      message.isRead === null ? null : message.isRead ? 1 : 0,
+    isRead: message.isRead === null ? null : message.isRead ? 1 : 0,
     cc: message.cc,
     timestamp: message.occurredAt,
     attachmentCount: message.attachmentCount ?? 0,

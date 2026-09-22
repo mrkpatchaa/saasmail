@@ -6,10 +6,7 @@ import {
   type ReceivedSelect,
   type SentSelect,
 } from "../lib/messages/adapters";
-import {
-  parseMessageRef,
-  serializeMessageRef,
-} from "../lib/messages/types";
+import { parseMessageRef, serializeMessageRef } from "../lib/messages/types";
 
 describe("message adapters", () => {
   it("adapts a received row into the unified contract", () => {

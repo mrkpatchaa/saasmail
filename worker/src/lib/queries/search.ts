@@ -133,8 +133,7 @@ export async function searchEmails(
       subject: message.subject,
       snippet: excerpt(message.bodyText),
       timestamp: message.occurredAt,
-      isRead:
-        message.isRead === null ? null : message.isRead ? 1 : 0,
+      isRead: message.isRead === null ? null : message.isRead ? 1 : 0,
     };
   });
 

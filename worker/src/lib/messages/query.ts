@@ -2,10 +2,7 @@ import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { attachments } from "../../db/attachments.schema";
 import { escapeFts, escapeLike } from "../helpers";
-import {
-  inboxScopeSql,
-  type AllowedInboxes,
-} from "../inbox-permissions";
+import { inboxScopeSql, type AllowedInboxes } from "../inbox-permissions";
 import {
   adaptReceived,
   adaptSent,
@@ -66,9 +63,9 @@ type RawMessageRow = {
 
 function normalizeInboxes(inboxes: string[] | undefined): string[] | undefined {
   if (inboxes === undefined) return undefined;
-  return [...new Set(inboxes.map((value) => value.trim().toLowerCase()))].filter(
-    Boolean,
-  );
+  return [
+    ...new Set(inboxes.map((value) => value.trim().toLowerCase())),
+  ].filter(Boolean);
 }
 
 function explicitInboxScope(column: SQL, inboxes: string[] | undefined): SQL {
@@ -96,8 +93,7 @@ function dateScope(
   before: number | undefined,
 ): SQL {
   const lower = after === undefined ? sql`` : sql`AND ${column} >= ${after}`;
-  const upper =
-    before === undefined ? sql`` : sql`AND ${column} <= ${before}`;
+  const upper = before === undefined ? sql`` : sql`AND ${column} <= ${before}`;
   return sql`${lower} ${upper}`;
 }
 
@@ -133,10 +129,7 @@ function receivedSearch(
   };
 }
 
-function sentSearch(
-  search: string | undefined,
-  mode: MessageSearchMode,
-): SQL {
+function sentSearch(search: string | undefined, mode: MessageSearchMode): SQL {
   const value = search?.trim();
   if (!value) return sql``;
 
@@ -321,10 +314,7 @@ function attachmentWhere(messages: UnifiedMessage[]): SQL | undefined {
   }
   if (sentIds.length > 0) {
     clauses.push(
-      and(
-        eq(attachments.kind, "sent"),
-        inArray(attachments.emailId, sentIds),
-      )!,
+      and(eq(attachments.kind, "sent"), inArray(attachments.emailId, sentIds))!,
     );
   }
 
@@ -356,9 +346,8 @@ async function enrichAttachments(
     }
 
     for (const message of messages) {
-      const rowsForMessage = grouped.get(
-        key(message.ref.kind, message.ref.id),
-      ) ?? [];
+      const rowsForMessage =
+        grouped.get(key(message.ref.kind, message.ref.id)) ?? [];
       message.attachments = rowsForMessage;
       if (withCounts) message.attachmentCount = rowsForMessage.length;
     }
