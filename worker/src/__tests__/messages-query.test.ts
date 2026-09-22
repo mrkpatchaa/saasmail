@@ -9,7 +9,7 @@ import { campaignRecipients } from "../db/campaign-recipients.schema";
 import { outboxEmails } from "../db/outbox-emails.schema";
 import { sequenceEmails } from "../db/sequence-emails.schema";
 import { InvalidCursorError } from "../lib/messages/cursor";
-import { queryMessages } from "../lib/messages/query";
+import { buildMessageQuerySql, queryMessages } from "../lib/messages/query";
 
 describe("queryMessages", () => {
   beforeAll(async () => {
@@ -80,32 +80,23 @@ describe("queryMessages", () => {
     expect(page.messages[1].to.name).toBe("Alice");
   });
 
-  it("uses inbox/timestamp indexes for inbox-scoped source scans", async () => {
+  it("uses inbox/timestamp indexes for the real inbox-scoped query", async () => {
     const db = getDb();
-
-    const receivedPlan = await db.all<{ detail: string }>(sql`
-      EXPLAIN QUERY PLAN
-      SELECT e.id
-      FROM emails e
-      WHERE e.recipient IN (${"support@saasmail.test"})
-      ORDER BY e.received_at DESC
-      LIMIT 10
-    `);
-    expect(receivedPlan.map((row) => row.detail).join("\n")).toContain(
-      "emails_recipient_received_idx",
+    const built = buildMessageQuerySql(
+      { isAdmin: false, inboxes: ["support@saasmail.test"] },
+      { inboxes: ["support@saasmail.test"], limit: 10 },
     );
+    expect(built).not.toBeNull();
 
-    const sentPlan = await db.all<{ detail: string }>(sql`
-      EXPLAIN QUERY PLAN
-      SELECT se.id
-      FROM sent_emails se
-      WHERE se.from_address IN (${"support@saasmail.test"})
-      ORDER BY se.sent_at DESC
-      LIMIT 10
-    `);
-    expect(sentPlan.map((row) => row.detail).join("\n")).toContain(
-      "sent_emails_from_sent_idx",
+    const plan = await db.all<{ detail: string }>(
+      sql`EXPLAIN QUERY PLAN ${built!.statement}`,
     );
+    const details = plan.map((row) => row.detail).join("\n");
+
+    expect(details).toContain("emails_recipient_received_idx");
+    expect(details).toContain("sent_emails_from_sent_idx");
+    expect(details).not.toMatch(/\bSCAN emails\b/i);
+    expect(details).not.toMatch(/\bSCAN sent_emails\b/i);
   });
 
   it("silently excludes explicitly unauthorized inboxes", async () => {
