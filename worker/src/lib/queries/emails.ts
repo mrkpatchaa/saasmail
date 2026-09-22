@@ -126,13 +126,16 @@ export async function listPersonEmails(
   allowed: AllowedInboxes,
 ): Promise<ListPersonEmailsResult> {
   const { q, recipient, page, limit } = opts;
+  const requested = Math.max(Math.floor(limit), 0);
+  if (requested === 0) return { emails: [], inboxes: [] };
+
   const pageResult = await queryMessages(db, allowed, {
     personId,
     inboxes: recipient !== undefined ? [recipient] : undefined,
     search: q,
     searchMode: "subject",
-    offset: Math.max((page - 1) * limit, 0),
-    limit,
+    offset: Math.max((page - 1) * requested, 0),
+    limit: requested,
     withAttachmentCounts: true,
     withAttachments: true,
   });
