@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   applyMigrations,
+  authFetch,
   cleanDb,
   createTestEmail,
   createTestPerson,
@@ -15,6 +16,9 @@ import { messageUserState } from "../db/message-user-state.schema";
 import { mailboxMessageState } from "../db/mailbox-message-state.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { messageMailboxes } from "../db/message-mailboxes.schema";
+import { blocklist } from "../db/blocklist.schema";
+import { deleteEmailWithAttachments } from "../lib/delete-email";
+import { purgeBlockedMail } from "../lib/purge-blocked";
 import {
   createMailbox,
   deleteMailbox,
@@ -502,5 +506,200 @@ describe("message state services", () => {
         (row) => row.messageKind === "sent" && row.messageId === "state-sent",
       ),
     ).toBe(true);
+  });
+  async function seedAllMessageState(
+    userId: string,
+    refs: Array<{ kind: "received" | "sent"; id: string }>,
+    inbox = "support@saasmail.test",
+  ) {
+    const db = getDb();
+    await setUserState(db, userId, refs, { starred: true });
+    await setMailboxState(db, { isAdmin: true }, userId, refs, {
+      trashed: true,
+    });
+    const folder = await createMailbox(db, { isAdmin: true }, userId, {
+      inbox,
+      name: `State ${refs.map((ref) => ref.id).join("-")}`,
+    });
+    await setMailboxMembership(db, { isAdmin: true }, userId, refs, {
+      add: [folder.id],
+    });
+  }
+
+  async function expectNoMessageState(
+    refs: Array<{ kind: "received" | "sent"; id: string }>,
+  ) {
+    const db = getDb();
+    for (const ref of refs) {
+      expect(
+        await db
+          .select()
+          .from(messageUserState)
+          .where(
+            and(
+              eq(messageUserState.messageKind, ref.kind),
+              eq(messageUserState.messageId, ref.id),
+            ),
+          ),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(mailboxMessageState)
+          .where(
+            and(
+              eq(mailboxMessageState.messageKind, ref.kind),
+              eq(mailboxMessageState.messageId, ref.id),
+            ),
+          ),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(messageMailboxes)
+          .where(
+            and(
+              eq(messageMailboxes.messageKind, ref.kind),
+              eq(messageMailboxes.messageId, ref.id),
+            ),
+          ),
+      ).toEqual([]);
+    }
+  }
+
+  it("deleteEmailWithAttachments removes received-message state", async () => {
+    await createTestUser({
+      id: "delete-received-admin",
+      role: "admin",
+      email: "delete-received-admin@example.com",
+    });
+    await createTestPerson({
+      id: "delete-received-person",
+      email: "delete-received@example.com",
+    });
+    await createTestEmail({
+      id: "delete-received",
+      personId: "delete-received-person",
+      recipient: "support@saasmail.test",
+      messageId: "delete-received@example.com",
+    });
+    const refs = [{ kind: "received" as const, id: "delete-received" }];
+    await seedAllMessageState("delete-received-admin", refs);
+
+    const result = await deleteEmailWithAttachments(
+      getDb(),
+      env.R2,
+      "delete-received",
+      { isAdmin: true },
+    );
+    expect(result?.success).toBe(true);
+    await expectNoMessageState(refs);
+  });
+
+  it("deleteEmailWithAttachments removes sent-message state", async () => {
+    await createTestUser({
+      id: "delete-sent-admin",
+      role: "admin",
+      email: "delete-sent-admin@example.com",
+    });
+    await createTestPerson({
+      id: "delete-sent-person",
+      email: "delete-sent@example.com",
+    });
+    await createTestSentEmail({
+      id: "delete-sent",
+      personId: "delete-sent-person",
+      fromAddress: "support@saasmail.test",
+      toAddress: "delete-sent@example.com",
+    });
+    const refs = [{ kind: "sent" as const, id: "delete-sent" }];
+    await seedAllMessageState("delete-sent-admin", refs);
+
+    const result = await deleteEmailWithAttachments(
+      getDb(),
+      env.R2,
+      "delete-sent",
+      { isAdmin: true },
+    );
+    expect(result?.success).toBe(true);
+    await expectNoMessageState(refs);
+  });
+
+  it("purgeBlockedMail removes state for received and direct-deleted sent rows", async () => {
+    await createTestUser({
+      id: "purge-state-admin",
+      role: "admin",
+      email: "purge-state-admin@example.com",
+    });
+    await createTestPerson({
+      id: "purge-state-person",
+      email: "blocked-state@example.com",
+    });
+    await createTestEmail({
+      id: "purge-state-received",
+      personId: "purge-state-person",
+      recipient: "support@saasmail.test",
+      messageId: "purge-state-received@example.com",
+    });
+    await createTestSentEmail({
+      id: "purge-state-sent",
+      personId: "purge-state-person",
+      fromAddress: "support@saasmail.test",
+      toAddress: "blocked-state@example.com",
+    });
+
+    const refs = [
+      { kind: "received" as const, id: "purge-state-received" },
+      { kind: "sent" as const, id: "purge-state-sent" },
+    ];
+    await seedAllMessageState("purge-state-admin", refs);
+    await getDb().insert(blocklist).values({
+      id: "purge-state-rule",
+      type: "email",
+      value: "blocked-state@example.com",
+      note: null,
+      createdBy: null,
+      createdAt: 1,
+    });
+
+    await purgeBlockedMail(getDb(), env.R2);
+    await expectNoMessageState(refs);
+  });
+
+  it("person hard-delete removes state for all received and sent rows", async () => {
+    const { apiKey } = await createTestUser({
+      id: "person-delete-state-admin",
+      role: "admin",
+      email: "person-delete-state-admin@example.com",
+    });
+    await createTestPerson({
+      id: "person-delete-state-person",
+      email: "person-delete-state@example.com",
+    });
+    await createTestEmail({
+      id: "person-delete-state-received",
+      personId: "person-delete-state-person",
+      recipient: "support@saasmail.test",
+      messageId: "person-delete-state-received@example.com",
+    });
+    await createTestSentEmail({
+      id: "person-delete-state-sent",
+      personId: "person-delete-state-person",
+      fromAddress: "support@saasmail.test",
+      toAddress: "person-delete-state@example.com",
+    });
+
+    const refs = [
+      { kind: "received" as const, id: "person-delete-state-received" },
+      { kind: "sent" as const, id: "person-delete-state-sent" },
+    ];
+    await seedAllMessageState("person-delete-state-admin", refs);
+
+    const res = await authFetch("/api/people/person-delete-state-person", {
+      apiKey,
+      method: "DELETE",
+    });
+    expect(res.status).toBe(200);
+    await expectNoMessageState(refs);
   });
 });
