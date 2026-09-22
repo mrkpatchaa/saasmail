@@ -481,4 +481,42 @@ describe("queryMessages", () => {
       5, 4, 3, 2, 1,
     ]);
   });
+  it("accepts result limits above 100 and batches attachment enrichment safely", async () => {
+    const db = getDb();
+    const messageRows = Array.from({ length: 125 }, (_, index) => ({
+      id: `wide-${String(index).padStart(3, "0")}`,
+      personId: null,
+      fromAddress: "wide@saasmail.test",
+      toAddress: "someone@example.com",
+      subject: "Wide result",
+      status: "sent",
+      sentAt: index + 1,
+      createdAt: index + 1,
+    }));
+
+    for (let start = 0; start < messageRows.length; start += 10) {
+      await db
+        .insert(sentEmails)
+        .values(messageRows.slice(start, start + 10));
+    }
+
+    const page = await queryMessages(
+      db,
+      { isAdmin: true },
+      {
+        inboxes: ["wide@saasmail.test"],
+        limit: 125,
+        withAttachmentCounts: true,
+        withAttachments: true,
+      },
+    );
+
+    expect(page.messages).toHaveLength(125);
+    expect(page.hasMore).toBe(false);
+    expect(page.nextCursor).toBeNull();
+    expect(page.messages.every((message) => message.attachmentCount === 0)).toBe(
+      true,
+    );
+  });
+
 });
