@@ -12,6 +12,8 @@ import {
   type ReceivedSelect,
   type SentSelect,
 } from "./adapters";
+import { decodeCursor, encodeCursor } from "./cursor";
+import type { MessageCursorV1 } from "./cursor";
 import type { MessageKind, UnifiedMessage } from "./types";
 
 export type MessageSearchMode = "subject" | "fulltext";
@@ -27,6 +29,7 @@ export interface MessageQuery {
   searchMode?: MessageSearchMode;
   excludeBlocked?: boolean;
   limit?: number;
+  cursor?: string;
   offset?: number;
   order?: "desc" | "asc";
   withAttachmentCounts?: boolean;
@@ -230,6 +233,35 @@ function sentArm(
   `;
 }
 
+function cursorScope(
+  cursor: MessageCursorV1 | null,
+  order: "desc" | "asc",
+): SQL {
+  if (!cursor) return sql``;
+
+  if (order === "asc") {
+    return sql`WHERE (
+      occurred_at > ${cursor.occurredAt}
+      OR (occurred_at = ${cursor.occurredAt} AND id > ${cursor.id})
+      OR (
+        occurred_at = ${cursor.occurredAt}
+        AND id = ${cursor.id}
+        AND kind > ${cursor.kind}
+      )
+    )`;
+  }
+
+  return sql`WHERE (
+    occurred_at < ${cursor.occurredAt}
+    OR (occurred_at = ${cursor.occurredAt} AND id < ${cursor.id})
+    OR (
+      occurred_at = ${cursor.occurredAt}
+      AND id = ${cursor.id}
+      AND kind > ${cursor.kind}
+    )
+  )`;
+}
+
 function toUnified(row: RawMessageRow): UnifiedMessage {
   if (row.kind === "received") {
     const selected: ReceivedSelect = {
@@ -381,19 +413,28 @@ export async function queryMessages(
     return { messages: [], nextCursor: null, hasMore: false };
   }
 
+  if (query.cursor !== undefined && query.offset !== undefined) {
+    throw new Error("queryMessages accepts cursor or offset, not both");
+  }
+
   const limit = Math.min(Math.max(Math.floor(query.limit ?? 50), 1), 100);
   const offset = Math.max(Math.floor(query.offset ?? 0), 0);
+  const orderDirection = query.order === "asc" ? "asc" : "desc";
+  const decodedCursor =
+    query.cursor === undefined ? null : decodeCursor(query.cursor);
   const union = sql.join(arms, sql` UNION ALL `);
+  const cursorWhere = cursorScope(decodedCursor, orderDirection);
   const order =
-    query.order === "asc"
+    orderDirection === "asc"
       ? sql`ORDER BY occurred_at ASC, id ASC, kind ASC`
       : sql`ORDER BY occurred_at DESC, id DESC, kind ASC`;
 
   const rows = await db.all<RawMessageRow>(sql`
     SELECT * FROM (${union})
+    ${cursorWhere}
     ${order}
     LIMIT ${limit + 1}
-    OFFSET ${offset}
+    OFFSET ${decodedCursor ? 0 : offset}
   `);
 
   const hasMore = rows.length > limit;
@@ -406,9 +447,20 @@ export async function queryMessages(
     query.withAttachments ?? false,
   );
 
+  const last = rows[Math.min(limit, rows.length) - 1];
+  const nextCursor =
+    hasMore && last
+      ? encodeCursor({
+          v: 1,
+          occurredAt: last.occurred_at,
+          id: last.id,
+          kind: last.kind,
+        })
+      : null;
+
   return {
     messages,
-    nextCursor: null,
+    nextCursor,
     hasMore,
   };
 }

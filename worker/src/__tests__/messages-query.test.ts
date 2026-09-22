@@ -10,6 +10,7 @@ import { attachments } from "../db/attachments.schema";
 import { blocklist } from "../db/blocklist.schema";
 import { emails } from "../db/emails.schema";
 import { sentEmails } from "../db/sent-emails.schema";
+import { InvalidCursorError } from "../lib/messages/cursor";
 import { queryMessages } from "../lib/messages/query";
 
 describe("queryMessages", () => {
@@ -264,5 +265,121 @@ describe("queryMessages", () => {
       .from(sentEmails)
       .where(eq(sentEmails.id, "same-id"));
     expect(sent.id).toBe("same-id");
+  });
+  it("paginates with an opaque cursor without duplicates or gaps", async () => {
+    const db = getDb();
+    await createTestPerson({ id: "cursor-person" });
+
+    for (const [id, timestamp] of [
+      ["a", 400],
+      ["b", 300],
+      ["c", 200],
+      ["d", 100],
+    ] as const) {
+      await db.insert(emails).values({
+        id,
+        personId: "cursor-person",
+        recipient: "inbox@saasmail.test",
+        subject: id,
+        bodyText: id,
+        rawHeaders: "{}",
+        messageId: `${id}@example.com`,
+        isRead: 0,
+        receivedAt: timestamp,
+        createdAt: timestamp,
+      });
+    }
+
+    const first = await queryMessages(
+      db,
+      { isAdmin: true },
+      { limit: 2 },
+    );
+    expect(first.messages.map((message) => message.ref.id)).toEqual(["a", "b"]);
+    expect(first.hasMore).toBe(true);
+    expect(first.nextCursor).not.toBeNull();
+
+    await db.insert(emails).values({
+      id: "newer",
+      personId: "cursor-person",
+      recipient: "inbox@saasmail.test",
+      subject: "newer",
+      bodyText: "newer",
+      rawHeaders: "{}",
+      messageId: "newer@example.com",
+      isRead: 0,
+      receivedAt: 500,
+      createdAt: 500,
+    });
+
+    const second = await queryMessages(
+      db,
+      { isAdmin: true },
+      { limit: 2, cursor: first.nextCursor! },
+    );
+    expect(second.messages.map((message) => message.ref.id)).toEqual(["c", "d"]);
+    expect(second.hasMore).toBe(false);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("supports ascending cursor pagination", async () => {
+    const db = getDb();
+    await createTestPerson({ id: "asc-person" });
+    for (const [id, timestamp] of [
+      ["a", 100],
+      ["b", 200],
+      ["c", 300],
+    ] as const) {
+      await db.insert(emails).values({
+        id,
+        personId: "asc-person",
+        recipient: "inbox@saasmail.test",
+        subject: id,
+        bodyText: id,
+        rawHeaders: "{}",
+        messageId: `asc-${id}@example.com`,
+        isRead: 0,
+        receivedAt: timestamp,
+        createdAt: timestamp,
+      });
+    }
+
+    const first = await queryMessages(
+      db,
+      { isAdmin: true },
+      { limit: 2, order: "asc" },
+    );
+    const second = await queryMessages(
+      db,
+      { isAdmin: true },
+      { limit: 2, order: "asc", cursor: first.nextCursor! },
+    );
+
+    expect(first.messages.map((message) => message.ref.id)).toEqual(["a", "b"]);
+    expect(second.messages.map((message) => message.ref.id)).toEqual(["c"]);
+  });
+
+  it("rejects malformed and version-mismatched cursors", async () => {
+    await expect(
+      queryMessages(getDb(), { isAdmin: true }, { cursor: "not-a-cursor" }),
+    ).rejects.toBeInstanceOf(InvalidCursorError);
+
+    const wrongVersion = btoa(
+      JSON.stringify({ v: 2, occurredAt: 1, id: "x", kind: "received" }),
+    ).replace(/=/g, "");
+
+    await expect(
+      queryMessages(getDb(), { isAdmin: true }, { cursor: wrongVersion }),
+    ).rejects.toBeInstanceOf(InvalidCursorError);
+  });
+
+  it("rejects supplying cursor and offset together", async () => {
+    await expect(
+      queryMessages(
+        getDb(),
+        { isAdmin: true },
+        { cursor: "anything", offset: 1 },
+      ),
+    ).rejects.toThrow("cursor or offset");
   });
 });
