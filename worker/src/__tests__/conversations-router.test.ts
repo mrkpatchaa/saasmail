@@ -143,8 +143,8 @@ describe("conversations router", () => {
         createdAt: index + 1,
       }));
 
-      for (let start = 0; start < rows.length; start += 10) {
-        await db.insert(emails).values(rows.slice(start, start + 10));
+      for (let start = 0; start < rows.length; start += 5) {
+        await db.insert(emails).values(rows.slice(start, start + 5));
       }
 
       const res = await authFetch("/api/conversations/long-thread/emails", {
