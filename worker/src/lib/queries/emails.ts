@@ -7,7 +7,6 @@ import { attachments } from "../../db/attachments.schema";
 import { people } from "../../db/people.schema";
 import { parseCc } from "../messages/adapters";
 import { queryMessages } from "../messages/query";
-import type { UnifiedMessage } from "../messages/types";
 import type { AllowedInboxes } from "../inbox-permissions";
 import { isInboxAllowed } from "../inbox-permissions";
 
@@ -119,13 +118,7 @@ export function surfaceReplyTo(
   return replyTo;
 }
 
-/**
- * Compatibility wrapper for the existing person-timeline API.
- *
- * The public route remains page/limit based (and historically allows arbitrary
- * page depth), so large requested windows are fulfilled in <=100-row service
- * pages while preserving the old response shape.
- */
+/** Compatibility wrapper for the existing person-timeline API. */
 export async function listPersonEmails(
   db: DrizzleD1Database<any>,
   personId: string,
@@ -133,30 +126,18 @@ export async function listPersonEmails(
   allowed: AllowedInboxes,
 ): Promise<ListPersonEmailsResult> {
   const { q, recipient, page, limit } = opts;
-  const offset = Math.max((page - 1) * limit, 0);
-  const requested = Math.max(Math.floor(limit), 0);
+  const pageResult = await queryMessages(db, allowed, {
+    personId,
+    inboxes: recipient !== undefined ? [recipient] : undefined,
+    search: q,
+    searchMode: "subject",
+    offset: Math.max((page - 1) * limit, 0),
+    limit,
+    withAttachmentCounts: true,
+    withAttachments: true,
+  });
 
-  const unified: UnifiedMessage[] = [];
-  let consumed = 0;
-  while (consumed < requested) {
-    const chunkSize = Math.min(100, requested - consumed);
-    const result = await queryMessages(db, allowed, {
-      personId,
-      inboxes: recipient !== undefined ? [recipient] : undefined,
-      search: q,
-      searchMode: "subject",
-      offset: offset + consumed,
-      limit: chunkSize,
-      withAttachmentCounts: true,
-      withAttachments: true,
-    });
-
-    unified.push(...result.messages);
-    consumed += result.messages.length;
-    if (!result.hasMore || result.messages.length === 0) break;
-  }
-
-  const result: PersonEmailRow[] = unified.map((message) => ({
+  const result: PersonEmailRow[] = pageResult.messages.map((message) => ({
     id: message.ref.id,
     type: message.ref.kind,
     personId: message.personId,
