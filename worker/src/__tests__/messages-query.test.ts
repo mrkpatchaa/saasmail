@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeAll, beforeEach } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { applyMigrations, cleanDb, createTestPerson, getDb } from "./helpers";
 import { attachments } from "../db/attachments.schema";
 import { blocklist } from "../db/blocklist.schema";
@@ -31,7 +31,7 @@ describe("queryMessages", () => {
     await db.insert(emails).values({
       id: "recv-1",
       personId: "person-1",
-      recipient: "Support@saasmail.test",
+      recipient: "support@saasmail.test",
       subject: "Invoice received",
       bodyHtml: "<p>secret inbound body</p>",
       bodyText: "secret inbound body",
@@ -60,7 +60,7 @@ describe("queryMessages", () => {
     });
   }
 
-  it("merges both directions and scopes stored inbox casing correctly", async () => {
+  it("merges both directions and scopes canonical inbox addresses correctly", async () => {
     await seedPair();
 
     const page = await queryMessages(
@@ -78,6 +78,34 @@ describe("queryMessages", () => {
       name: "Alice",
     });
     expect(page.messages[1].to.name).toBe("Alice");
+  });
+
+  it("uses inbox/timestamp indexes for inbox-scoped source scans", async () => {
+    const db = getDb();
+
+    const receivedPlan = await db.all<{ detail: string }>(sql`
+      EXPLAIN QUERY PLAN
+      SELECT e.id
+      FROM emails e
+      WHERE e.recipient IN (${"support@saasmail.test"})
+      ORDER BY e.received_at DESC
+      LIMIT 10
+    `);
+    expect(receivedPlan.map((row) => row.detail).join("\n")).toContain(
+      "emails_recipient_received_idx",
+    );
+
+    const sentPlan = await db.all<{ detail: string }>(sql`
+      EXPLAIN QUERY PLAN
+      SELECT se.id
+      FROM sent_emails se
+      WHERE se.from_address IN (${"support@saasmail.test"})
+      ORDER BY se.sent_at DESC
+      LIMIT 10
+    `);
+    expect(sentPlan.map((row) => row.detail).join("\n")).toContain(
+      "sent_emails_from_sent_idx",
+    );
   });
 
   it("silently excludes explicitly unauthorized inboxes", async () => {

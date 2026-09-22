@@ -149,7 +149,7 @@ function receivedArm(
   requestedInboxes: string[] | undefined,
 ): SQL {
   const search = receivedSearch(query.search, query.searchMode ?? "subject");
-  const allowedScope = inboxScopeSql(allowed, sql`lower(e.recipient)`);
+  const allowedScope = inboxScopeSql(allowed, sql`e.recipient`);
 
   return sql`
     SELECT
@@ -177,7 +177,7 @@ function receivedArm(
     LEFT JOIN people p ON p.id = e.person_id
     WHERE 1 = 1
       ${allowedScope}
-      ${explicitInboxScope(sql`lower(e.recipient)`, requestedInboxes)}
+      ${explicitInboxScope(sql`e.recipient`, requestedInboxes)}
       ${personScope(sql`e.person_id`, query.personId)}
       ${conversationScope(sql`e.conversation_id`, query.conversationId)}
       ${dateScope(sql`e.received_at`, query.after, query.before)}
@@ -191,7 +191,7 @@ function sentArm(
   query: MessageQuery,
   requestedInboxes: string[] | undefined,
 ): SQL {
-  const allowedScope = inboxScopeSql(allowed, sql`lower(se.from_address)`);
+  const allowedScope = inboxScopeSql(allowed, sql`se.from_address`);
 
   return sql`
     SELECT
@@ -218,7 +218,7 @@ function sentArm(
     LEFT JOIN people p ON p.id = se.person_id
     WHERE 1 = 1
       ${allowedScope}
-      ${explicitInboxScope(sql`lower(se.from_address)`, requestedInboxes)}
+      ${explicitInboxScope(sql`se.from_address`, requestedInboxes)}
       ${personScope(sql`se.person_id`, query.personId)}
       ${conversationScope(sql`se.conversation_id`, query.conversationId)}
       ${dateScope(sql`se.sent_at`, query.after, query.before)}
