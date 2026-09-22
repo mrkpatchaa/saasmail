@@ -122,6 +122,45 @@ describe("conversations router", () => {
       expect(received!.fromAddress).toBe("external@example.com");
     });
 
+
+    it("returns conversations longer than 100 messages in one response", async () => {
+      const db = getDb();
+      await createTestPerson({
+        id: "long-thread-person",
+        email: "long-thread@example.com",
+      });
+
+      const rows = Array.from({ length: 125 }, (_, index) => ({
+        id: `long-thread-${String(index).padStart(3, "0")}`,
+        personId: "long-thread-person",
+        recipient: "me@saasmail.test",
+        subject: "Long thread",
+        bodyText: `Message ${index}`,
+        rawHeaders: "{}",
+        messageId: `long-thread-${index}@example.com`,
+        isRead: 0,
+        conversationId: "long-thread",
+        receivedAt: index + 1,
+        createdAt: index + 1,
+      }));
+
+      for (let start = 0; start < rows.length; start += 10) {
+        await db.insert(emails).values(rows.slice(start, start + 10));
+      }
+
+      const res = await authFetch("/api/conversations/long-thread/emails", {
+        apiKey,
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        emails: Array<{ id: string; timestamp: number }>;
+      };
+      expect(body.emails).toHaveLength(125);
+      expect(body.emails[0].timestamp).toBe(1);
+      expect(body.emails[124].timestamp).toBe(125);
+    });
+
     it("authorizes mixed-case stored inbox addresses through normalized scoping", async () => {
       const db = getDb();
       const { userId, apiKey: memberKey } = await createTestUser({
