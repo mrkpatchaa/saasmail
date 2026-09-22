@@ -4,9 +4,11 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 
 const api = vi.hoisted(() => ({
   createMailbox: vi.fn(),
+  deleteMailbox: vi.fn(),
   fetchMailboxes: vi.fn(),
   fetchMessages: vi.fn(),
   fetchStats: vi.fn(),
+  renameMailbox: vi.fn(),
   setMailboxMembership: vi.fn(),
   setMessageState: vi.fn(),
   snoozeMessages: vi.fn(),
@@ -102,6 +104,18 @@ describe("MailPage", () => {
       createdAt: 1,
       updatedAt: 1,
     });
+    api.deleteMailbox.mockResolvedValue({ success: true });
+    api.renameMailbox.mockImplementation(async (id: string, name: string) => ({
+      id,
+      inbox: "support@e2e.test",
+      name,
+      role: null,
+      parentId: null,
+      sortOrder: 0,
+      createdBy: null,
+      createdAt: 1,
+      updatedAt: 2,
+    }));
     api.setMailboxMembership.mockResolvedValue({ success: true });
     api.setMessageState.mockResolvedValue({ success: true });
     api.snoozeMessages.mockResolvedValue({ conversations: 1 });

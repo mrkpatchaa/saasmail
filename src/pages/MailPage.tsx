@@ -280,6 +280,35 @@ export default function MailPage() {
           onMailboxCreated={(mailbox) =>
             setMailboxes((current) => [...current, mailbox])
           }
+          onMailboxUpdated={(mailbox) =>
+            setMailboxes((current) =>
+              current.map((item) => (item.id === mailbox.id ? mailbox : item)),
+            )
+          }
+          onMailboxDeleted={(deletedId) => {
+            const removed = new Set([deletedId]);
+            let changed = true;
+            while (changed) {
+              changed = false;
+              for (const mailbox of mailboxes) {
+                if (
+                  mailbox.parentId &&
+                  removed.has(mailbox.parentId) &&
+                  !removed.has(mailbox.id)
+                ) {
+                  removed.add(mailbox.id);
+                  changed = true;
+                }
+              }
+            }
+            setMailboxes((current) =>
+              current.filter((mailbox) => !removed.has(mailbox.id)),
+            );
+            if (mailboxId && removed.has(mailboxId)) {
+              navigate(mailPath(inbox, "inbox"));
+              setMobilePane("list");
+            }
+          }}
         />
 
         <MailMessageList
