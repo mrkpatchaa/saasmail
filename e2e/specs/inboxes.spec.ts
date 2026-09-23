@@ -90,7 +90,9 @@ test.describe.serial("inboxes CRUD", () => {
     ).toHaveValue(text);
   });
 
-  test("auto-suggest replies toggle persists after reload", async ({ page }) => {
+  test("auto-suggest replies toggle persists after reload", async ({
+    page,
+  }) => {
     await page.goto("/inboxes");
 
     const row = page.locator(
