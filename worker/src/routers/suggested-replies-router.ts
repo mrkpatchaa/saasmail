@@ -3,10 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../db/emails.schema";
 import { suggestedReplies } from "../db/suggested-replies.schema";
-import {
-  isInboxAllowed,
-  type AllowedInboxes,
-} from "../lib/inbox-permissions";
+import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
 import { json200Response } from "../lib/helpers";
 import { bearerSecurity } from "../lib/openapi-auth";
 import type { Variables } from "../variables";

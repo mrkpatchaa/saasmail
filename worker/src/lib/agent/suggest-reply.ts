@@ -8,10 +8,7 @@ import { mailboxMessageState } from "../../db/mailbox-message-state.schema";
 import { senderIdentities } from "../../db/sender-identities.schema";
 import { suggestedReplies } from "../../db/suggested-replies.schema";
 import { users } from "../../db/auth.schema";
-import {
-  MAX_ADMIN_FANOUT,
-  computeFanoutTargets,
-} from "../notification-fanout";
+import { MAX_ADMIN_FANOUT, computeFanoutTargets } from "../notification-fanout";
 import { queryMessages } from "../messages/query";
 import { selectModel, type AgentModelEnv } from "./provider";
 
@@ -37,10 +34,13 @@ function quoteUntrusted(label: string, value: unknown): string {
   return `[BEGIN UNTRUSTED ${label}]\n${JSON.stringify(value)}\n[END UNTRUSTED ${label}]`;
 }
 
-async function screenMessage(model: LanguageModel, message: {
-  subject: string | null;
-  bodyText: string | null;
-}): Promise<boolean> {
+async function screenMessage(
+  model: LanguageModel,
+  message: {
+    subject: string | null;
+    bodyText: string | null;
+  },
+): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SCREEN_TIMEOUT_MS);
   try {
@@ -189,7 +189,10 @@ export async function runSuggestedReply(
 
   if (!(await screenMessage(model, email))) return;
 
-  const scoped = { isAdmin: false as const, inboxes: [email.inbox.toLowerCase()] };
+  const scoped = {
+    isAdmin: false as const,
+    inboxes: [email.inbox.toLowerCase()],
+  };
   const historyPage = await queryMessages(db, scoped, {
     inboxes: [email.inbox],
     personId: email.personId,

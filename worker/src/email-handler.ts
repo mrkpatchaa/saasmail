@@ -47,11 +47,7 @@ export function isAutomatedInbound(headers: Record<string, string>): boolean {
   }
 
   const precedence = headerValue(headers, "precedence")?.trim().toLowerCase();
-  if (
-    precedence === "bulk" ||
-    precedence === "list" ||
-    precedence === "junk"
-  ) {
+  if (precedence === "bulk" || precedence === "list" || precedence === "junk") {
     return true;
   }
 
@@ -281,9 +277,11 @@ export async function handleEmail(
     !isAutomatedInbound(parsed.headers)
   ) {
     ctx.waitUntil(
-      env.EMAIL_QUEUE.send({ type: "suggest_reply", emailId }).catch((error) => {
-        console.warn("Failed to enqueue suggested reply:", error);
-      }),
+      env.EMAIL_QUEUE.send({ type: "suggest_reply", emailId }).catch(
+        (error) => {
+          console.warn("Failed to enqueue suggested reply:", error);
+        },
+      ),
     );
   }
 
