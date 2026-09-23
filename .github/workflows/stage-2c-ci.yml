@@ -54,3 +54,18 @@ jobs:
       - run: yarn tsc --noEmit
       - run: yarn test
       - run: yarn test:web
+      - name: Prepare E2E environment
+        run: |
+          sed -i '/"ai": { "binding": "AI" },/d' wrangler.jsonc
+          cat > .dev.vars <<EOF
+          DEMO_MODE=1
+          DISABLE_PASSKEY_GATE=true
+          BETTER_AUTH_SECRET=ci-only-secret-not-used-for-real-auth
+          UNSUBSCRIBE_SECRET=ci-only-unsubscribe-secret-not-used-for-real-tokens
+          EOF
+      - name: Install Chromium
+        run: yarn playwright install --with-deps chromium
+      - name: Run E2E suite
+        run: yarn test:e2e
+        env:
+          CI: "true"
