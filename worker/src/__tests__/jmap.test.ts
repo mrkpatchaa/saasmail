@@ -21,6 +21,7 @@ import {
   MAIL_CAPABILITY,
   MAX_CALLS_IN_REQUEST,
 } from "../jmap/constants";
+import { executeJmapCalls } from "../jmap/http";
 
 const MINE = "mine@saasmail.test";
 const THEIRS = "theirs@saasmail.test";
@@ -323,6 +324,7 @@ describe("read-only JMAP", () => {
           position: 0,
           limit: 10,
           collapseThreads: false,
+          calculateTotal: true,
         },
         "q1",
       ],
@@ -463,6 +465,93 @@ describe("read-only JMAP", () => {
     });
   });
 
+  it("keeps Email/get and Email/query bounded with more than 300 messages", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "jmap-large-user" });
+    const base = Math.floor(Date.now() / 1000) - 1000;
+    for (let index = 0; index < 305; index += 1) {
+      await createTestSentEmail({
+        id: `bulk-${index}`,
+        personId: null,
+        fromAddress: MINE,
+        toAddress: "alice@example.com",
+        sentAt: base + index,
+      });
+    }
+
+    const selected = await jmapJson(apiKey, [
+      [
+        "Email/get",
+        {
+          accountId: userId,
+          ids: ["sent:bulk-3", "sent:bulk-301"],
+        },
+        "g1",
+      ],
+      [
+        "Email/get",
+        {
+          accountId: userId,
+          ids: null,
+        },
+        "g2",
+      ],
+      [
+        "Email/query",
+        {
+          accountId: userId,
+          position: 10,
+          limit: 5,
+          calculateTotal: true,
+        },
+        "q1",
+      ],
+    ]);
+
+    expect(
+      selected.methodResponses[0][1].list.map((email: any) => email.id),
+    ).toEqual(expect.arrayContaining(["sent:bulk-3", "sent:bulk-301"]));
+    expect(selected.methodResponses[0][1].list).toHaveLength(2);
+    expect(selected.methodResponses[1]).toEqual([
+      "error",
+      expect.objectContaining({ type: "requestTooLarge" }),
+      "g2",
+    ]);
+    expect(selected.methodResponses[2][1]).toMatchObject({
+      position: 10,
+      ids: [
+        "sent:bulk-294",
+        "sent:bulk-293",
+        "sent:bulk-292",
+        "sent:bulk-291",
+        "sent:bulk-290",
+      ],
+      total: 305,
+    });
+  });
+
+  it("isolates method exceptions as serverFail and continues later calls", async () => {
+    const db = getDb();
+    const responses = await executeJmapCalls(
+      db,
+      { isAdmin: true },
+      { id: "jmap-user" },
+      [CORE_CAPABILITY, MAIL_CAPABILITY],
+      [
+        ["Core/boom", {}, "boom"],
+        ["Core/echo", { ok: true }, "next"],
+      ],
+      async (_db, _allowed, _user, name, args) => {
+        if (name === "Core/boom") throw new Error("boom");
+        return { ok: true, name, result: args };
+      },
+    );
+
+    expect(responses).toEqual([
+      ["error", { type: "serverFail" }, "boom"],
+      ["Core/echo", { ok: true }, "next"],
+    ]);
+  });
+
   it("downloads only permission-scoped attachment blobs", async () => {
     await addIdentity(MINE);
     await addIdentity(THEIRS);
@@ -500,6 +589,7 @@ describe("read-only JMAP", () => {
     );
     expect(readable.status).toBe(200);
     expect(await readable.text()).toBe("m");
+    expect(readable.headers.get("X-Content-Type-Options")).toBe("nosniff");
 
     const hidden = await authFetch(
       `/jmap/download/${userId}/theirs-blob/theirs.txt?type=text/plain`,

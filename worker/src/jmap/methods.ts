@@ -1,5 +1,6 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
+import { queryMessages, queryMessageThreadKeys } from "../lib/messages/query";
 import { serializeMessageRef } from "../lib/messages/types";
 import {
   CORE_CAPABILITY,
@@ -12,11 +13,12 @@ import {
   emailGet,
   emailQuery,
   jmapThreadId,
-  visibleMessagesForThreads,
   type JmapMethodError,
 } from "./emails";
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
-import { opaqueState } from "./state";
+import { jmapState } from "./state";
+
+const MAX_EMAILS_IN_THREAD_GET = 1024;
 
 export type MethodResult =
   | { ok: true; name: string; result: Record<string, unknown> }
@@ -92,11 +94,6 @@ export async function makeSession(
   allowed: AllowedInboxes,
   user: any,
 ): Promise<Record<string, unknown>> {
-  const identities = await listUsableIdentities(db, allowed);
-  const state = await opaqueState(
-    identities.map((identity) => [identity.email, identity.updatedAt]),
-  );
-
   return {
     capabilities: {
       [CORE_CAPABILITY]: {
@@ -136,7 +133,7 @@ export async function makeSession(
     downloadUrl: "/jmap/download/{accountId}/{blobId}/{name}?type={type}",
     uploadUrl: "",
     eventSourceUrl: "",
-    state,
+    state: await jmapState(db, allowed, user.id),
   };
 }
 
@@ -157,7 +154,7 @@ async function mailboxGet(
     return methodError("invalidArguments", undefined, ["ids"]);
   }
   if (Array.isArray(ids) && ids.length > MAX_OBJECTS_IN_GET) {
-    return methodError("invalidArguments", undefined, ["ids"]);
+    return methodError("requestTooLarge");
   }
 
   const all = await listJmapMailboxes(db, allowed, userId);
@@ -169,10 +166,7 @@ async function mailboxGet(
       ? all.list.map((mailbox) => mailbox.id as string)
       : (ids as string[]);
   if (requested.length > MAX_OBJECTS_IN_GET) {
-    return methodError(
-      "invalidArguments",
-      `Mailbox/get exceeds maxObjectsInGet (${MAX_OBJECTS_IN_GET})`,
-    );
+    return methodError("requestTooLarge");
   }
 
   const list: Record<string, unknown>[] = [];
@@ -184,8 +178,9 @@ async function mailboxGet(
       continue;
     }
     const selected = filterProperties(mailbox, args.properties);
-    if (!selected)
+    if (!selected) {
       return methodError("invalidArguments", undefined, ["properties"]);
+    }
     list.push(selected);
   }
 
@@ -216,8 +211,9 @@ async function mailboxQuery(
     return methodError("unsupportedSort");
   }
   const window = positionLimit(args);
-  if (!window)
+  if (!window) {
     return methodError("invalidArguments", undefined, ["position", "limit"]);
+  }
 
   const all = await listJmapMailboxes(db, allowed, userId);
   const ids = all.list.map((mailbox) => mailbox.id as string);
@@ -252,25 +248,47 @@ async function threadGet(
     return methodError("invalidArguments", undefined, ["ids"]);
   }
   if (Array.isArray(ids) && ids.length > MAX_OBJECTS_IN_GET) {
-    return methodError("invalidArguments", undefined, ["ids"]);
+    return methodError("requestTooLarge");
   }
 
-  const messages = await visibleMessagesForThreads(db, allowed, userId);
+  let requested: string[];
+  if (ids === undefined || ids === null) {
+    requested = await queryMessageThreadKeys(
+      db,
+      allowed,
+      { viewer: { userId } },
+      MAX_OBJECTS_IN_GET + 1,
+    );
+    if (requested.length > MAX_OBJECTS_IN_GET) {
+      return methodError("requestTooLarge");
+    }
+  } else {
+    requested = ids as string[];
+  }
+
+  const page =
+    requested.length === 0
+      ? { messages: [], hasMore: false }
+      : await queryMessages(db, allowed, {
+          threadKeys: requested,
+          limit: MAX_EMAILS_IN_THREAD_GET + 1,
+          order: "asc",
+          viewer: { userId },
+          withState: true,
+        });
+  if (page.hasMore || page.messages.length > MAX_EMAILS_IN_THREAD_GET) {
+    return methodError(
+      "requestTooLarge",
+      `Thread/get is limited to ${MAX_EMAILS_IN_THREAD_GET} matching emails`,
+    );
+  }
+
   const grouped = new Map<string, string[]>();
-  for (const message of messages) {
+  for (const message of page.messages) {
     const key = jmapThreadId(message);
     const current = grouped.get(key) ?? [];
     current.push(serializeMessageRef(message.ref));
     grouped.set(key, current);
-  }
-
-  const requested =
-    ids === undefined || ids === null ? [...grouped.keys()] : (ids as string[]);
-  if (requested.length > MAX_OBJECTS_IN_GET) {
-    return methodError(
-      "invalidArguments",
-      `Thread/get exceeds maxObjectsInGet (${MAX_OBJECTS_IN_GET})`,
-    );
   }
 
   const list: Record<string, unknown>[] = [];
@@ -282,8 +300,9 @@ async function threadGet(
       continue;
     }
     const thread = filterProperties({ id, emailIds }, args.properties);
-    if (!thread)
+    if (!thread) {
       return methodError("invalidArguments", undefined, ["properties"]);
+    }
     list.push(thread);
   }
 
@@ -292,9 +311,7 @@ async function threadGet(
     name: "Thread/get",
     result: {
       accountId: userId,
-      state: await opaqueState(
-        [...grouped.entries()].map(([id, emailIds]) => [id, emailIds]),
-      ),
+      state: await jmapState(db, allowed, userId),
       list,
       notFound,
     },
@@ -318,7 +335,7 @@ async function identityGet(
     return methodError("invalidArguments", undefined, ["ids"]);
   }
   if (Array.isArray(ids) && ids.length > MAX_OBJECTS_IN_GET) {
-    return methodError("invalidArguments", undefined, ["ids"]);
+    return methodError("requestTooLarge");
   }
 
   const rows = await listUsableIdentities(db, allowed);
@@ -337,6 +354,10 @@ async function identityGet(
     ids === undefined || ids === null
       ? all.map((identity) => identity.id)
       : (ids as string[]);
+  if (requested.length > MAX_OBJECTS_IN_GET) {
+    return methodError("requestTooLarge");
+  }
+
   const list: Record<string, unknown>[] = [];
   const notFound: string[] = [];
   for (const id of requested) {
@@ -346,8 +367,9 @@ async function identityGet(
       continue;
     }
     const selected = filterProperties(identity, args.properties);
-    if (!selected)
+    if (!selected) {
       return methodError("invalidArguments", undefined, ["properties"]);
+    }
     list.push(selected);
   }
 
@@ -356,7 +378,7 @@ async function identityGet(
     name: "Identity/get",
     result: {
       accountId: userId,
-      state: await opaqueState(rows.map((row) => [row.email, row.updatedAt])),
+      state: await jmapState(db, allowed, userId),
       list,
       notFound,
     },

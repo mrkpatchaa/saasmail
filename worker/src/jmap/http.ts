@@ -2,6 +2,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import { sanitizeFilename } from "../lib/sanitize-filename";
 import { findReadableAttachment } from "../routers/attachments-router";
 import type { Variables } from "../variables";
+import type { AllowedInboxes } from "../lib/inbox-permissions";
 import { authenticateJmap, problem } from "./auth";
 import {
   CORE_CAPABILITY,
@@ -149,6 +150,45 @@ async function readJmapRequest(request: Request): Promise<
   };
 }
 
+export async function executeJmapCalls(
+  db: Variables["db"],
+  allowed: AllowedInboxes,
+  user: any,
+  using: string[],
+  methodCalls: [string, Record<string, unknown>, string][],
+  executor: typeof executeMethod = executeMethod,
+): Promise<MethodResponse[]> {
+  const methodResponses: MethodResponse[] = [];
+  for (const [name, rawArgs, callId] of methodCalls) {
+    if (name !== "Core/echo" && !using.includes(MAIL_CAPABILITY)) {
+      methodResponses.push(["error", { type: "unknownMethod" }, callId]);
+      continue;
+    }
+
+    const args = applyResultReferences(rawArgs, methodResponses);
+    if (!args) {
+      methodResponses.push([
+        "error",
+        { type: "invalidResultReference" },
+        callId,
+      ]);
+      continue;
+    }
+
+    try {
+      const result = await executor(db, allowed, user, name, args);
+      if (result.ok) {
+        methodResponses.push([result.name, result.result, callId]);
+      } else {
+        methodResponses.push(["error", result.error, callId]);
+      }
+    } catch {
+      methodResponses.push(["error", { type: "serverFail" }, callId]);
+    }
+  }
+  return methodResponses;
+}
+
 export function registerJmapRoutes(
   app: OpenAPIHono<{
     Bindings: CloudflareBindings;
@@ -170,36 +210,13 @@ export function registerJmapRoutes(
     const request = await readJmapRequest(c.req.raw);
     if (request instanceof Response) return request;
 
-    const methodResponses: MethodResponse[] = [];
-    for (const [name, rawArgs, callId] of request.methodCalls) {
-      if (name !== "Core/echo" && !request.using.includes(MAIL_CAPABILITY)) {
-        methodResponses.push(["error", { type: "unknownMethod" }, callId]);
-        continue;
-      }
-
-      const args = applyResultReferences(rawArgs, methodResponses);
-      if (!args) {
-        methodResponses.push([
-          "error",
-          { type: "invalidResultReference" },
-          callId,
-        ]);
-        continue;
-      }
-
-      const result = await executeMethod(
-        c.get("db"),
-        auth.allowed,
-        auth.user,
-        name,
-        args,
-      );
-      if (result.ok) {
-        methodResponses.push([result.name, result.result, callId]);
-      } else {
-        methodResponses.push(["error", result.error, callId]);
-      }
-    }
+    const methodResponses = await executeJmapCalls(
+      c.get("db"),
+      auth.allowed,
+      auth.user,
+      request.using,
+      request.methodCalls,
+    );
 
     const session = await makeSession(c.get("db"), auth.allowed, auth.user);
     return jsonResponse({
@@ -241,6 +258,7 @@ export function registerJmapRoutes(
         "Content-Disposition": `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`,
         "Content-Length": attachment.size.toString(),
         "Cache-Control": "private, max-age=31536000, immutable",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   });

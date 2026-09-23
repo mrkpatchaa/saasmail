@@ -3,11 +3,14 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
-import { queryMessages, type MessageFolder } from "../lib/messages/query";
-import { serializeMessageRef } from "../lib/messages/types";
+import {
+  countMessages,
+  countMessageThreads,
+  type MessageFolder,
+} from "../lib/messages/query";
 import { SYSTEM_MAILBOX_ROLES, type SystemMailboxRole } from "./constants";
 import { customMailboxId, systemMailboxId } from "./ids";
-import { opaqueState } from "./state";
+import { jmapState } from "./state";
 
 export type MailboxDescriptor =
   | {
@@ -46,13 +49,6 @@ const ROLE_SORT_ORDER: Record<SystemMailboxRole, number> = {
 function folderForRole(role: SystemMailboxRole): MessageFolder | null {
   if (role === "drafts") return null;
   return role;
-}
-
-function threadKey(message: {
-  state?: { conversationKey: string | null };
-  ref: { kind: "received" | "sent"; id: string };
-}): string {
-  return message.state?.conversationKey ?? serializeMessageRef(message.ref);
 }
 
 export async function listUsableIdentities(
@@ -144,23 +140,23 @@ async function mailboxCounts(
     descriptor.kind === "custom"
       ? { mailboxId: descriptor.mailboxId }
       : folderForRole(descriptor.role)!;
-  const page = await queryMessages(db, allowed, {
+  const base = {
     inboxes: [descriptor.inbox],
     folder,
-    limit: null,
     viewer: { userId },
-    withState: true,
-  });
+  };
 
-  const totalThreads = new Set(page.messages.map(threadKey)).size;
-  const unreadMessages = page.messages.filter(
-    (message) => message.state?.seen === false,
-  );
-  const unreadThreads = new Set(unreadMessages.map(threadKey)).size;
+  const [totalEmails, unreadEmails, totalThreads, unreadThreads] =
+    await Promise.all([
+      countMessages(db, allowed, base),
+      countMessages(db, allowed, { ...base, seen: false }),
+      countMessageThreads(db, allowed, base),
+      countMessageThreads(db, allowed, { ...base, seen: false }),
+    ]);
 
   return {
-    totalEmails: page.messages.length,
-    unreadEmails: unreadMessages.length,
+    totalEmails,
+    unreadEmails,
     totalThreads,
     unreadThreads,
   };
@@ -207,10 +203,14 @@ export async function listJmapMailboxes(
 
     const row = customById.get(descriptor.mailboxId);
     if (!row) continue;
+    const parent = row.parentId ? customById.get(row.parentId) : undefined;
     list.push({
       id: descriptor.id,
       name: row.name,
-      parentId: row.parentId ? customMailboxId(row.parentId) : null,
+      parentId:
+        parent && isInboxAllowed(allowed, parent.inbox)
+          ? customMailboxId(parent.id)
+          : null,
       role: null,
       sortOrder: 100 + row.sortOrder,
       totalEmails: counts.totalEmails,
@@ -234,14 +234,6 @@ export async function listJmapMailboxes(
 
   return {
     list,
-    state: await opaqueState(
-      list.map((mailbox) => ({
-        id: mailbox.id,
-        totalEmails: mailbox.totalEmails,
-        unreadEmails: mailbox.unreadEmails,
-        totalThreads: mailbox.totalThreads,
-        unreadThreads: mailbox.unreadThreads,
-      })),
-    ),
+    state: await jmapState(db, allowed, userId),
   };
 }
