@@ -2,6 +2,9 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SuggestedReplyCard from "@/components/SuggestedReplyCard";
 import * as api from "@/lib/api";
+import { showToast } from "@/lib/toast";
+
+vi.mock("@/lib/toast", () => ({ showToast: vi.fn() }));
 
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -128,5 +131,27 @@ describe("SuggestedReplyCard", () => {
       expect(api.dismissSuggestedReply).toHaveBeenCalledWith("suggestion-1"),
     );
     expect(screen.queryByTestId("suggested-reply-card")).toBeNull();
+  });
+
+  it("keeps the card visible when Use fails", async () => {
+    vi.mocked(api.saveDraft).mockRejectedValue(new Error("save failed"));
+    render(<SuggestedReplyCard emailId="email-1" onUse={() => {}} />);
+
+    fireEvent.click(await screen.findByTestId("suggested-reply-use"));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(screen.getByTestId("suggested-reply-card")).toBeTruthy();
+  });
+
+  it("keeps the card visible when Dismiss fails", async () => {
+    vi.mocked(api.dismissSuggestedReply).mockRejectedValue(
+      new Error("dismiss failed"),
+    );
+    render(<SuggestedReplyCard emailId="email-1" onUse={() => {}} />);
+
+    fireEvent.click(await screen.findByTestId("suggested-reply-dismiss"));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    expect(screen.getByTestId("suggested-reply-card")).toBeTruthy();
   });
 });

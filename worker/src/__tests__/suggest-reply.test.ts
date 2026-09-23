@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { MockLanguageModelV4 } from "ai/test";
+import { emails } from "../db/emails.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { suggestedReplies } from "../db/suggested-replies.schema";
 import { runSuggestedReply } from "../lib/agent/suggest-reply";
@@ -60,7 +61,7 @@ function textModel(outputs: string[]) {
 }
 
 describe("suggested reply consumer", () => {
-  it.each(["FLAG", " SAFE ", "SAFE\n"])(
+  it.each(["FLAG", "MAYBE", "safe"])(
     "creates no row when the screen returns %j",
     async (screenOutput) => {
       const { emailId } = await seed();
@@ -108,6 +109,75 @@ describe("suggested reply consumer", () => {
     warn.mockRestore();
   });
 
+  it("acks generation errors without creating a row", async () => {
+    const { emailId } = await seed("generation-error-email");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let call = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        call += 1;
+        if (call === 1) {
+          return {
+            content: [{ type: "text" as const, text: "SAFE" }],
+            finishReason: "stop" as const,
+            usage: USAGE,
+            warnings: [],
+          };
+        }
+        throw new Error("generation failed");
+      },
+    });
+
+    await expect(
+      runSuggestedReply(
+        getDb(),
+        env as unknown as CloudflareBindings,
+        emailId,
+        model,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(
+      await getDb()
+        .select()
+        .from(suggestedReplies)
+        .where(eq(suggestedReplies.emailId, emailId)),
+    ).toHaveLength(0);
+    expect(model.doGenerateCalls).toHaveLength(2);
+    warn.mockRestore();
+  });
+
+  it("uses HTML text when the current message has no text body", async () => {
+    const { emailId } = await seed("html-only-email");
+    await getDb()
+      .update(emails)
+      .set({
+        bodyText: null,
+        bodyHtml: "<p>Hello <strong>there</strong> &amp; welcome.</p>",
+      })
+      .where(eq(emails.id, emailId));
+    const model = textModel(["SAFE", "Thanks for the note."]);
+
+    await runSuggestedReply(
+      getDb(),
+      env as unknown as CloudflareBindings,
+      emailId,
+      model,
+    );
+
+    const [row] = await getDb()
+      .select()
+      .from(suggestedReplies)
+      .where(eq(suggestedReplies.emailId, emailId));
+    expect(row?.bodyText).toBe("Thanks for the note.");
+    expect(JSON.stringify(model.doGenerateCalls[0])).toContain(
+      "Hello there & welcome.",
+    );
+    expect(JSON.stringify(model.doGenerateCalls[1])).toContain(
+      "Hello there & welcome.",
+    );
+  });
+
   it("creates a pending row and realtime notification on the happy path", async () => {
     const { emailId } = await seed("happy-suggest-email");
     await createTestUser({
@@ -116,7 +186,7 @@ describe("suggested reply consumer", () => {
       role: "admin",
     });
     const getSpy = vi.spyOn(env.NOTIFICATIONS_HUB, "get");
-    const model = textModel(["SAFE", "Absolutely — I can send the invoice."]);
+    const model = textModel(["SAFE\n", "Absolutely — I can send the invoice."]);
 
     await runSuggestedReply(
       getDb(),

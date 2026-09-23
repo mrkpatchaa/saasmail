@@ -10,6 +10,7 @@ import {
   type SuggestedReply,
 } from "@/lib/api";
 import { onSuggestedReplyReady } from "@/lib/suggested-reply-events";
+import { showToast } from "@/lib/toast";
 
 interface SuggestedReplyCardProps {
   emailId: string;
@@ -92,6 +93,12 @@ export default function SuggestedReplyCard({
       await useSuggestedReply(suggestion.id);
       setSuggestion(null);
       onUse();
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn’t use suggested reply",
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setBusy(false);
     }
@@ -102,6 +109,12 @@ export default function SuggestedReplyCard({
     try {
       await dismissSuggestedReply(suggestion.id);
       setSuggestion(null);
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn’t dismiss suggested reply",
+        description: error instanceof Error ? error.message : undefined,
+      });
     } finally {
       setBusy(false);
     }

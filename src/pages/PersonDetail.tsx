@@ -137,6 +137,7 @@ export default function PersonDetail({
   const [htmlPreviewEmail, setHtmlPreviewEmail] = useState<Email | null>(null);
   const [reassignEmail, setReassignEmail] = useState<Email | null>(null);
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
+  const [replyComposerKey, setReplyComposerKey] = useState(0);
   const [expandedOlder, setExpandedOlder] = useState<Record<string, boolean>>(
     {},
   );
@@ -575,7 +576,10 @@ export default function PersonDetail({
           <div className="shrink-0 border-b border-border bg-card px-4 py-3">
             <SuggestedReplyCard
               emailId={latestReceived.id}
-              onUse={() => setReplyToEmailId(latestReceived.id)}
+              onUse={() => {
+                setReplyComposerKey((key) => key + 1);
+                setReplyToEmailId(latestReceived.id);
+              }}
             />
           </div>
         )}
@@ -629,6 +633,7 @@ export default function PersonDetail({
         {/* Reply composer (thread mode) */}
         {replyToEmailId && (
           <ReplyComposer
+            key={`${replyToEmailId}:${replyComposerKey}`}
             emailId={replyToEmailId}
             personName={person.name}
             personEmail={person.email}
