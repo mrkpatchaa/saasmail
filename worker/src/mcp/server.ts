@@ -3,10 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { asc } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import {
-  isInboxAllowed,
-  type AllowedInboxes,
-} from "../lib/inbox-permissions";
+import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
 import { rules } from "../db/rules.schema";
 import { SCOPE_READ, SCOPE_SEND, SCOPE_MANAGE, hasScope } from "../auth/scopes";
 import { sendTemplate } from "../lib/send-template";

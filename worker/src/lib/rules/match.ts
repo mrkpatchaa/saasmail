@@ -106,14 +106,26 @@ export function matchCondition(
 ): boolean {
   switch (condition.field) {
     case "from_address":
-      return textMatches(message.fromAddress, condition.operator, condition.value);
+      return textMatches(
+        message.fromAddress,
+        condition.operator,
+        condition.value,
+      );
     case "from_domain": {
       const at = message.fromAddress.lastIndexOf("@");
       if (at === -1) return false;
-      return textMatches(message.fromAddress.slice(at + 1), "equals", condition.value);
+      return textMatches(
+        message.fromAddress.slice(at + 1),
+        "equals",
+        condition.value,
+      );
     }
     case "subject":
-      return textMatches(message.subject ?? "", condition.operator, condition.value);
+      return textMatches(
+        message.subject ?? "",
+        condition.operator,
+        condition.value,
+      );
     case "body":
       return textMatches(
         message.bodyText ?? htmlToText(message.bodyHtml ?? ""),
@@ -129,7 +141,10 @@ export function matchCondition(
         : message.spamScore <= condition.value;
     case "header": {
       const value = headerValue(message.headers, condition.name);
-      return value !== null && textMatches(value, condition.operator, condition.value);
+      return (
+        value !== null &&
+        textMatches(value, condition.operator, condition.value)
+      );
     }
   }
 }

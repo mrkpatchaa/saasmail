@@ -193,8 +193,7 @@ messagesRouter.openapi(listMessagesRoute, async (c) => {
       withState: true,
       withAttachmentCounts: true,
       excludeCampaignSends,
-      assignedTo:
-        input.assignedTo === "me" ? user.id : input.assignedTo,
+      assignedTo: input.assignedTo === "me" ? user.id : input.assignedTo,
     });
 
     return c.json(

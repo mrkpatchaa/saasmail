@@ -12,10 +12,7 @@ import {
   RuleConditionSchema,
   RuleConditionsSchema,
 } from "../lib/rules/types";
-import {
-  InvalidRuleError,
-  validateRuleActions,
-} from "../lib/rules/validation";
+import { InvalidRuleError, validateRuleActions } from "../lib/rules/validation";
 import type { Variables } from "../variables";
 
 export const adminRulesRouter = new OpenAPIHono<{
@@ -154,7 +151,11 @@ adminRulesRouter.openapi(createRuleRoute, async (c) => {
     updatedAt: now,
   };
   await db.insert(rules).values(row);
-  const [created] = await db.select().from(rules).where(eq(rules.id, row.id)).limit(1);
+  const [created] = await db
+    .select()
+    .from(rules)
+    .where(eq(rules.id, row.id))
+    .limit(1);
   return c.json(apiRule(created!), 201);
 });
 
@@ -188,13 +189,17 @@ adminRulesRouter.openapi(updateRuleRoute, async (c) => {
   const db = c.get("db");
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
-  const [existing] = await db.select().from(rules).where(eq(rules.id, id)).limit(1);
+  const [existing] = await db
+    .select()
+    .from(rules)
+    .where(eq(rules.id, id))
+    .limit(1);
   if (!existing) return c.json({ error: "Rule not found" }, 404);
 
   const inbox =
     body.inbox === undefined
       ? existing.inbox
-      : body.inbox?.trim().toLowerCase() ?? null;
+      : (body.inbox?.trim().toLowerCase() ?? null);
   const actions = body.actions ?? existing.actions;
 
   try {
@@ -222,7 +227,11 @@ adminRulesRouter.openapi(updateRuleRoute, async (c) => {
     })
     .where(eq(rules.id, id));
 
-  const [updated] = await db.select().from(rules).where(eq(rules.id, id)).limit(1);
+  const [updated] = await db
+    .select()
+    .from(rules)
+    .where(eq(rules.id, id))
+    .limit(1);
   return c.json(apiRule(updated!), 200);
 });
 
@@ -363,10 +372,7 @@ adminRulesRouter.openapi(testRuleRoute, async (c) => {
     .select({ id: attachments.id })
     .from(attachments)
     .where(
-      and(
-        eq(attachments.kind, "inbound"),
-        eq(attachments.emailId, emailId),
-      ),
+      and(eq(attachments.kind, "inbound"), eq(attachments.emailId, emailId)),
     )
     .limit(1);
 
@@ -377,8 +383,7 @@ adminRulesRouter.openapi(testRuleRoute, async (c) => {
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         headers = Object.fromEntries(
           Object.entries(parsed).filter(
-            (entry): entry is [string, string] =>
-              typeof entry[1] === "string",
+            (entry): entry is [string, string] => typeof entry[1] === "string",
           ),
         );
       }

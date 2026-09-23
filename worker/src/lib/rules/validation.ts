@@ -2,10 +2,7 @@ import { eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { users } from "../../db/auth.schema";
 import { mailboxes } from "../../db/mailboxes.schema";
-import {
-  isInboxAllowed,
-  resolveAllowedInboxes,
-} from "../inbox-permissions";
+import { isInboxAllowed, resolveAllowedInboxes } from "../inbox-permissions";
 import type { RuleAction } from "./types";
 
 export class InvalidRuleError extends Error {
@@ -24,7 +21,9 @@ export async function validateRuleActions(
   for (const action of input.actions) {
     if (action.type === "move_to_folder") {
       if (!inbox) {
-        throw new InvalidRuleError("move_to_folder requires an inbox-scoped rule");
+        throw new InvalidRuleError(
+          "move_to_folder requires an inbox-scoped rule",
+        );
       }
       const [mailbox] = await db
         .select({ inbox: mailboxes.inbox })
