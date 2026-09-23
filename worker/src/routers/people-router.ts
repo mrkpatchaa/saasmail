@@ -16,6 +16,7 @@ import type { Variables } from "../variables";
 import { isInboxAllowed } from "../lib/inbox-permissions";
 import { deleteMessageState } from "../lib/messages/state";
 import { deletePersonConversationState } from "../lib/messages/conversation-state";
+import { cleanupCustomerForPersonDeletion } from "../lib/customers";
 
 export const peopleRouter = new OpenAPIHono<{
   Bindings: CloudflareBindings;
@@ -753,6 +754,7 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
     );
   await db.delete(emails).where(eq(emails.personId, id));
   await db.delete(sentEmails).where(eq(sentEmails.personId, id));
+  await cleanupCustomerForPersonDeletion(db, id);
   await deletePersonConversationState(db, id);
   await db.delete(people).where(eq(people.id, id));
 
