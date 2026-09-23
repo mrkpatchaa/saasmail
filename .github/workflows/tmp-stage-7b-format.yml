@@ -1,0 +1,33 @@
+name: Temporary format preview
+
+on:
+  push:
+    branches:
+      - stage-7b-jmap-write
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: stage-7b-jmap-write
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn format
+      - name: Push formatter output
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "stage-7b-format-helper"
+          git config user.email "stage-7b-format-helper@users.noreply.github.com"
+          git add -A
+          git commit -m "chore: temporary formatter output"
+          git push origin HEAD:stage-7b-jmap-write
