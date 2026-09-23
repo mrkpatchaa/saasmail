@@ -57,6 +57,20 @@ export function isAutomatedInbound(headers: Record<string, string>): boolean {
   );
 }
 
+export function shouldEnqueueSuggestedReply(options: {
+  agentAutodraft: number | null | undefined;
+  autoFiledSpam: boolean;
+  modelConfigured: boolean;
+  headers: Record<string, string>;
+}): boolean {
+  return (
+    options.agentAutodraft === 1 &&
+    !options.autoFiledSpam &&
+    options.modelConfigured &&
+    !isAutomatedInbound(options.headers)
+  );
+}
+
 export async function handleEmail(
   message: ForwardableEmailMessage,
   env: CloudflareBindings,
@@ -271,10 +285,12 @@ export async function handleEmail(
   }
 
   if (
-    !autoFiledSpam &&
-    inboxIdentity?.agentAutodraft === 1 &&
-    selectModel(env).ok &&
-    !isAutomatedInbound(parsed.headers)
+    shouldEnqueueSuggestedReply({
+      agentAutodraft: inboxIdentity?.agentAutodraft,
+      autoFiledSpam,
+      modelConfigured: selectModel(env).ok,
+      headers: parsed.headers,
+    })
   ) {
     ctx.waitUntil(
       env.EMAIL_QUEUE.send({ type: "suggest_reply", emailId }).catch(
