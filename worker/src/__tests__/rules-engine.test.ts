@@ -367,8 +367,7 @@ describe("inbound rule evaluation semantics", () => {
     warnSpy.mockRestore();
 
     const email = await getDb().query.emails.findFirst({
-      where: (row, { eq }) =>
-        eq(row.messageId, "<corrupt-rule@example.com>"),
+      where: (row, { eq }) => eq(row.messageId, "<corrupt-rule@example.com>"),
     });
     const [state] = await stateFor(email!.id);
     expect(state.archivedAt).toEqual(expect.any(Number));
