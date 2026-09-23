@@ -134,6 +134,60 @@ async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface AgentStatus {
+  configured: boolean;
+  provider: "anthropic" | "openai" | "workers-ai" | null;
+  model: string | null;
+}
+
+export interface AgentSession {
+  id: string;
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt: number | null;
+  instanceName: string;
+}
+
+export async function fetchAgentStatus(): Promise<AgentStatus> {
+  return apiFetch("/api/agent/status");
+}
+
+export async function fetchAgentSessions(): Promise<{
+  sessions: AgentSession[];
+}> {
+  return apiFetch("/api/agent/sessions");
+}
+
+export async function createAgentSession(
+  title?: string,
+): Promise<AgentSession> {
+  return apiFetch("/api/agent/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(title ? { title } : {}),
+  });
+}
+
+export async function updateAgentSession(
+  id: string,
+  patch: { title?: string | null; archived?: boolean },
+): Promise<AgentSession> {
+  return apiFetch(`/api/agent/sessions/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export async function deleteAgentSession(
+  id: string,
+): Promise<{ success: true }> {
+  return apiFetch(`/api/agent/sessions/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
 export interface PaginatedPeople {
   data: Person[];
   total: number;

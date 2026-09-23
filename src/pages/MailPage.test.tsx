@@ -545,15 +545,22 @@ describe("MailPage", () => {
     await screen.findByText("Keyboard guard");
     fireEvent.keyDown(window, { key: "j" });
 
+    const agentInput = document.createElement("textarea");
+    const agentPanel = document.createElement("div");
+    agentPanel.setAttribute("data-agent-panel", "");
+    agentPanel.appendChild(agentInput);
+    document.body.appendChild(agentPanel);
+
     const editableElements: HTMLElement[] = [
       screen.getByLabelText("Search mail"),
       document.createElement("textarea"),
       document.createElement("select"),
       document.createElement("div"),
+      agentInput,
     ];
     editableElements[3]!.setAttribute("contenteditable", "true");
 
-    for (const element of editableElements.slice(1)) {
+    for (const element of editableElements.slice(1, 4)) {
       document.body.appendChild(element);
     }
 
@@ -565,6 +572,7 @@ describe("MailPage", () => {
 
     expect(api.setMessageState).not.toHaveBeenCalled();
 
-    for (const element of editableElements.slice(1)) element.remove();
+    for (const element of editableElements.slice(1, 4)) element.remove();
+    agentPanel.remove();
   });
 });
