@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { agentSessions } from "../db/agent-sessions.schema";
 import { resolveRequestAuth } from "../lib/request-auth";
+import { passkeyRequired } from "../middleware/require-passkey";
 import { mailAgentSessionIdForUser } from "./identity";
 
 type AgentRoute = {
@@ -22,6 +23,13 @@ export async function authorizeMailAgentRequest(
   const auth = await resolveRequestAuth(request, env, db);
   if (!auth) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (await passkeyRequired(env, db, auth.user, auth.authMethod)) {
+    return Response.json(
+      { error: "Passkey registration required", code: "PASSKEY_REQUIRED" },
+      { status: 403 },
+    );
   }
 
   const sessionId = mailAgentSessionIdForUser(route.name, auth.user.id);

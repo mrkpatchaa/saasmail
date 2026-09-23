@@ -1,7 +1,9 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { exports } from "cloudflare:workers";
+import { env, exports } from "cloudflare:workers";
+import { makeSignature } from "better-auth/crypto";
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
 import { tool } from "ai";
+import { sessions } from "../db/auth.schema";
 import { z } from "zod";
 import {
   buildMailAgentInstructions,
@@ -229,6 +231,57 @@ describe("agent session runtime", () => {
     expect(await response.json()).toEqual({
       error: "Agent session not found",
     });
+  });
+
+  it("requires a passkey for session-cookie agent requests when the gate is on", async () => {
+    const alice = await createTestUser({
+      id: "agent-passkey-alice",
+      email: "agent-passkey-alice@example.com",
+    });
+    const sessionRes = await authFetch("/api/agent/sessions", {
+      method: "POST",
+      apiKey: alice.apiKey,
+      body: JSON.stringify({ title: "Passkey gated" }),
+    });
+    const agentSession = (await sessionRes.json()) as {
+      instanceName: string;
+    };
+
+    const db = getDb();
+    const token = "agent-passkey-session-token";
+    const now = new Date();
+    await db.insert(sessions).values({
+      id: "agent-passkey-session",
+      token,
+      userId: alice.userId,
+      expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const secret = (env as any).BETTER_AUTH_SECRET as string;
+    const signature = await makeSignature(token, secret);
+    const previousGate = (env as any).DISABLE_PASSKEY_GATE;
+
+    try {
+      (env as any).DISABLE_PASSKEY_GATE = "false";
+      const response = await exports.default.fetch(
+        `http://localhost/agents/mail-agent/${agentSession.instanceName}`,
+        {
+          headers: {
+            Cookie: `saasmail.session_token=${token}.${signature}`,
+          },
+        },
+      );
+
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: "Passkey registration required",
+        code: "PASSKEY_REQUIRED",
+      });
+    } finally {
+      (env as any).DISABLE_PASSKEY_GATE = previousGate;
+    }
   });
 
   it("rejects unauthenticated agent requests", async () => {
