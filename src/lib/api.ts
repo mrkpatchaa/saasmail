@@ -1063,6 +1063,8 @@ export interface AdminInbox {
   signatureHtml: string | null;
   /** Destination address for per-inbox forwarding; null = forwarding off. */
   forwardTo: string | null;
+  /** SpamAssassin-style X-Spam-Score cutoff; null = automatic filing off. */
+  spamThreshold: number | null;
   assignedUserIds: string[];
 }
 
@@ -1089,6 +1091,7 @@ export async function updateInboxSettings(
     displayMode?: InboxDisplayMode;
     signatureHtml?: string | null;
     forwardTo?: string | null;
+    spamThreshold?: number | null;
   },
 ): Promise<{
   email: string;
@@ -1096,6 +1099,7 @@ export async function updateInboxSettings(
   displayMode: InboxDisplayMode;
   signatureHtml: string | null;
   forwardTo: string | null;
+  spamThreshold: number | null;
 }> {
   return apiFetch(`/api/admin/inboxes/${encodeURIComponent(email)}`, {
     method: "PATCH",
