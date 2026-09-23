@@ -311,12 +311,28 @@ registerMcpRoutes(app);
 // MailAgent binding so other Durable Objects are never exposed by the generic
 // Agents SDK router.
 app.all("/agents/mail-agent/*", async (c) => {
+  // Lifecycle props give the Durable Object the authenticated user needed to
+  // construct permission-scoped D17 tools. The SDK auth hooks still re-resolve
+  // auth and enforce caller-owned session identity immediately before dispatch.
+  const resolved = await resolveRequestAuth(c.req.raw, c.env, c.get("db"));
+  if (!resolved) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const authorize = (
     request: Request,
     route: { className: string; name: string },
   ) => authorizeMailAgentRequest(request, route, c.env, c.get("db"));
 
   const response = await routeAgentRequest(c.req.raw, c.env, {
+    props: {
+      user: {
+        id: resolved.user.id,
+        name: resolved.user.name ?? null,
+        email: resolved.user.email ?? null,
+        role: resolved.user.role ?? null,
+      },
+    },
     onBeforeConnect: authorize,
     onBeforeRequest: authorize,
   });

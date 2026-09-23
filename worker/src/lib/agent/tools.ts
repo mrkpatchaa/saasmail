@@ -4,7 +4,7 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { emailTemplates } from "../../db/email-templates.schema";
 import { senderIdentities } from "../../db/sender-identities.schema";
-import { upsertDraft } from "../drafts";
+import { getDraft, upsertDraft } from "../drafts";
 import {
   assertInboxAllowed,
   isInboxAllowed,
@@ -25,7 +25,7 @@ import {
   type MessageRef,
   type UnifiedMessage,
 } from "../messages/types";
-import { PLAYBOOK_INTRO, PLAYBOOKS } from "./playbook";
+import { AGENT_PLAYBOOK_INTRO, AGENT_PLAYBOOKS } from "./playbook";
 
 export const AGENT_TOOL_NAMES = [
   "whoami",
@@ -290,13 +290,11 @@ export function createAgentTools({ db, user }: AgentToolContext): ToolSet {
       description:
         "Return the shared saasmail operating playbook or a named workflow.",
       inputSchema: z.object({
-        workflow: z
-          .enum(["summarize_unread", "reply_unread", "enroll_by_criteria"])
-          .optional(),
+        workflow: z.enum(["summarize_unread", "reply_unread"]).optional(),
       }),
       execute: async ({ workflow }) => {
         await allowedForCall();
-        return workflow ? PLAYBOOKS[workflow] : PLAYBOOK_INTRO;
+        return workflow ? AGENT_PLAYBOOKS[workflow] : AGENT_PLAYBOOK_INTRO;
       },
     }),
 
@@ -424,14 +422,29 @@ export function createAgentTools({ db, user }: AgentToolContext): ToolSet {
         const message = page.messages[0];
         if (!message) throw new Error("Message not found");
 
+        const contextKey = `reply:${emailId}`;
+        const existing = await getDraft(db, user.id, contextKey);
+        if (
+          existing &&
+          ((existing.bodyHtml?.length ?? 0) > 0 ||
+            (existing.bodyText?.length ?? 0) > 0)
+        ) {
+          return {
+            saved: false,
+            reason: "existing_draft" as const,
+            draftId: existing.id,
+          };
+        }
+
         const draft = await upsertDraft(db, user.id, {
-          contextKey: `reply:${emailId}`,
+          contextKey,
           fromAddress: message.inbox,
           bodyHtml,
           bodyText,
           replyToEmailId: emailId,
         });
         return {
+          saved: true,
           id: draft.id,
           contextKey: draft.contextKey,
           fromAddress: draft.fromAddress,

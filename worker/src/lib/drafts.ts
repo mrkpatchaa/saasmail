@@ -20,6 +20,19 @@ export type DraftUpsertInput = {
   replyToEmailId?: string | null;
 };
 
+export async function getDraft(
+  db: DrizzleD1Database<any>,
+  userId: string,
+  contextKey: string,
+): Promise<typeof drafts.$inferSelect | null> {
+  const [row] = await db
+    .select()
+    .from(drafts)
+    .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)))
+    .limit(1);
+  return row ?? null;
+}
+
 export async function upsertDraft(
   db: DrizzleD1Database<any>,
   userId: string,

@@ -6,6 +6,8 @@ import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { createAgentTools, AGENT_TOOL_NAMES } from "../lib/agent/tools";
+import { AGENT_PLAYBOOK_INTRO, AGENT_PLAYBOOKS } from "../lib/agent/playbook";
+import { upsertDraft } from "../lib/drafts";
 import {
   applyMigrations,
   cleanDb,
@@ -187,6 +189,21 @@ describe("agent tools", () => {
     ).toEqual([]);
   });
 
+  it("only mentions tools that exist in the agent playbook", async () => {
+    await fixture();
+    const text = [AGENT_PLAYBOOK_INTRO, ...Object.values(AGENT_PLAYBOOKS)].join(
+      "\n",
+    );
+    const mentioned = [...text.matchAll(/\`([a-z][a-z0-9_]*)\(/g)].map(
+      (match) => match[1],
+    );
+
+    expect(mentioned.length).toBeGreaterThan(0);
+    for (const name of mentioned) {
+      expect(AGENT_TOOL_NAMES).toContain(name);
+    }
+  });
+
   it("scopes every read surface to the caller's inbox permissions", async () => {
     const { tools, allowedPerson, deniedPerson } = await fixture();
 
@@ -281,7 +298,8 @@ describe("agent tools", () => {
     const reply = (await execute(tools, "draft_reply", {
       emailId: "agent-email-allowed",
       bodyText: "Reply body",
-    })) as { contextKey: string };
+    })) as { saved: boolean; contextKey: string };
+    expect(reply.saved).toBe(true);
     expect(reply.contextKey).toBe("reply:agent-email-allowed");
 
     const fresh = (await execute(tools, "draft_message", {
@@ -305,5 +323,41 @@ describe("agent tools", () => {
       .from(drafts)
       .where(eq(drafts.userId, other.userId));
     expect(theirs).toEqual([]);
+  });
+
+  it("preserves a caller's non-empty human reply draft", async () => {
+    const { db, member, tools } = await fixture();
+
+    const existing = await upsertDraft(db, member.userId, {
+      contextKey: "reply:agent-email-allowed",
+      fromAddress: ALLOWED,
+      to: "allowed-customer@example.net",
+      subject: "Human subject",
+      bodyHtml: "<p>Human in-progress reply</p>",
+      bodyText: "Human in-progress reply",
+      replyToEmailId: "agent-email-allowed",
+    });
+
+    const result = await execute(tools, "draft_reply", {
+      emailId: "agent-email-allowed",
+      bodyText: "Agent replacement",
+    });
+
+    expect(result).toEqual({
+      saved: false,
+      reason: "existing_draft",
+      draftId: existing.id,
+    });
+
+    const [after] = await db
+      .select()
+      .from(drafts)
+      .where(eq(drafts.id, existing.id));
+    expect(after).toMatchObject({
+      toAddress: "allowed-customer@example.net",
+      subject: "Human subject",
+      bodyHtml: "<p>Human in-progress reply</p>",
+      bodyText: "Human in-progress reply",
+    });
   });
 });
