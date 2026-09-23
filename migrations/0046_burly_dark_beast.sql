@@ -1,0 +1,1 @@
+ALTER TABLE `sender_identities` ADD `agent_autodraft` integer DEFAULT 0 NOT NULL;

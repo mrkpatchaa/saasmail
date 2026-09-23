@@ -323,6 +323,13 @@
       "when": 1790144903481,
       "tag": "0045_organic_luckman",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1790156958264,
+      "tag": "0046_burly_dark_beast",
+      "breakpoints": true
     }
   ]
 }
