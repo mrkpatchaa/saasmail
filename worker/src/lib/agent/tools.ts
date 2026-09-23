@@ -503,6 +503,7 @@ export function createAgentTools({
           if (!env) throw new Error("Agent environment unavailable");
           const { allowed } = await visiblePerson(personId);
           const fromAddress = await latestAllowedInboxForPerson(
+            db,
             personId,
             allowed,
           );
