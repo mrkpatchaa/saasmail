@@ -21,11 +21,10 @@ function hasMeaningfulDraft(draft: Draft | null): boolean {
   if (!draft) return false;
   if (draft.bodyText?.trim()) return true;
   if (!draft.bodyHtml) return false;
-  const text = draft.bodyHtml
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/gi, " ")
-    .trim();
-  return text.length > 0;
+  const text =
+    new DOMParser().parseFromString(draft.bodyHtml, "text/html").body
+      .textContent ?? "";
+  return text.trim().length > 0;
 }
 
 function plainTextToHtml(text: string): string {
