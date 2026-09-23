@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Rule auto-replies.** Inbox-scoped automation rules can send a plain-text, threaded reply through the normal outbox and Sent history, with the inbox signature and `Auto-Submitted: auto-replied`. Automated mail, own identities, blocked/suppressed senders, Junk, and repeat senders within 24 hours are skipped; attempts are rate-limited before send and never retried after failure.
+
 - **Automations and assignment UI.** Admins can now manage ordered inbound rules from `/automations`, build and dry-run conditions/actions, reorder, enable/disable, and delete rules with inline validation. Mail adds permission-scoped assignment menus, assignee chips, bulk assignment, and an **Assigned to me** view.
 
 - **Inbound automation rules and conversation assignment.** Admins can create ordered, inbox-scoped or global `message.received` rules with bounded, case-insensitive conditions and best-effort archive, junk, folder, snooze, and assignment actions. Rule-spam follows the existing silent junk path; D21 auto-junk skips rules entirely. Conversation assignment is permission-checked, persists across new inbound mail, can be filtered through the unified message API, and rules are visible read-only through MCP under `email:read`.
