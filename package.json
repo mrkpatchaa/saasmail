@@ -40,7 +40,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.58",
     "@ai-sdk/openai": "4.0.72",
-    "@ai-sdk/react": "4.0.109",
+    "@ai-sdk/react": "4.0.112",
     "@asteasolutions/zod-to-openapi": "8.5.0",
     "@better-auth/oauth-provider": "^1.6.28",
     "@better-auth/passkey": "^1.6.28",

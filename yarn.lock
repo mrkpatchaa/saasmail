@@ -10,15 +10,6 @@
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.45"
 
-"@ai-sdk/gateway@4.0.86":
-  version "4.0.86"
-  resolved "https://registry.yarnpkg.com/@ai-sdk/gateway/-/gateway-4.0.86.tgz#c08aa2429353982a908baabfd4a212945293a285"
-  integrity sha512-sPqb9+Uparn18A7zf6GDXXIx/+tsdA7V43NyL+HaHMBl7wrFaO9fBEf4/FoiKn1D/zv0Cc3PgpJX9JsuG7MKeg==
-  dependencies:
-    "@ai-sdk/provider" "4.0.17"
-    "@ai-sdk/provider-utils" "5.0.44"
-    "@vercel/oidc" "3.2.0"
-
 "@ai-sdk/gateway@4.0.88":
   version "4.0.88"
   resolved "https://registry.yarnpkg.com/@ai-sdk/gateway/-/gateway-4.0.88.tgz#cd00ba928d021928b007a6b495e1257767541f4b"
@@ -28,13 +19,13 @@
     "@ai-sdk/provider-utils" "5.0.45"
     "@vercel/oidc" "3.2.0"
 
-"@ai-sdk/mcp@2.0.53":
-  version "2.0.53"
-  resolved "https://registry.yarnpkg.com/@ai-sdk/mcp/-/mcp-2.0.53.tgz#e3639fa3d5636a301949cb8fba06d7af2b681bd9"
-  integrity sha512-ZSBMHWb7xswRKB/CLY6N9amjtWmqaAJ6efo6pJwJ8uj+0BEiA4kQFdRLWH3lnxpv1EQRX3jGJ9P9z7iN201qjg==
+"@ai-sdk/mcp@2.0.55":
+  version "2.0.55"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/mcp/-/mcp-2.0.55.tgz#f0fd0715cf27802c2540343783e30fed19dba198"
+  integrity sha512-f0IWtAJzCRrnz/YJB14yz5yKso5yGODJfGSciQZKVKm+5wv8Ye9Dmcqxi6QZ80Q2FBJIdqrBdpDccl60BZN/DQ==
   dependencies:
     "@ai-sdk/provider" "4.0.17"
-    "@ai-sdk/provider-utils" "5.0.44"
+    "@ai-sdk/provider-utils" "5.0.45"
     cross-spawn "^7.0.6"
     pkce-challenge "^5.0.1"
 
@@ -45,17 +36,6 @@
   dependencies:
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.45"
-
-"@ai-sdk/provider-utils@5.0.44":
-  version "5.0.44"
-  resolved "https://registry.yarnpkg.com/@ai-sdk/provider-utils/-/provider-utils-5.0.44.tgz#1892f4e78490ee296a390837f69b1e36fea42f71"
-  integrity sha512-TZGr0Al1mMnRh7Wd+3qTnSdWvBDIst2Abl8mglkob8rbXF1TG5xoeVLV19rD/AtB+NL/LUPITdbQ0EFGHRBcSw==
-  dependencies:
-    "@ai-sdk/provider" "4.0.17"
-    "@standard-schema/spec" "^1.1.0"
-    "@workflow/serde" "4.1.0"
-    eventsource-parser "^3.0.8"
-    undici "^7.29.0"
 
 "@ai-sdk/provider-utils@5.0.45":
   version "5.0.45"
@@ -75,15 +55,15 @@
   dependencies:
     json-schema "^0.4.0"
 
-"@ai-sdk/react@4.0.109":
-  version "4.0.109"
-  resolved "https://registry.yarnpkg.com/@ai-sdk/react/-/react-4.0.109.tgz#d643460d4007881d0115b4dc18ebad717f1694d4"
-  integrity sha512-K0jozjURls86QQFa1Uh4vnO9DrPLebRBMDu9hiyuKRpi6foEKHRKisZQ7l5IWKwTr6shXWjHFpffDGumiB/ptA==
+"@ai-sdk/react@4.0.112":
+  version "4.0.112"
+  resolved "https://registry.yarnpkg.com/@ai-sdk/react/-/react-4.0.112.tgz#8a2bf9e34c364583ad55591c9d36d6f2eaa3b2d0"
+  integrity sha512-x+IFOOSnc3Pp9VRmdBghTYLEhlX3SwKfYgwIiAGHNnk6dnFgCkCHdZ61gbv4ufOv8jl9WKUqju8KYgmHQ39FAA==
   dependencies:
-    "@ai-sdk/mcp" "2.0.53"
+    "@ai-sdk/mcp" "2.0.55"
     "@ai-sdk/provider" "4.0.17"
-    "@ai-sdk/provider-utils" "5.0.44"
-    ai "7.0.106"
+    "@ai-sdk/provider-utils" "5.0.45"
+    ai "7.0.109"
     swr "^2.4.1"
     throttleit "2.1.0"
 
@@ -3033,15 +3013,6 @@ agents@0.24.0:
     partysocket "1.3.0"
     postal-mime "^2.7.5"
     yaml "^2.9.0"
-
-ai@7.0.106:
-  version "7.0.106"
-  resolved "https://registry.yarnpkg.com/ai/-/ai-7.0.106.tgz#deec00567e6933106b0054955f805a76e54d76bd"
-  integrity sha512-0W9AlZfyhOlPyE9ZXCFisg0uxxrmQMGdoVUz0ewRg5J+xAhVBomSspktqYeGWABFbQrYyWRVibnvSf24pTeE2w==
-  dependencies:
-    "@ai-sdk/gateway" "4.0.86"
-    "@ai-sdk/provider" "4.0.17"
-    "@ai-sdk/provider-utils" "5.0.44"
 
 ai@7.0.109:
   version "7.0.109"
