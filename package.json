@@ -83,7 +83,13 @@
     "react-router-dom": "^6.30.1",
     "resend": "^6.12.4",
     "tailwind-merge": "^3.0.2",
-    "zod": "^4.3.6"
+    "zod": "^4.3.6",
+    "agents": "0.24.0",
+    "@cloudflare/ai-chat": "0.12.0",
+    "ai": "7.0.109",
+    "@ai-sdk/anthropic": "4.0.58",
+    "@ai-sdk/openai": "4.0.72",
+    "workers-ai-provider": "4.0.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.54.1",
