@@ -391,7 +391,7 @@ export default {
         // separately caught so a cleanup failure can never stop mail going out.
         .then(() => runNewsletterMaintenance(env))
         .catch((err) =>
-          console.error("[cron] newsletter maintenance failed:", err),
+          console.error("[cron] outbox/newsletter maintenance failed:", err),
         )
         .then(() =>
           pruneJmapChanges(

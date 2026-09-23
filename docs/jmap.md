@@ -35,7 +35,7 @@ Attachment blob downloads reuse the same permission-checked attachment lookup as
 
 ## State and changes
 
-Mailbox/get, Email/get, Thread/get, and Email/set use change-log state strings. Change rows are scoped by the caller's allowed inboxes and, for personal seen/flagged state, by user. States older than the supported window are rejected with `cannotCalculateChanges`; change-log rows are retained for 30 days and pruned in bounded batches by the existing scheduled maintenance chain.
+Mailbox/get, Email/get, Thread/get, and Email/set use change-log state strings of the form `j1-<seq>-<issuedAt>-<fp>`. `issuedAt` is the start of the current UTC day, so repeated reads of unchanged data keep the same state throughout the day; Email/set's `ifInState` compares the parsed sequence and permission fingerprint, not the issuance timestamp. Change rows are scoped by the caller's allowed inboxes and, for personal seen/flagged state, by user. States older than the supported window are rejected with `cannotCalculateChanges`; change-log rows are retained for 30 days and pruned in bounded batches by the existing scheduled maintenance chain.
 
 Email/changes coalesces repeated activity for an Email into created/updated/destroyed ids and supports paging through an intermediate state. Mailbox/changes also reports mailbox count changes caused by Email activity. Because mailbox counts are small, saasmail does not page Mailbox/changes: if the result would exceed `maxChanges`, it returns `cannotCalculateChanges` instead.
 

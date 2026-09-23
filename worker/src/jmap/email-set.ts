@@ -16,7 +16,7 @@ import {
   type JmapMethodError,
 } from "./emails";
 import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
-import { currentJmapState } from "./state";
+import { currentJmapState, parseJmapState } from "./state";
 
 type SetError = {
   type: string;
@@ -267,13 +267,17 @@ export async function emailSet(
     };
   }
 
-  const oldState = (await currentJmapState(db, allowed, userId)).state;
-  if (
-    args.ifInState !== undefined &&
-    args.ifInState !== null &&
-    args.ifInState !== oldState
-  ) {
-    return { type: "stateMismatch" };
+  const currentState = await currentJmapState(db, allowed, userId);
+  const oldState = currentState.state;
+  if (args.ifInState !== undefined && args.ifInState !== null) {
+    const ifInState = parseJmapState(args.ifInState);
+    if (
+      !ifInState ||
+      ifInState.seq !== currentState.parts.seq ||
+      ifInState.fp !== currentState.parts.fp
+    ) {
+      return { type: "stateMismatch" };
+    }
   }
 
   const notCreated: Record<string, SetError> = {};

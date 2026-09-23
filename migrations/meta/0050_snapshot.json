@@ -5040,18 +5040,20 @@
         }
       },
       "indexes": {
-        "jmap_changes_inbox_seq_idx": {
-          "name": "jmap_changes_inbox_seq_idx",
+        "jmap_changes_inbox_user_seq_idx": {
+          "name": "jmap_changes_inbox_user_seq_idx",
           "columns": [
             "inbox",
+            "user_id",
             "seq"
           ],
           "isUnique": false
         },
-        "jmap_changes_created_at_idx": {
-          "name": "jmap_changes_created_at_idx",
+        "jmap_changes_user_seq_idx": {
+          "name": "jmap_changes_user_seq_idx",
           "columns": [
-            "created_at"
+            "user_id",
+            "seq"
           ],
           "isUnique": false
         }

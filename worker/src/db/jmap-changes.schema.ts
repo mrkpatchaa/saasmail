@@ -12,7 +12,11 @@ export const jmapChanges = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
-    index("jmap_changes_inbox_seq_idx").on(table.inbox, table.seq),
-    index("jmap_changes_created_at_idx").on(table.createdAt),
+    index("jmap_changes_inbox_user_seq_idx").on(
+      table.inbox,
+      table.userId,
+      table.seq,
+    ),
+    index("jmap_changes_user_seq_idx").on(table.userId, table.seq),
   ],
 );

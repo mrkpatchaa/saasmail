@@ -1,4 +1,12 @@
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { eq } from "drizzle-orm";
 import {
   applyMigrations,
@@ -75,6 +83,10 @@ describe("JMAP Email/set", () => {
 
   beforeEach(async () => {
     await cleanDb();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   async function seedReceived() {
@@ -320,6 +332,36 @@ describe("JMAP Email/set", () => {
     response = await emailSet(apiKey, userId, tooMany);
     expect(response[0]).toBe("error");
     expect(response[1].type).toBe("requestTooLarge");
+  });
+
+  it("keeps states stable across time and accepts ifInState by seq and fingerprint", async () => {
+    vi.setSystemTime(new Date("2026-09-23T12:00:00.000Z"));
+    const { userId, apiKey } = await seedReceived();
+    const id = "received:jmap-write-email";
+
+    const first = await emailGet(apiKey, userId, id);
+    vi.setSystemTime(new Date("2026-09-23T12:05:00.000Z"));
+    const second = await emailGet(apiKey, userId, id);
+    expect(second.state).toBe(first.state);
+
+    let response = await emailSet(
+      apiKey,
+      userId,
+      { [id]: { "keywords/$seen": true } },
+      { ifInState: first.state },
+    );
+    expect(response[0]).toBe("Email/set");
+
+    const current = await emailGet(apiKey, userId, id);
+    const [version, seq, issuedAt, fp] = current.state.split("-");
+    const differentSeq = `${version}-${Number(seq) + 1}-${issuedAt}-${fp}`;
+    response = await emailSet(
+      apiKey,
+      userId,
+      { [id]: { "keywords/$flagged": true } },
+      { ifInState: differentSeq },
+    );
+    expect(response).toEqual(["error", { type: "stateMismatch" }, "s"]);
   });
 
   it("feeds successful Email/set writes into Email/changes", async () => {

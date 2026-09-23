@@ -18,6 +18,7 @@ import { messageMailboxes } from "../db/message-mailboxes.schema";
 import { messageUserState } from "../db/message-user-state.schema";
 import { inboxScopeSql } from "../lib/inbox-permissions";
 import { pruneJmapChanges } from "../jmap/changes";
+import { currentJmapSeqQueries } from "../jmap/state";
 
 describe("JMAP change log", () => {
   beforeAll(async () => {
@@ -226,6 +227,29 @@ describe("JMAP change log", () => {
     expect(rows.map((row) => [row.objectId, row.op])).toEqual([
       ["received:jmap-delete-message", "d"],
     ]);
+  });
+
+  it("uses indexed state queries without scanning jmap_changes", async () => {
+    const queries = currentJmapSeqQueries(
+      {
+        isAdmin: false,
+        inboxes: Array.from(
+          { length: 41 },
+          (_, index) => `inbox-${index}@example.com`,
+        ),
+      },
+      "plan-user",
+    );
+    expect(queries).toHaveLength(3);
+
+    for (const query of queries) {
+      const plan = await getDb().all<{ detail: string }>(
+        sql`EXPLAIN QUERY PLAN ${query}`,
+      );
+      expect(
+        plan.some((row) => /\bSCAN jmap_changes\b/i.test(row.detail)),
+      ).toBe(false);
+    }
   });
 
   it("prunes only changes older than thirty days", async () => {
