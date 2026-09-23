@@ -148,18 +148,8 @@ function conversationScope(
     : sql`AND ${column} = ${conversationId}`;
 }
 
-const LOOKUP_BATCH_SIZE = 40;
-
-function batchedInScope(column: SQL, values: string[]): SQL {
-  if (values.length === 0) return sql`AND 0`;
-  const clauses: SQL[] = [];
-  for (let start = 0; start < values.length; start += LOOKUP_BATCH_SIZE) {
-    clauses.push(
-      sql`${column} IN ${values.slice(start, start + LOOKUP_BATCH_SIZE)}`,
-    );
-  }
-  return sql`AND (${sql.join(clauses, sql` OR `)})`;
-}
+export const MESSAGE_REFS_PER_QUERY = 40;
+export const THREAD_KEYS_PER_QUERY = 20;
 
 function messageRefScope(
   kind: MessageKind,
@@ -177,8 +167,10 @@ function messageRefsScope(
   refs: MessageRef[] | undefined,
 ): SQL {
   if (refs === undefined) return sql``;
-  const ids = refs.filter((ref) => ref.kind === kind).map((ref) => ref.id);
-  return batchedInScope(idColumn, [...new Set(ids)]);
+  const ids = [
+    ...new Set(refs.filter((ref) => ref.kind === kind).map((ref) => ref.id)),
+  ];
+  return ids.length === 0 ? sql`AND 0` : sql`AND ${idColumn} IN ${ids}`;
 }
 
 function threadKeysScope(
@@ -194,7 +186,10 @@ function threadKeysScope(
     personId: personIdColumn,
   });
   const threadKey = sql`COALESCE(${conversationKey}, ${kind} || ':' || ${idColumn})`;
-  return batchedInScope(threadKey, [...new Set(keys)]);
+  const uniqueKeys = [...new Set(keys)];
+  return uniqueKeys.length === 0
+    ? sql`AND 0`
+    : sql`AND ${threadKey} IN ${uniqueKeys}`;
 }
 
 function fromScope(column: SQL, value: string | undefined): SQL {
@@ -1082,6 +1077,22 @@ export async function queryMessages(
   allowed: AllowedInboxes,
   query: MessageQuery = {},
 ): Promise<MessagePage> {
+  if (
+    query.messageRefs !== undefined &&
+    query.messageRefs.length > MESSAGE_REFS_PER_QUERY
+  ) {
+    throw new Error(
+      `queryMessages messageRefs is limited to ${MESSAGE_REFS_PER_QUERY} per statement`,
+    );
+  }
+  if (
+    query.threadKeys !== undefined &&
+    query.threadKeys.length > THREAD_KEYS_PER_QUERY
+  ) {
+    throw new Error(
+      `queryMessages threadKeys is limited to ${THREAD_KEYS_PER_QUERY} per statement`,
+    );
+  }
   const built = buildMessageQuerySql(allowed, query);
   if (!built) {
     return { messages: [], nextCursor: null, hasMore: false };

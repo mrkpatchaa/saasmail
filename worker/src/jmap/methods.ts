@@ -1,6 +1,10 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
-import { queryMessages, queryMessageThreadKeys } from "../lib/messages/query";
+import {
+  queryMessages,
+  queryMessageThreadKeys,
+  THREAD_KEYS_PER_QUERY,
+} from "../lib/messages/query";
 import { serializeMessageRef } from "../lib/messages/types";
 import {
   CORE_CAPABILITY,
@@ -266,29 +270,39 @@ async function threadGet(
     requested = ids as string[];
   }
 
-  const page =
-    requested.length === 0
-      ? { messages: [], hasMore: false }
-      : await queryMessages(db, allowed, {
-          threadKeys: requested,
-          limit: MAX_EMAILS_IN_THREAD_GET + 1,
-          order: "asc",
-          viewer: { userId },
-          withState: true,
-        });
-  if (page.hasMore || page.messages.length > MAX_EMAILS_IN_THREAD_GET) {
-    return methodError(
-      "requestTooLarge",
-      `Thread/get is limited to ${MAX_EMAILS_IN_THREAD_GET} matching emails`,
-    );
-  }
-
+  const queryKeys = [...new Set(requested)];
   const grouped = new Map<string, string[]>();
-  for (const message of page.messages) {
-    const key = jmapThreadId(message);
-    const current = grouped.get(key) ?? [];
-    current.push(serializeMessageRef(message.ref));
-    grouped.set(key, current);
+  let emailCount = 0;
+
+  for (
+    let start = 0;
+    start < queryKeys.length;
+    start += THREAD_KEYS_PER_QUERY
+  ) {
+    const chunk = queryKeys.slice(start, start + THREAD_KEYS_PER_QUERY);
+    const remaining = MAX_EMAILS_IN_THREAD_GET - emailCount;
+    const page = await queryMessages(db, allowed, {
+      threadKeys: chunk,
+      limit: remaining + 1,
+      order: "asc",
+      viewer: { userId },
+      withState: true,
+    });
+
+    emailCount += page.messages.length;
+    if (page.hasMore || emailCount > MAX_EMAILS_IN_THREAD_GET) {
+      return methodError(
+        "requestTooLarge",
+        `Thread/get is limited to ${MAX_EMAILS_IN_THREAD_GET} matching emails`,
+      );
+    }
+
+    for (const message of page.messages) {
+      const key = jmapThreadId(message);
+      const current = grouped.get(key) ?? [];
+      current.push(serializeMessageRef(message.ref));
+      grouped.set(key, current);
+    }
   }
 
   const list: Record<string, unknown>[] = [];

@@ -529,6 +529,112 @@ describe("read-only JMAP", () => {
     });
   });
 
+  it("chunks Email/get across the D1 binding cap and preserves request order", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "jmap-chunk-user" });
+    await createTestPerson({
+      id: "chunk-person",
+      email: "chunk@example.com",
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      await createTestEmail({
+        id: `chunk-recv-${index}`,
+        personId: "chunk-person",
+        recipient: MINE,
+        messageId: `chunk-recv-${index}@example.com`,
+        conversationId: `chunk-recv-thread-${index}`,
+      });
+      await createTestSentEmail({
+        id: `chunk-sent-${index}`,
+        personId: null,
+        fromAddress: MINE,
+        toAddress: "chunk@example.com",
+        conversationId: `chunk-sent-thread-${index}`,
+      });
+    }
+
+    const requestedIds = Array.from({ length: 256 }, (_, index) => {
+      if (index < 200) {
+        const id = Math.floor(index / 2);
+        return index % 2 === 0
+          ? `received:chunk-recv-${id}`
+          : `sent:chunk-sent-${id}`;
+      }
+      return `received:chunk-missing-${index}`;
+    });
+
+    const result = await jmapJson(apiKey, [
+      ["Email/get", { accountId: userId, ids: requestedIds }, "g1"],
+    ]);
+    const get = result.methodResponses[0][1];
+
+    expect(get.list.map((email: any) => email.id)).toEqual(
+      requestedIds.slice(0, 200),
+    );
+    expect(get.notFound).toEqual(requestedIds.slice(200));
+  });
+
+  it("chunks Thread/get for more than 20 requested thread ids", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "jmap-thread-chunk-user",
+    });
+
+    for (let index = 0; index < 60; index += 1) {
+      await createTestSentEmail({
+        id: `thread-chunk-email-${index}`,
+        personId: null,
+        fromAddress: MINE,
+        toAddress: "alice@example.com",
+        conversationId: `thread-chunk-${index}`,
+        sentAt: 1000 + index,
+      });
+    }
+
+    const ids = Array.from(
+      { length: 60 },
+      (_, index) => `thread-chunk-${index}`,
+    );
+    const result = await jmapJson(apiKey, [
+      ["Thread/get", { accountId: userId, ids }, "t1"],
+    ]);
+
+    expect(
+      result.methodResponses[0][1].list.map((thread: any) => thread.id),
+    ).toEqual(ids);
+  });
+
+  it("keeps Thread/get requestTooLarge semantics across query chunks", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "jmap-thread-overflow-user",
+    });
+
+    for (let index = 0; index < 1025; index += 1) {
+      const threadIndex = index < 1000 ? Math.floor(index / 50) : 20;
+      await createTestSentEmail({
+        id: `thread-overflow-email-${index}`,
+        personId: null,
+        fromAddress: MINE,
+        toAddress: "alice@example.com",
+        conversationId: `thread-overflow-${threadIndex}`,
+        sentAt: 2000 + index,
+      });
+    }
+
+    const ids = Array.from(
+      { length: 21 },
+      (_, index) => `thread-overflow-${index}`,
+    );
+    const result = await jmapJson(apiKey, [
+      ["Thread/get", { accountId: userId, ids }, "t1"],
+    ]);
+
+    expect(result.methodResponses[0]).toEqual([
+      "error",
+      expect.objectContaining({ type: "requestTooLarge" }),
+      "t1",
+    ]);
+  });
+
   it("isolates method exceptions as serverFail and continues later calls", async () => {
     const db = getDb();
     const responses = await executeJmapCalls(

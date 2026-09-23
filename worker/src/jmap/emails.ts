@@ -2,6 +2,7 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
   countMessages,
+  MESSAGE_REFS_PER_QUERY,
   queryMessages,
   type MessageFolder,
   type MessageQuery,
@@ -273,16 +274,23 @@ export async function emailGet(
     requestedIds = messages.map((message) => serializeMessageRef(message.ref));
   } else {
     requestedIds = ids as string[];
-    const refs: MessageRef[] = requestedIds
-      .map((id) => parseMessageRef(id))
-      .filter((ref): ref is MessageRef => ref !== null);
-    messages =
-      refs.length === 0
-        ? []
-        : await queryEmailObjects(db, allowed, userId, {
-            messageRefs: refs,
-            limit: Math.max(refs.length, 1),
-          });
+    const refsById = new Map<string, MessageRef>();
+    for (const id of requestedIds) {
+      const ref = parseMessageRef(id);
+      if (ref) refsById.set(serializeMessageRef(ref), ref);
+    }
+
+    messages = [];
+    const refs = [...refsById.values()];
+    for (let start = 0; start < refs.length; start += MESSAGE_REFS_PER_QUERY) {
+      const chunk = refs.slice(start, start + MESSAGE_REFS_PER_QUERY);
+      messages.push(
+        ...(await queryEmailObjects(db, allowed, userId, {
+          messageRefs: chunk,
+          limit: chunk.length,
+        })),
+      );
+    }
   }
 
   const byId = new Map(
