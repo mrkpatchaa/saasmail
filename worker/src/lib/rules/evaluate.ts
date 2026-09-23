@@ -7,7 +7,11 @@ import {
 } from "../messages/conversation-state";
 import { setMailboxMembership, setMailboxState } from "../messages/state";
 import { matchConditions, type RuleMessage } from "./match";
-import type { RuleAction } from "./types";
+import {
+  RuleActionsSchema,
+  RuleConditionsSchema,
+  type RuleAction,
+} from "./types";
 
 export type RuleEvaluationInput = RuleMessage & {
   emailId: string;
@@ -78,9 +82,21 @@ export async function evaluateRules(
   const result: RuleEvaluationResult = { markedSpam: false, snoozed: false };
 
   for (const rule of matchingRules) {
-    if (!matchConditions(rule.conditions, input).matched) continue;
+    const parsedConditions = RuleConditionsSchema.safeParse(rule.conditions);
+    const parsedActions = RuleActionsSchema.safeParse(rule.actions);
+    if (!parsedConditions.success || !parsedActions.success) {
+      console.warn(`[rules] skipping malformed rule ${rule.id}:`, {
+        conditions: parsedConditions.success
+          ? undefined
+          : parsedConditions.error,
+        actions: parsedActions.success ? undefined : parsedActions.error,
+      });
+      continue;
+    }
 
-    for (const action of rule.actions) {
+    if (!matchConditions(parsedConditions.data, input).matched) continue;
+
+    for (const action of parsedActions.data) {
       try {
         const actionResult = await runAction(db, input, action);
         result.markedSpam ||= actionResult.markedSpam === true;
@@ -100,7 +116,6 @@ export async function evaluateRules(
         .set({
           matchCount: sql`${rules.matchCount} + 1`,
           lastMatchedAt: now,
-          updatedAt: now,
         })
         .where(eq(rules.id, rule.id));
     } catch (error) {

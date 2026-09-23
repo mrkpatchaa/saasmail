@@ -48,6 +48,42 @@ function ruleBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function seedReorderRules() {
+  const now = Math.floor(Date.now() / 1000);
+  await getDb()
+    .insert(rules)
+    .values([
+      {
+        id: "reorder-a",
+        name: "A",
+        inbox: INBOX,
+        trigger: "message.received",
+        conditions: [],
+        actions: [{ type: "archive" }],
+        position: 0,
+        stopProcessing: 0,
+        enabled: 1,
+        matchCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "reorder-b",
+        name: "B",
+        inbox: INBOX,
+        trigger: "message.received",
+        conditions: [],
+        actions: [{ type: "archive" }],
+        position: 1,
+        stopProcessing: 0,
+        enabled: 1,
+        matchCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+}
+
 describe("admin rule routes", () => {
   it("supports create, list, update, reorder, and delete", async () => {
     const admin = await createTestUser({
@@ -95,6 +131,51 @@ describe("admin rule routes", () => {
       method: "DELETE",
     });
     expect(res.status).toBe(200);
+  });
+
+  it("rejects a partial reorder", async () => {
+    const admin = await createTestUser({
+      id: "reorder-partial-admin",
+      role: "admin",
+    });
+    await seedReorderRules();
+
+    const res = await authFetch("/api/admin/rules/reorder", {
+      apiKey: admin.apiKey,
+      method: "POST",
+      body: JSON.stringify({ ids: ["reorder-a"] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects duplicate ids in a reorder", async () => {
+    const admin = await createTestUser({
+      id: "reorder-duplicate-admin",
+      role: "admin",
+    });
+    await seedReorderRules();
+
+    const res = await authFetch("/api/admin/rules/reorder", {
+      apiKey: admin.apiKey,
+      method: "POST",
+      body: JSON.stringify({ ids: ["reorder-a", "reorder-a"] }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects unknown ids in a reorder", async () => {
+    const admin = await createTestUser({
+      id: "reorder-unknown-admin",
+      role: "admin",
+    });
+    await seedReorderRules();
+
+    const res = await authFetch("/api/admin/rules/reorder", {
+      apiKey: admin.apiKey,
+      method: "POST",
+      body: JSON.stringify({ ids: ["reorder-a", "missing-rule"] }),
+    });
+    expect(res.status).toBe(400);
   });
 
   it("is admin-only", async () => {

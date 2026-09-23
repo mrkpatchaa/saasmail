@@ -329,6 +329,57 @@ describe("inbound rule evaluation semantics", () => {
     expect(rule?.matchCount).toBe(1);
   });
 
+  it("skips a malformed stored rule and continues with later rules", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO rules (
+        id, name, inbox, trigger, conditions, actions, position,
+        stop_processing, enabled, match_count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        "corrupt-rule",
+        "Corrupt rule",
+        INBOX,
+        "message.received",
+        JSON.stringify({ field: "subject" }),
+        JSON.stringify([]),
+        0,
+        0,
+        1,
+        0,
+        now,
+        now,
+      )
+      .run();
+    await addRule({
+      id: "valid-after-corrupt",
+      actions: [{ type: "archive" }],
+      position: 1,
+    });
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await deliver("corrupt-rule@example.com");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("[rules] skipping malformed rule corrupt-rule:"),
+      expect.anything(),
+    );
+    warnSpy.mockRestore();
+
+    const email = await getDb().query.emails.findFirst({
+      where: (row, { eq }) =>
+        eq(row.messageId, "<corrupt-rule@example.com>"),
+    });
+    const [state] = await stateFor(email!.id);
+    expect(state.archivedAt).toEqual(expect.any(Number));
+
+    const rows = await getDb().select().from(rules);
+    expect(rows.find((row) => row.id === "corrupt-rule")?.matchCount).toBe(0);
+    expect(
+      rows.find((row) => row.id === "valid-after-corrupt")?.matchCount,
+    ).toBe(1);
+  });
+
   it("skips rules for D21 auto-junked mail", async () => {
     const now = Math.floor(Date.now() / 1000);
     await getDb().insert(senderIdentities).values({

@@ -268,13 +268,7 @@ adminRulesRouter.openapi(deleteRuleRoute, async (c) => {
 });
 
 const ReorderSchema = z.object({
-  ids: z
-    .array(z.string().min(1).max(500))
-    .min(1)
-    .max(1000)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: "Rule ids must be unique",
-    }),
+  ids: z.array(z.string().min(1).max(500)).max(1000),
 });
 
 const reorderRoute = createRoute({
@@ -303,16 +297,33 @@ adminRulesRouter.openapi(reorderRoute, async (c) => {
   const { ids } = c.req.valid("json");
   const existing = await db.select({ id: rules.id }).from(rules);
   const existingIds = new Set(existing.map((row) => row.id));
-  if (ids.some((id) => !existingIds.has(id))) {
-    return c.json({ error: "Unknown rule id" }, 400);
+  const requestedIds = new Set(ids);
+  if (
+    ids.length !== existing.length ||
+    requestedIds.size !== ids.length ||
+    ids.some((id) => !existingIds.has(id))
+  ) {
+    return c.json(
+      { error: "Rule ids must be an exact permutation of all rule ids" },
+      400,
+    );
   }
 
-  const now = Math.floor(Date.now() / 1000);
-  for (const [position, id] of ids.entries()) {
-    await db
-      .update(rules)
-      .set({ position, updatedAt: now })
-      .where(eq(rules.id, id));
+  if (ids.length > 0) {
+    const now = Math.floor(Date.now() / 1000);
+    const [firstId, ...restIds] = ids;
+    await db.batch([
+      db
+        .update(rules)
+        .set({ position: 0, updatedAt: now })
+        .where(eq(rules.id, firstId!)),
+      ...restIds.map((id, index) =>
+        db
+          .update(rules)
+          .set({ position: index + 1, updatedAt: now })
+          .where(eq(rules.id, id)),
+      ),
+    ]);
   }
   return c.json({ success: true as const }, 200);
 });

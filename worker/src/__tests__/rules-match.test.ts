@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  htmlToText,
   matchCondition,
   matchConditions,
   type RuleMessage,
@@ -68,19 +67,22 @@ describe("rule condition matching", () => {
     },
   );
 
-  it("uses HTML text only when bodyText is absent", () => {
-    const message = {
-      ...base,
-      bodyText: null,
-      bodyHtml: "<div>Hello <strong>World</strong> &amp; friends</div>",
-    };
-    expect(
-      matchCondition(
-        { field: "body", operator: "contains", value: "world & friends" },
-        message,
-      ),
-    ).toBe(true);
-  });
+  it.each([null, "", "   "])(
+    "uses HTML text when bodyText is %j",
+    (bodyText) => {
+      const message = {
+        ...base,
+        bodyText,
+        bodyHtml: "<div>Hello <strong>World</strong> &amp; friends</div>",
+      };
+      expect(
+        matchCondition(
+          { field: "body", operator: "contains", value: "world & friends" },
+          message,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("does not match null spam scores", () => {
     expect(
@@ -104,11 +106,5 @@ describe("rule condition matching", () => {
       true,
       false,
     ]);
-  });
-
-  it("converts HTML without regex tag stripping", () => {
-    expect(htmlToText("<p>Hello&nbsp;<b>world</b></p>")).toContain(
-      "Hello world",
-    );
   });
 });

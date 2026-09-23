@@ -11,8 +11,10 @@ stored, but before conversation wake-up and notification fan-out.
 Rules are ordered by `position` and then id. An enabled
 `message.received` rule applies either to one inbox or, when `inbox` is
 null, to every inbox. All conditions inside a rule must match; use multiple
-rules when you need OR semantics. `stop_processing` stops evaluation after a
-matching rule.
+rules when you need OR semantics. A rule with zero conditions matches every
+message in its scope. Be careful with catch-all rules: pairing one with
+`mark_spam` or `archive` affects all mail in that scope. `stop_processing`
+stops evaluation after a matching rule.
 
 Text matching is case-insensitive. Regular expressions are deliberately not
 supported. A rule may have at most 10 conditions and 5 actions, and it must
@@ -24,7 +26,7 @@ Supported conditions:
 - `from_domain`: `equals`
 - `subject`: `contains`, `equals`, `starts_with`
 - `body`: `contains`; plain text is preferred, with HTML converted to text
-  only when plain text is absent
+  when plain text is absent or blank
 - `has_attachments`: `is`
 - `spam_score`: `gte`, `lte`; a missing score never matches
 - `header`: a header `name` plus `equals` or `contains`

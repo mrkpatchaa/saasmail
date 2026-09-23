@@ -1,3 +1,4 @@
+import { htmlToText } from "../html-to-text";
 import type { RuleCondition } from "./types";
 
 export type RuleMessage = {
@@ -30,74 +31,6 @@ function textMatches(
   if (operator === "contains") return left.includes(right);
   if (operator === "starts_with") return left.startsWith(right);
   return left.endsWith(right);
-}
-
-function decodeEntity(entity: string): string | null {
-  const named: Record<string, string> = {
-    amp: "&",
-    apos: "'",
-    gt: ">",
-    lt: "<",
-    nbsp: " ",
-    quot: '"',
-  };
-  const lower = entity.toLowerCase();
-  if (named[lower] !== undefined) return named[lower];
-
-  if (lower.startsWith("#x")) {
-    const code = Number.parseInt(lower.slice(2), 16);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : null;
-  }
-  if (lower.startsWith("#")) {
-    const code = Number.parseInt(lower.slice(1), 10);
-    return Number.isFinite(code) ? String.fromCodePoint(code) : null;
-  }
-  return null;
-}
-
-export function htmlToText(html: string): string {
-  let result = "";
-  let inTag = false;
-
-  for (let index = 0; index < html.length; index += 1) {
-    const char = html[index];
-    if (char === "<") {
-      inTag = true;
-      if (result.length > 0 && !result.endsWith(" ")) result += " ";
-      continue;
-    }
-    if (char === ">" && inTag) {
-      inTag = false;
-      continue;
-    }
-    if (inTag) continue;
-
-    if (char === "&") {
-      const end = html.indexOf(";", index + 1);
-      if (end !== -1 && end - index <= 12) {
-        const decoded = decodeEntity(html.slice(index + 1, end));
-        if (decoded !== null) {
-          result += decoded;
-          index = end;
-          continue;
-        }
-      }
-    }
-    result += char;
-  }
-
-  let normalized = "";
-  let pendingSpace = false;
-  for (const char of result) {
-    if (char.trim() === "") {
-      pendingSpace = normalized.length > 0;
-      continue;
-    }
-    if (pendingSpace) normalized += " ";
-    normalized += char;
-    pendingSpace = false;
-  }
-  return normalized;
 }
 
 function headerValue(
@@ -137,12 +70,13 @@ export function matchCondition(
         condition.operator,
         condition.value,
       );
-    case "body":
-      return textMatches(
-        message.bodyText ?? htmlToText(message.bodyHtml ?? ""),
-        "contains",
-        condition.value,
-      );
+    case "body": {
+      const body =
+        message.bodyText !== null && message.bodyText.trim() !== ""
+          ? message.bodyText
+          : htmlToText(message.bodyHtml ?? "");
+      return textMatches(body, "contains", condition.value);
+    }
     case "has_attachments":
       return message.hasAttachments === condition.value;
     case "spam_score":
