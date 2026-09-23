@@ -22,3 +22,5 @@ jobs:
       - name: Type check
         run: yarn tsc --noEmit
       - run: yarn test
+      - name: Run web tests
+        run: yarn test:web
