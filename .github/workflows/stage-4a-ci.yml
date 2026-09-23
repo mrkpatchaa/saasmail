@@ -1,0 +1,71 @@
+name: Stage 4a helper
+
+on:
+  push:
+    branches: [stage-4a-rules-engine]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: stage-4a-rules-engine
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - name: Seed local D1
+        run: |
+          cp wrangler.jsonc.ci wrangler.jsonc
+          mkdir -p dist/client
+          npx wrangler d1 execute saasmail-db --local --command "SELECT 1"
+      - name: Generate rules engine migration
+        run: |
+          yarn db:generate --name=rules_engine
+          if ! git diff --quiet -- migrations; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add migrations
+            git commit -m "chore: generate rules engine migration"
+            git push origin HEAD:stage-4a-rules-engine
+          fi
+      - name: Verify migration generation is clean
+        run: |
+          yarn db:generate
+          git diff --exit-code -- migrations
+      - run: node scripts/check-lockfile-integrity.mjs
+      - name: Format helper changes
+        run: |
+          yarn format
+          if ! git diff --quiet; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add -A
+            git commit -m "chore: format stage 4a"
+            git push origin HEAD:stage-4a-rules-engine
+          fi
+      - run: yarn format:check
+      - run: yarn tsc --noEmit
+      - run: yarn test
+      - run: yarn test:web
+      - name: Prepare E2E environment
+        run: |
+          sed -i '/"ai": { "binding": "AI" },/d' wrangler.jsonc
+          cat > .dev.vars <<EOF
+          DEMO_MODE=1
+          DISABLE_PASSKEY_GATE=true
+          BETTER_AUTH_SECRET=ci-only-secret-not-used-for-real-auth
+          UNSUBSCRIBE_SECRET=ci-only-unsubscribe-secret-not-used-for-real-tokens
+          EOF
+      - name: Install Chromium
+        run: yarn playwright install --with-deps chromium
+      - name: Run E2E suite
+        run: yarn test:e2e
+        env:
+          CI: "true"
