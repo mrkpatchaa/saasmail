@@ -20,7 +20,8 @@ import {
   type JmapMethodError,
 } from "./emails";
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
-import { jmapState } from "./state";
+import { emailChanges, mailboxChanges } from "./changes";
+import { currentJmapState, jmapState } from "./state";
 
 const MAX_EMAILS_IN_THREAD_GET = 1024;
 
@@ -161,13 +162,14 @@ async function mailboxGet(
     return methodError("requestTooLarge");
   }
 
+  const state = (await currentJmapState(db, allowed, userId)).state;
   const all = await listJmapMailboxes(db, allowed, userId);
   const byId = new Map(
-    all.list.map((mailbox) => [mailbox.id as string, mailbox]),
+    all.map((mailbox) => [mailbox.id as string, mailbox]),
   );
   const requested =
     ids === undefined || ids === null
-      ? all.list.map((mailbox) => mailbox.id as string)
+      ? all.map((mailbox) => mailbox.id as string)
       : (ids as string[]);
   if (requested.length > MAX_OBJECTS_IN_GET) {
     return methodError("requestTooLarge");
@@ -193,7 +195,7 @@ async function mailboxGet(
     name: "Mailbox/get",
     result: {
       accountId: userId,
-      state: all.state,
+      state,
       list,
       notFound,
     },
@@ -220,13 +222,13 @@ async function mailboxQuery(
   }
 
   const all = await listJmapMailboxes(db, allowed, userId);
-  const ids = all.list.map((mailbox) => mailbox.id as string);
+  const ids = all.map((mailbox) => mailbox.id as string);
   return {
     ok: true,
     name: "Mailbox/query",
     result: {
       accountId: userId,
-      queryState: all.state,
+      queryState: await jmapState(db, allowed, userId),
       canCalculateChanges: false,
       position: window.position,
       ids: ids.slice(window.position, window.position + window.limit),
@@ -255,12 +257,13 @@ async function threadGet(
     return methodError("requestTooLarge");
   }
 
+  const state = (await currentJmapState(db, allowed, userId)).state;
   let requested: string[];
   if (ids === undefined || ids === null) {
     requested = await queryMessageThreadKeys(
       db,
       allowed,
-      { viewer: { userId } },
+      { viewer: { userId }, ignoreSnooze: true },
       MAX_OBJECTS_IN_GET + 1,
     );
     if (requested.length > MAX_OBJECTS_IN_GET) {
@@ -287,6 +290,7 @@ async function threadGet(
       order: "asc",
       viewer: { userId },
       withState: true,
+      ignoreSnooze: true,
     });
 
     emailCount += page.messages.length;
@@ -325,7 +329,7 @@ async function threadGet(
     name: "Thread/get",
     result: {
       accountId: userId,
-      state: await jmapState(db, allowed, userId),
+      state,
       list,
       notFound,
     },
@@ -408,6 +412,20 @@ export async function executeMethod(
 ): Promise<MethodResult> {
   if (name === "Core/echo") {
     return { ok: true, name, result: args };
+  }
+
+  if (name === "Email/changes" || name === "Mailbox/changes") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result =
+      name === "Email/changes"
+        ? await emailChanges(db, allowed, user.id, user.id, args)
+        : await mailboxChanges(db, allowed, user.id, user.id, args);
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
   }
 
   if (/\/(changes|queryChanges)$/.test(name)) {

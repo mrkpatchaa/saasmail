@@ -10,7 +10,6 @@ import {
 } from "../lib/messages/query";
 import { SYSTEM_MAILBOX_ROLES, type SystemMailboxRole } from "./constants";
 import { customMailboxId, systemMailboxId } from "./ids";
-import { jmapState } from "./state";
 
 export type MailboxDescriptor =
   | {
@@ -144,6 +143,7 @@ async function mailboxCounts(
     inboxes: [descriptor.inbox],
     folder,
     viewer: { userId },
+    ignoreSnooze: true,
   };
 
   const [totalEmails, unreadEmails, totalThreads, unreadThreads] =
@@ -166,7 +166,7 @@ export async function listJmapMailboxes(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
   userId: string,
-): Promise<{ list: Record<string, unknown>[]; state: string }> {
+): Promise<Record<string, unknown>[]> {
   const descriptors = await loadMailboxDescriptors(db, allowed);
   const customRows = await db.select().from(mailboxes);
   const customById = new Map(customRows.map((row) => [row.id, row]));
@@ -232,8 +232,5 @@ export async function listJmapMailboxes(
     });
   }
 
-  return {
-    list,
-    state: await jmapState(db, allowed, userId),
-  };
+  return list;
 }

@@ -16,7 +16,7 @@ import {
 } from "../lib/messages/types";
 import { customMailboxId, systemMailboxId } from "./ids";
 import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
-import { jmapState } from "./state";
+import { currentJmapState, jmapState } from "./state";
 import { MAX_OBJECTS_IN_GET } from "./constants";
 
 export type JmapMethodError = {
@@ -80,12 +80,6 @@ function systemMailboxForMessage(message: UnifiedMessage): string | null {
   if (message.direction === "outbound") return systemMailboxId(inbox, "sent");
   if (state?.spamAt) return systemMailboxId(inbox, "junk");
   if (state?.archivedAt) return systemMailboxId(inbox, "archive");
-  if (
-    state?.snoozedUntil &&
-    state.snoozedUntil > Math.floor(Date.now() / 1000)
-  ) {
-    return null;
-  }
   return systemMailboxId(inbox, "inbox");
 }
 
@@ -225,6 +219,7 @@ async function queryEmailObjects(
 ): Promise<UnifiedMessage[]> {
   const page = await queryMessages(db, allowed, {
     ...query,
+    ignoreSnooze: true,
     viewer: { userId },
     withState: true,
     withAttachments: true,
@@ -254,11 +249,12 @@ export async function emailGet(
     };
   }
 
+  const state = (await currentJmapState(db, allowed, userId)).state;
   let requestedIds: string[];
   let messages: UnifiedMessage[];
 
   if (ids === undefined || ids === null) {
-    const count = await countMessages(db, allowed, {});
+    const count = await countMessages(db, allowed, { ignoreSnooze: true });
     if (count > MAX_OBJECTS_IN_GET) {
       return {
         type: "requestTooLarge",
@@ -311,7 +307,7 @@ export async function emailGet(
 
   return {
     accountId,
-    state: await jmapState(db, allowed, userId),
+    state,
     list,
     notFound,
   };
@@ -478,6 +474,7 @@ export async function emailQuery(
 
   let queryExtra: MessageQuery = {
     order: "desc",
+    ignoreSnooze: true,
     offset: position,
     limit: Math.max(limit, 1),
     viewer: { userId },
