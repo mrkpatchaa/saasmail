@@ -56,6 +56,13 @@ interface TopNavProps {
   onAgentToggle?: () => void;
 }
 
+export function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Mac|iPhone|iPad|iPod/i.test(
+    `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`,
+  );
+}
+
 export default function TopNav({
   agentOpen = false,
   onAgentToggle,
@@ -96,6 +103,7 @@ export default function TopNav({
   }, [location.pathname]);
 
   const isAdmin = session?.user?.role === "admin";
+  const agentShortcut = isMacPlatform() ? "⌘J" : "Ctrl+J";
 
   return (
     <div className="fixed left-0 right-0 top-0 z-50 flex justify-center px-4 pt-2 md:px-6">
@@ -156,7 +164,8 @@ export default function TopNav({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              aria-label="Toggle mail agent"
+              aria-label={`Toggle mail agent (${agentShortcut})`}
+              title={`Toggle mail agent (${agentShortcut})`}
               aria-pressed={agentOpen}
               onClick={onAgentToggle}
               className={`flex items-center gap-1.5 rounded-[6px] px-2 py-1.5 text-xs font-medium transition-colors ${
@@ -168,7 +177,7 @@ export default function TopNav({
               <Bot className="h-3.5 w-3.5" />
               <span className="hidden md:inline">Agent</span>
               <span className="hidden text-[9px] text-white/40 lg:inline">
-                ⌘J
+                {agentShortcut}
               </span>
             </button>
 

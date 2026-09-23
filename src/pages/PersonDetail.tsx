@@ -126,7 +126,8 @@ export default function PersonDetail({
   onBlock,
 }: PersonDetailProps) {
   const navigate = useNavigate();
-  const { publish: publishAgentContext } = useAgentContext();
+  const { publish: publishAgentContext, clear: clearAgentContext } =
+    useAgentContext();
   const [emails, setEmails] = useState<Email[]>([]);
   const [loading, setLoading] = useState(true);
   const [enrollModalOpen, setEnrollModalOpen] = useState(false);
@@ -319,17 +320,26 @@ export default function PersonDetail({
   // re-renders don't keep yanking the scroll position.
   const location = useLocation();
   const linkedMessageId = readMessageHash(location.hash);
+  const linkedMessage = linkedMessageId
+    ? emails.find((email) => email.id === linkedMessageId)
+    : undefined;
 
   useEffect(() => {
     publishAgentContext({
       inbox: activeInbox ?? undefined,
-      folder: "inbox",
-      selectedMessageRef: linkedMessageId
-        ? `received:${linkedMessageId}`
+      selectedMessageRef: linkedMessage
+        ? `${linkedMessage.type}:${linkedMessage.id}`
         : undefined,
       personId: person.id,
     });
-  }, [activeInbox, linkedMessageId, person.id, publishAgentContext]);
+    return clearAgentContext;
+  }, [
+    activeInbox,
+    clearAgentContext,
+    linkedMessage,
+    person.id,
+    publishAgentContext,
+  ]);
 
   const lastHashHandled = useRef<string | null>(null);
   useEffect(() => {

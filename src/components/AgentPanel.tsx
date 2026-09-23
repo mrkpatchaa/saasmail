@@ -16,9 +16,13 @@ import {
   type AgentSession,
   type AgentStatus,
 } from "@/lib/api";
+import { showToast } from "@/lib/toast";
+import AgentChatSession from "@/agent/AgentChatSession";
+import type { ComposePrefill } from "@/pages/ComposeModal";
 
 interface AgentPanelProps {
   onClose: () => void;
+  onOpenCompose: (prefill?: ComposePrefill, contextKey?: string) => void;
 }
 
 function newestFirst(sessions: AgentSession[]): AgentSession[] {
@@ -29,25 +33,20 @@ export function titleFromFirstMessage(text: string): string {
   return text.trim().slice(0, 60);
 }
 
-export default function AgentPanel({ onClose }: AgentPanelProps) {
+function errorDescription(error: unknown): string | undefined {
+  return error instanceof Error ? error.message : undefined;
+}
+
+export default function AgentPanel({
+  onClose,
+  onOpenCompose,
+}: AgentPanelProps) {
   const [status, setStatus] = useState<AgentStatus | null>(null);
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  const [draftMessage, setDraftMessage] = useState("");
   const [loading, setLoading] = useState(true);
-
-  async function reloadSessions() {
-    const result = await fetchAgentSessions();
-    const sorted = newestFirst(result.sessions);
-    setSessions(sorted);
-    setActiveId((current) => {
-      if (current && sorted.some((session) => session.id === current)) {
-        return current;
-      }
-      return sorted.find((session) => session.archivedAt === null)?.id ?? null;
-    });
-  }
+  const [serviceError, setServiceError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,6 +59,16 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
         setActiveId(
           sorted.find((session) => session.archivedAt === null)?.id ?? null,
         );
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = "Couldn't reach the agent service";
+        setServiceError(message);
+        showToast({
+          kind: "error",
+          message,
+          description: errorDescription(error),
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -80,39 +89,63 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
     sessions.find((session) => session.id === activeId) ?? null;
 
   async function createSession() {
-    const created = await createAgentSession();
-    setSessions((current) => newestFirst([created, ...current]));
-    setActiveId(created.id);
+    try {
+      const created = await createAgentSession();
+      setSessions((current) => newestFirst([created, ...current]));
+      setActiveId(created.id);
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn't create agent session",
+        description: errorDescription(error),
+      });
+    }
   }
 
   async function renameSession(session: AgentSession) {
     const next = window.prompt("Rename agent session", session.title ?? "");
     if (next === null) return;
-    const updated = await updateAgentSession(session.id, {
-      title: next.trim() || null,
-    });
-    setSessions((current) =>
-      newestFirst(
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      ),
-    );
+    try {
+      const updated = await updateAgentSession(session.id, {
+        title: next.trim() || null,
+      });
+      setSessions((current) =>
+        newestFirst(
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        ),
+      );
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn't rename agent session",
+        description: errorDescription(error),
+      });
+    }
   }
 
   async function archiveSession(session: AgentSession) {
-    const updated = await updateAgentSession(session.id, {
-      archived: session.archivedAt === null,
-    });
-    setSessions((current) =>
-      newestFirst(
-        current.map((item) => (item.id === updated.id ? updated : item)),
-      ),
-    );
-    if (updated.archivedAt !== null && activeId === updated.id) {
-      setActiveId(
-        sessions.find(
-          (item) => item.id !== updated.id && item.archivedAt === null,
-        )?.id ?? null,
+    try {
+      const updated = await updateAgentSession(session.id, {
+        archived: session.archivedAt === null,
+      });
+      setSessions((current) =>
+        newestFirst(
+          current.map((item) => (item.id === updated.id ? updated : item)),
+        ),
       );
+      if (updated.archivedAt !== null && activeId === updated.id) {
+        setActiveId(
+          sessions.find(
+            (item) => item.id !== updated.id && item.archivedAt === null,
+          )?.id ?? null,
+        );
+      }
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn't update agent session",
+        description: errorDescription(error),
+      });
     }
   }
 
@@ -120,38 +153,51 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
     if (!window.confirm("Delete this agent session? This cannot be undone.")) {
       return;
     }
-    await deleteAgentSession(session.id);
-    setSessions((current) => current.filter((item) => item.id !== session.id));
-    if (activeId === session.id) {
-      setActiveId(
-        sessions.find(
-          (item) => item.id !== session.id && item.archivedAt === null,
-        )?.id ?? null,
+    try {
+      await deleteAgentSession(session.id);
+      setSessions((current) =>
+        current.filter((item) => item.id !== session.id),
       );
-    }
-  }
-
-  async function handleComposerSubmit(event: React.FormEvent) {
-    event.preventDefault();
-    const text = draftMessage.trim();
-    if (!text || !activeSession || !status?.configured) return;
-
-    if (!activeSession.title) {
-      const title = titleFromFirstMessage(text);
-      if (title) {
-        const updated = await updateAgentSession(activeSession.id, { title });
-        setSessions((current) =>
-          newestFirst(
-            current.map((item) => (item.id === updated.id ? updated : item)),
-          ),
+      if (activeId === session.id) {
+        setActiveId(
+          sessions.find(
+            (item) => item.id !== session.id && item.archivedAt === null,
+          )?.id ?? null,
         );
       }
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn't delete agent session",
+        description: errorDescription(error),
+      });
     }
-
-    // Commit 3 wires this composer to useAgentChat. Keep the typed text in place
-    // for now so this shell never pretends a message was sent before streaming
-    // exists.
   }
+
+  async function titleSessionFromFirstMessage(sessionId: string, text: string) {
+    const current = sessions.find((session) => session.id === sessionId);
+    if (!current || current.title) return;
+    const title = titleFromFirstMessage(text);
+    if (!title) return;
+
+    try {
+      const updated = await updateAgentSession(sessionId, { title });
+      setSessions((items) =>
+        newestFirst(
+          items.map((item) => (item.id === updated.id ? updated : item)),
+        ),
+      );
+    } catch (error) {
+      showToast({
+        kind: "error",
+        message: "Couldn't title agent session",
+        description: errorDescription(error),
+      });
+    }
+  }
+
+  const composerDisabled =
+    loading || serviceError !== null || !status?.configured || !activeSession;
 
   return (
     <aside
@@ -258,61 +304,60 @@ export default function AgentPanel({ onClose }: AgentPanelProps) {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-center">
-        <p className="max-w-xs text-sm text-text-tertiary">
-          {activeSession
-            ? "Conversation messages will appear here."
-            : "Create a session to start a conversation."}
-        </p>
-      </div>
-
-      {!loading && status && !status.configured && (
-        <div
-          data-testid="agent-not-configured"
-          className="mx-3 mb-2 rounded-[6px] border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-text-secondary"
-        >
-          The mail agent is not configured. See{" "}
-          <a
-            href="/docs/agent.md"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline"
+      {serviceError ? (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-center">
+          <div
+            data-testid="agent-service-error"
+            className="rounded-[6px] border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-text-secondary"
           >
-            docs/agent.md
-          </a>{" "}
-          for provider setup.
+            {serviceError}
+          </div>
+        </div>
+      ) : status?.configured && activeSession ? (
+        <AgentChatSession
+          key={activeSession.instanceName}
+          session={activeSession}
+          onOpenCompose={onOpenCompose}
+          onFirstUserMessage={titleSessionFromFirstMessage}
+        />
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-center">
+            <p className="max-w-xs text-sm text-text-tertiary">
+              {activeSession
+                ? "Conversation messages will appear here."
+                : "Create a session to start a conversation."}
+            </p>
+          </div>
+
+          {!loading && status && !status.configured && (
+            <div
+              data-testid="agent-not-configured"
+              className="mx-3 mb-2 rounded-[6px] border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-text-secondary"
+            >
+              The mail agent is not configured. Set ANTHROPIC_API_KEY or
+              OPENAI_API_KEY as a Worker secret, or configure the Workers AI
+              binding (Workers Paid). See docs/agent.md in the repository.
+            </div>
+          )}
+
+          <div className="border-t border-border p-3">
+            <textarea
+              data-testid="agent-composer"
+              aria-label="Message the mail agent"
+              disabled={composerDisabled}
+              placeholder={
+                serviceError
+                  ? "Agent service unavailable"
+                  : status?.configured
+                    ? "Create a session to start chatting"
+                    : "Configure an agent provider to start chatting"
+              }
+              className="min-h-20 w-full resize-none rounded-[6px] border border-border bg-bg px-3 py-2 text-sm text-text-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            />
+          </div>
         </div>
       )}
-
-      <form
-        onSubmit={handleComposerSubmit}
-        className="border-t border-border p-3"
-      >
-        <textarea
-          data-testid="agent-composer"
-          aria-label="Message the mail agent"
-          value={draftMessage}
-          onChange={(event) => setDraftMessage(event.target.value)}
-          disabled={!status?.configured || !activeSession}
-          placeholder={
-            status?.configured
-              ? "Ask about your mail…"
-              : "Configure an agent provider to start chatting"
-          }
-          className="min-h-20 w-full resize-none rounded-[6px] border border-border bg-bg px-3 py-2 text-sm text-text-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
-        />
-        <div className="mt-2 flex justify-end">
-          <button
-            type="submit"
-            disabled={
-              !status?.configured || !activeSession || !draftMessage.trim()
-            }
-            className="rounded-[6px] bg-text-primary px-3 py-1.5 text-xs font-medium text-bg disabled:opacity-40"
-          >
-            Send
-          </button>
-        </div>
-      </form>
     </aside>
   );
 }

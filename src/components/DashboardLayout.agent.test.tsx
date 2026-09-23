@@ -37,7 +37,7 @@ vi.mock("@/lib/branding", () => ({
   useBranding: () => ({ webmcpEnabled: false }),
 }));
 vi.mock("@/components/AgentPanel", () => ({
-  default: ({ onClose }: { onClose: () => void }) => (
+  default: ({ onClose }: { onClose: () => void; onOpenCompose: unknown }) => (
     <aside data-testid="agent-panel">
       <textarea aria-label="Message the mail agent" />
       <button onClick={onClose}>Close</button>

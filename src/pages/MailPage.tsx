@@ -75,7 +75,8 @@ export default function MailPage() {
   );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [replyRequestKey, setReplyRequestKey] = useState(0);
-  const { publish: publishAgentContext } = useAgentContext();
+  const { publish: publishAgentContext, clear: clearAgentContext } =
+    useAgentContext();
 
   const inbox = params.inbox;
   const folder = params.folder;
@@ -90,7 +91,15 @@ export default function MailPage() {
       folder: systemFolder ?? (mailboxId ? `mailbox:${mailboxId}` : undefined),
       selectedMessageRef: selectedRef ?? undefined,
     });
-  }, [inbox, mailboxId, publishAgentContext, selectedRef, systemFolder]);
+    return clearAgentContext;
+  }, [
+    clearAgentContext,
+    inbox,
+    mailboxId,
+    publishAgentContext,
+    selectedRef,
+    systemFolder,
+  ]);
 
   const allowedInboxes = useMemo(
     () => stats?.senderIdentities.map((identity) => identity.email) ?? [],

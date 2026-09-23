@@ -104,7 +104,12 @@ export default function DashboardLayout() {
               </main>
               <Footer />
             </div>
-            {agentOpen && <AgentPanel onClose={() => setAgentOpen(false)} />}
+            {agentOpen && (
+              <AgentPanel
+                onClose={() => setAgentOpen(false)}
+                onOpenCompose={openCompose}
+              />
+            )}
           </div>
 
           <ComposeFab onClick={() => openCompose()} />
