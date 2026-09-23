@@ -3,12 +3,15 @@ import { eq } from "drizzle-orm";
 import { customerPeople, customers } from "../db/customers.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import {
+  getCustomerByPerson,
   linkPeople,
   resolveCustomerScope,
   unlinkPerson,
 } from "../lib/customers";
+import { queryMessages } from "../lib/messages/query";
 import {
   applyMigrations,
+  authFetch,
   cleanDb,
   createTestEmail,
   createTestPerson,
@@ -16,7 +19,7 @@ import {
   getDb,
 } from "./helpers";
 
-describe("identity graph service", () => {
+describe("identity graph", () => {
   beforeAll(applyMigrations);
   beforeEach(cleanDb);
 
@@ -61,8 +64,8 @@ describe("identity graph service", () => {
     ).toHaveLength(0);
   });
 
-  it("returns 404 when either person is outside the existing person visibility rule", async () => {
-    const { userId } = await createTestUser({
+  it("returns 404 when either person is outside the caller's existing visibility", async () => {
+    const { userId, apiKey } = await createTestUser({
       id: "identity-member",
       role: "member",
       email: "identity-member@example.com",
@@ -90,15 +93,77 @@ describe("identity graph service", () => {
       messageId: "hidden@example.test",
     });
 
-    await expect(
-      linkPeople(
-        db,
-        { isAdmin: false, inboxes: ["allowed@example.com"] },
-        userId,
-        "visible",
-        "hidden",
-      ),
-    ).rejects.toMatchObject({ status: 404 });
+    const res = await authFetch("/api/customers/link", {
+      apiKey,
+      method: "POST",
+      body: JSON.stringify({
+        personId: "visible",
+        otherPersonId: "hidden",
+      }),
+    });
+    expect(res.status).toBe(404);
     expect(await db.select().from(customers)).toHaveLength(0);
+  });
+
+  it("widens a customer timeline without widening inbox permission scope", async () => {
+    const db = getDb();
+    const allowed = { isAdmin: true as const };
+    await createTestPerson({ id: "scope-a", email: "a@example.com" });
+    await createTestPerson({ id: "scope-b", email: "b@example.com" });
+    const linked = await linkPeople(db, allowed, null, "scope-a", "scope-b");
+    await createTestEmail({
+      id: "scope-a-mail",
+      personId: "scope-a",
+      recipient: "allowed@example.com",
+      messageId: "scope-a@example.test",
+    });
+    await createTestEmail({
+      id: "scope-b-mail",
+      personId: "scope-b",
+      recipient: "allowed@example.com",
+      messageId: "scope-b@example.test",
+    });
+    await createTestEmail({
+      id: "scope-b-denied",
+      personId: "scope-b",
+      recipient: "denied@example.com",
+      messageId: "scope-b-denied@example.test",
+    });
+
+    const page = await queryMessages(
+      db,
+      { isAdmin: false, inboxes: ["allowed@example.com"] },
+      { customerId: linked.customerId!, limit: 10 },
+    );
+    expect(page.messages.map((message) => message.ref.id).sort()).toEqual([
+      "scope-a-mail",
+      "scope-b-mail",
+    ]);
+  });
+
+  it("returns only visible people from the customer read model", async () => {
+    const db = getDb();
+    await createTestPerson({ id: "view-a", email: "a@example.com" });
+    await createTestPerson({ id: "view-b", email: "b@example.com" });
+    await linkPeople(db, { isAdmin: true }, null, "view-a", "view-b");
+    await createTestEmail({
+      id: "view-a-mail",
+      personId: "view-a",
+      recipient: "allowed@example.com",
+      messageId: "view-a@example.test",
+    });
+    await createTestEmail({
+      id: "view-b-mail",
+      personId: "view-b",
+      recipient: "denied@example.com",
+      messageId: "view-b@example.test",
+    });
+
+    const customer = await getCustomerByPerson(
+      db,
+      { isAdmin: false, inboxes: ["allowed@example.com"] },
+      "view-a",
+    );
+    expect(customer?.people.map((person) => person.id)).toEqual(["view-a"]);
   });
 });

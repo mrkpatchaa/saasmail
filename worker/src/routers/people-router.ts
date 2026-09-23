@@ -46,6 +46,7 @@ const GroupedPersonSchema = z.object({
   recipientCount: z.number(),
   recipients: z.array(z.string()),
   hasAttachment: z.number(),
+  linkedCount: z.number(),
 });
 
 // Group conversation row — represents a single multi-participant thread.
@@ -238,6 +239,16 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
       ? sql`AND ${sql.join(personConditions, sql` AND `)}`
       : sql``;
   const personWhereClause = sql`WHERE 1=1 ${personExtraConditions} ${scopeClause}`;
+  const linkedPeopleScope = allowed.isAdmin
+    ? sql``
+    : allowed.inboxes.length === 0
+      ? sql`AND 0`
+      : sql`AND cp2.person_id IN (
+          SELECT person_id FROM ${emails} WHERE recipient IN ${allowed.inboxes}
+          UNION
+          SELECT person_id FROM ${sentEmails}
+          WHERE from_address IN ${allowed.inboxes} AND person_id IS NOT NULL
+        )`;
 
   // Aggregate over both received and sent emails so people we've composed to
   // appear in the list, not just senders who have emailed us. We exclude
@@ -261,6 +272,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
     recipientCount: number;
     recipientsCsv: string | null;
     hasAttachment: number;
+    linkedCount: number;
   }>(sql`
     SELECT
       s.id,
@@ -277,7 +289,21 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
         WHERE e2.person_id = s.id
         AND a.content_id IS NULL
         AND e2.conversation_id IS NULL
-      ) AS hasAttachment
+      ) AS hasAttachment,
+      MAX(
+        0,
+        (
+          SELECT COUNT(*)
+          FROM customer_people cp2
+          WHERE cp2.customer_id = (
+            SELECT cp.customer_id
+            FROM customer_people cp
+            WHERE cp.person_id = s.id
+            LIMIT 1
+          )
+          ${linkedPeopleScope}
+        ) - 1
+      ) AS linkedCount
     FROM ${activity} e
     JOIN ${people} s ON s.id = e.person_id
     ${personWhereClause}
@@ -296,6 +322,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
     recipientCount: r.recipientCount,
     recipients: r.recipientsCsv ? r.recipientsCsv.split(",") : [],
     hasAttachment: r.hasAttachment,
+    linkedCount: r.linkedCount,
   }));
 
   // ----- GROUP CONVERSATION ROWS (conversation_id IS NOT NULL) -----
