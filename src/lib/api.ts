@@ -1119,6 +1119,8 @@ export interface AdminInbox {
   forwardTo: string | null;
   /** SpamAssassin-style X-Spam-Score cutoff; null = automatic filing off. */
   spamThreshold: number | null;
+  /** Optional per-inbox instructions appended to the native agent prompt. */
+  agentInstructions: string | null;
   assignedUserIds: string[];
 }
 
@@ -1146,6 +1148,7 @@ export async function updateInboxSettings(
     signatureHtml?: string | null;
     forwardTo?: string | null;
     spamThreshold?: number | null;
+    agentInstructions?: string;
   },
 ): Promise<{
   email: string;
@@ -1154,6 +1157,7 @@ export async function updateInboxSettings(
   signatureHtml: string | null;
   forwardTo: string | null;
   spamThreshold: number | null;
+  agentInstructions: string | null;
 }> {
   return apiFetch(`/api/admin/inboxes/${encodeURIComponent(email)}`, {
     method: "PATCH",
