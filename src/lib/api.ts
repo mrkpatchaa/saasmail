@@ -170,19 +170,17 @@ export async function fetchSuggestedReply(
 }
 
 export async function useSuggestedReply(id: string): Promise<SuggestedReply> {
-  return apiFetch(
-    `/api/suggested-replies/${encodeURIComponent(id)}/use`,
-    { method: "POST" },
-  );
+  return apiFetch(`/api/suggested-replies/${encodeURIComponent(id)}/use`, {
+    method: "POST",
+  });
 }
 
 export async function dismissSuggestedReply(
   id: string,
 ): Promise<SuggestedReply> {
-  return apiFetch(
-    `/api/suggested-replies/${encodeURIComponent(id)}/dismiss`,
-    { method: "POST" },
-  );
+  return apiFetch(`/api/suggested-replies/${encodeURIComponent(id)}/dismiss`, {
+    method: "POST",
+  });
 }
 
 export async function fetchAgentStatus(): Promise<AgentStatus> {

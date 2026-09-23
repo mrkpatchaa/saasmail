@@ -228,9 +228,7 @@ export default function AdminInboxTable() {
     } catch {
       setInboxes((prev) =>
         prev.map((row) =>
-          row.email === inbox.email
-            ? { ...row, agentAutodraft: before }
-            : row,
+          row.email === inbox.email ? { ...row, agentAutodraft: before } : row,
         ),
       );
     }

@@ -81,9 +81,7 @@ export default function SuggestedReplyCard({
 
       await saveDraft({
         contextKey,
-        ...(existing?.fromAddress
-          ? { fromAddress: existing.fromAddress }
-          : {}),
+        ...(existing?.fromAddress ? { fromAddress: existing.fromAddress } : {}),
         ...(existing?.toAddress ? { to: existing.toAddress } : {}),
         ...(existing?.cc ? { cc: existing.cc } : {}),
         ...(existing?.subject ? { subject: existing.subject } : {}),
