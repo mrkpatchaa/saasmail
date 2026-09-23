@@ -1,10 +1,9 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { users } from "../../db/auth.schema";
-import { emails } from "../../db/emails.schema";
 import { listMembers } from "../../db/list-members.schema";
 import { lists } from "../../db/lists.schema";
 import { sequenceEnrollments } from "../../db/sequence-enrollments.schema";
@@ -20,6 +19,7 @@ import {
 } from "../customers";
 import { getDraft, upsertDraft } from "../drafts";
 import { enrollPersonInSequence } from "../enroll-sequence";
+import { isSuppressed } from "../suppressions";
 import {
   assertInboxAllowed,
   inboxFilter,
@@ -46,6 +46,7 @@ import {
   type MessageRef,
   type UnifiedMessage,
 } from "../messages/types";
+import { latestAllowedInboxForPerson } from "./crm";
 import { AGENT_PLAYBOOK_INTRO, AGENT_PLAYBOOKS } from "./playbook";
 
 export const AGENT_APPROVAL_TOOL_NAMES = [
@@ -203,24 +204,6 @@ export function createAgentTools({
     }
     if (row.archivedAt !== null) throw new Error("List is archived");
     return row;
-  };
-
-  const latestAllowedInboxForPerson = async (
-    personId: string,
-    allowed: AllowedInboxes,
-  ) => {
-    const rows = await db
-      .select({ recipient: emails.recipient })
-      .from(emails)
-      .where(eq(emails.personId, personId))
-      .orderBy(desc(emails.receivedAt));
-    const inbox = rows.find((row) =>
-      isInboxAllowed(allowed, row.recipient),
-    )?.recipient;
-    if (!inbox) {
-      throw new Error("No permitted inbox is available for this person");
-    }
-    return inbox;
   };
 
   return {
@@ -542,6 +525,7 @@ export function createAgentTools({
             enrollmentId: result.enrollment.id,
             sequenceId,
             personId,
+            fromAddress,
           };
         }),
     }),
@@ -576,43 +560,44 @@ export function createAgentTools({
           const { allowed, person } = await visiblePerson(personId);
           const list = await visibleList(listId, allowed);
           const now = Math.floor(Date.now() / 1000);
-          const contact = await findOrCreateContact(
-            db,
-            person.email,
-            person.name,
-            now,
-          );
+          const normalizedEmail = person.email.trim().toLowerCase();
           const [existing] = await db
             .select()
             .from(listMembers)
             .where(
               and(
                 eq(listMembers.listId, listId),
-                eq(listMembers.contactId, contact.id),
+                eq(listMembers.email, normalizedEmail),
               ),
             )
             .limit(1);
 
+          if (existing?.status === "unsubscribed") {
+            throw new Error(
+              `This person unsubscribed from '${list.name}'; the agent can't re-subscribe them`,
+            );
+          }
+          if (await isSuppressed(db, normalizedEmail)) {
+            throw new Error(
+              `This person is suppressed; the agent can't subscribe them to '${list.name}'`,
+            );
+          }
           if (existing) {
-            if (existing.status !== "subscribed") {
-              await db
-                .update(listMembers)
-                .set({
-                  status: "subscribed",
-                  subscribedAt: now,
-                  unsubscribedAt: null,
-                  unsubscribeReason: null,
-                })
-                .where(eq(listMembers.id, existing.id));
-            }
             return {
               success: true,
+              alreadyMember: true,
               listId: list.id,
               personId,
               memberId: existing.id,
             };
           }
 
+          const contact = await findOrCreateContact(
+            db,
+            normalizedEmail,
+            person.name,
+            now,
+          );
           const [countRow] = await db
             .select({ count: sql<number>`count(*)` })
             .from(listMembers)
@@ -645,7 +630,13 @@ export function createAgentTools({
             unsubscribeReason: null,
             createdAt: now,
           });
-          return { success: true, listId: list.id, personId, memberId };
+          return {
+            success: true,
+            alreadyMember: false,
+            listId: list.id,
+            personId,
+            memberId,
+          };
         }),
     }),
 

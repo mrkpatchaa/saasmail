@@ -1,9 +1,11 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { and, eq } from "drizzle-orm";
 import { users } from "../db/auth.schema";
+import { listMembers } from "../db/list-members.schema";
 import { lists } from "../db/lists.schema";
 import { sequenceEnrollments } from "../db/sequence-enrollments.schema";
 import { sequences } from "../db/sequences.schema";
+import { latestAllowedInboxForPerson } from "../lib/agent/crm";
 import {
   inboxFilter,
   isInboxAllowed,
@@ -13,6 +15,7 @@ import { queryMessages } from "../lib/messages/query";
 import { parseMessageRef } from "../lib/messages/types";
 import { getPersonScoped } from "../lib/queries/people";
 import { bearerSecurity } from "../lib/openapi-auth";
+import { isSuppressed } from "../lib/suppressions";
 import type { Variables } from "../variables";
 
 export const agentApprovalRouter = new OpenAPIHono<{
@@ -115,6 +118,13 @@ agentApprovalRouter.openapi(summaryRoute, async (c) => {
     const sequence = sequenceRows[0];
     if (!person || !sequence) return c.json(notFound(), 404);
 
+    let fromAddress: string;
+    try {
+      fromAddress = await latestAllowedInboxForPerson(db, personId, allowed);
+    } catch {
+      return c.json(notFound(), 404);
+    }
+
     let steps: Array<{ delayHours?: number }> = [];
     try {
       steps = JSON.parse(sequence.steps);
@@ -124,7 +134,7 @@ agentApprovalRouter.openapi(summaryRoute, async (c) => {
     const count = steps.length;
     return c.json(
       {
-        summary: `Enroll ${person.email} in '${sequence.name}' (${count} email${count === 1 ? "" : "s"}${sequenceDuration(steps)})`,
+        summary: `Enroll ${person.email} in '${sequence.name}' from ${fromAddress} (${count} email${count === 1 ? "" : "s"}${sequenceDuration(steps)})`,
       },
       200,
     );
@@ -193,6 +203,51 @@ agentApprovalRouter.openapi(summaryRoute, async (c) => {
     ) {
       return c.json(notFound(), 404);
     }
+    const normalizedEmail = person.email.trim().toLowerCase();
+    const [existing] = await db
+      .select({ status: listMembers.status })
+      .from(listMembers)
+      .where(
+        and(
+          eq(listMembers.listId, listId),
+          eq(listMembers.email, normalizedEmail),
+        ),
+      )
+      .limit(1);
+
+    if (existing?.status === "unsubscribed") {
+      return c.json(
+        {
+          summary: `Can't add: ${person.email} unsubscribed from '${list.name}'`,
+        },
+        200,
+      );
+    }
+    if (await isSuppressed(db, normalizedEmail)) {
+      return c.json(
+        {
+          summary: `Can't add: ${person.email} is suppressed from '${list.name}'`,
+        },
+        200,
+      );
+    }
+    if (existing?.status === "subscribed") {
+      return c.json(
+        {
+          summary: `${person.email} is already subscribed to list '${list.name}'`,
+        },
+        200,
+      );
+    }
+    if (existing?.status === "pending") {
+      return c.json(
+        {
+          summary: `${person.email} is already pending on list '${list.name}'`,
+        },
+        200,
+      );
+    }
+
     return c.json(
       { summary: `Add ${person.email} to list '${list.name}'` },
       200,

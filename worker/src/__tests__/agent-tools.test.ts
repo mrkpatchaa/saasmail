@@ -10,6 +10,7 @@ import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { customerPeople, customers } from "../db/customers.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
+import { suppressions } from "../db/suppressions.schema";
 import { createAgentTools, AGENT_TOOL_NAMES } from "../lib/agent/tools";
 import { AGENT_PLAYBOOK_INTRO, AGENT_PLAYBOOKS } from "../lib/agent/playbook";
 import { upsertDraft } from "../lib/drafts";
@@ -427,6 +428,158 @@ describe("agent tools", () => {
       .from(listMembers)
       .where(eq(listMembers.listId, "agent-list-revoked"));
     expect(rows).toEqual([]);
+  });
+
+  it("refuses to re-subscribe an unsubscribed list member", async () => {
+    const { db, tools, allowedPerson } = await fixture();
+    const now = Math.floor(Date.now() / 1000);
+    await db.insert(lists).values({
+      id: "agent-list-unsubscribed",
+      name: "Beta unsubscribed",
+      description: null,
+      fromAddress: ALLOWED,
+      doubleOptIn: 0,
+      confirmationTemplateSlug: null,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(listMembers).values({
+      id: "agent-member-unsubscribed",
+      listId: "agent-list-unsubscribed",
+      contactId: "agent-contact-unsubscribed",
+      email: allowedPerson.email.toLowerCase(),
+      status: "unsubscribed",
+      source: "api",
+      formId: null,
+      submittedIp: null,
+      consentSource: "api",
+      consentAt: now - 100,
+      importJobId: null,
+      subscribedAt: now - 100,
+      confirmedAt: null,
+      unsubscribedAt: now - 10,
+      unsubscribeReason: "user",
+      createdAt: now - 100,
+    });
+
+    await expect(
+      execute(tools, "add_to_list", {
+        personId: allowedPerson.id,
+        listId: "agent-list-unsubscribed",
+      }),
+    ).rejects.toThrow(
+      "This person unsubscribed from 'Beta unsubscribed'; the agent can't re-subscribe them",
+    );
+
+    const [after] = await db
+      .select()
+      .from(listMembers)
+      .where(eq(listMembers.id, "agent-member-unsubscribed"));
+    expect(after).toMatchObject({
+      status: "unsubscribed",
+      unsubscribedAt: now - 10,
+      unsubscribeReason: "user",
+    });
+  });
+
+  it("refuses to add a suppressed address to a list", async () => {
+    const { db, tools, allowedPerson } = await fixture();
+    const now = Math.floor(Date.now() / 1000);
+    await db.insert(lists).values({
+      id: "agent-list-suppressed",
+      name: "Beta suppressed",
+      description: null,
+      fromAddress: ALLOWED,
+      doubleOptIn: 0,
+      confirmationTemplateSlug: null,
+      archivedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(suppressions).values({
+      id: "agent-suppression",
+      email: allowedPerson.email.toLowerCase(),
+      reason: "unsubscribe",
+      source: "test",
+      note: null,
+      createdAt: now,
+    });
+
+    await expect(
+      execute(tools, "add_to_list", {
+        personId: allowedPerson.id,
+        listId: "agent-list-suppressed",
+      }),
+    ).rejects.toThrow(
+      "This person is suppressed; the agent can't subscribe them to 'Beta suppressed'",
+    );
+
+    const rows = await db
+      .select()
+      .from(listMembers)
+      .where(eq(listMembers.listId, "agent-list-suppressed"));
+    expect(rows).toEqual([]);
+  });
+
+  it("treats subscribed and pending list members as no-ops", async () => {
+    const { db, tools, allowedPerson } = await fixture();
+    const now = Math.floor(Date.now() / 1000);
+
+    for (const status of ["subscribed", "pending"] as const) {
+      const listId = `agent-list-${status}`;
+      const memberId = `agent-member-${status}`;
+      await db.insert(lists).values({
+        id: listId,
+        name: `Beta ${status}`,
+        description: null,
+        fromAddress: ALLOWED,
+        doubleOptIn: 0,
+        confirmationTemplateSlug: null,
+        archivedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await db.insert(listMembers).values({
+        id: memberId,
+        listId,
+        contactId: `agent-contact-${status}`,
+        email: allowedPerson.email.toLowerCase(),
+        status,
+        source: "api",
+        formId: null,
+        submittedIp: null,
+        consentSource: "api",
+        consentAt: now - 100,
+        importJobId: null,
+        subscribedAt: status === "subscribed" ? now - 100 : null,
+        confirmedAt: null,
+        unsubscribedAt: null,
+        unsubscribeReason: null,
+        createdAt: now - 100,
+      });
+
+      const result = await execute(tools, "add_to_list", {
+        personId: allowedPerson.id,
+        listId,
+      });
+      expect(result).toMatchObject({
+        success: true,
+        alreadyMember: true,
+        listId,
+        personId: allowedPerson.id,
+        memberId,
+      });
+
+      const [after] = await db
+        .select()
+        .from(listMembers)
+        .where(eq(listMembers.id, memberId));
+      expect(after.status).toBe(status);
+      expect(after.subscribedAt).toBe(
+        status === "subscribed" ? now - 100 : null,
+      );
+    }
   });
 
   it("returns the guard error on a sixth approval-gated execution", async () => {

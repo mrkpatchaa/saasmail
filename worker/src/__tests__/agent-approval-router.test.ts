@@ -1,8 +1,11 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
+import { listMembers } from "../db/list-members.schema";
 import { lists } from "../db/lists.schema";
 import { sequences } from "../db/sequences.schema";
+import { suppressions } from "../db/suppressions.schema";
+import { createAgentTools } from "../lib/agent/tools";
 import {
   applyMigrations,
   authFetch,
@@ -12,6 +15,16 @@ import {
   createTestUser,
   getDb,
 } from "./helpers";
+
+async function execute(
+  tools: ReturnType<typeof createAgentTools>,
+  name: string,
+  input: Record<string, unknown> = {},
+) {
+  const entry = (tools as any)[name];
+  if (!entry?.execute) throw new Error(`Tool ${name} has no execute function`);
+  return entry.execute(input, {});
+}
 
 describe("agent approval summaries", () => {
   beforeAll(async () => {
@@ -73,6 +86,17 @@ describe("agent approval summaries", () => {
         updatedAt: now,
       },
       {
+        id: "approval-summary-suppressed-list",
+        name: "Suppressed beta",
+        description: null,
+        fromAddress: "allowed@example.com",
+        doubleOptIn: 0,
+        confirmationTemplateSlug: null,
+        archivedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
         id: "approval-summary-hidden-list",
         name: "Hidden",
         description: null,
@@ -98,9 +122,32 @@ describe("agent approval summaries", () => {
       }),
     });
     expect(enroll.status).toBe(200);
-    expect(await enroll.json()).toEqual({
-      summary: "Enroll jane@acme.com in 'Onboarding' (3 emails over 10 days)",
+    const enrollSummary = (await enroll.json()) as { summary: string };
+    expect(enrollSummary).toEqual({
+      summary:
+        "Enroll jane@acme.com in 'Onboarding' from allowed@example.com (3 emails over 10 days)",
     });
+
+    const tools = createAgentTools({
+      db,
+      env: { DEMO_MODE: "1" } as any,
+      user: {
+        id: member.userId,
+        email: "approval-summary-member@example.com",
+        role: "member",
+      },
+    });
+    const executedEnrollment = (await execute(tools, "enroll_in_sequence", {
+      personId: visible.id,
+      sequenceId: "approval-summary-sequence",
+    })) as { success: boolean; fromAddress: string };
+    expect(executedEnrollment).toMatchObject({
+      success: true,
+      fromAddress: "allowed@example.com",
+    });
+    expect(enrollSummary.summary).toContain(
+      ` from ${executedEnrollment.fromAddress} `,
+    );
 
     const list = await authFetch("/api/agent/approval-summary", {
       method: "POST",
@@ -114,6 +161,63 @@ describe("agent approval summaries", () => {
     expect(list.status).toBe(200);
     expect(await list.json()).toEqual({
       summary: "Add jane@acme.com to list 'Beta testers'",
+    });
+
+    await db.insert(listMembers).values({
+      id: "approval-summary-unsubscribed-member",
+      listId: "approval-summary-list",
+      contactId: "approval-summary-contact",
+      email: "jane@acme.com",
+      status: "unsubscribed",
+      source: "api",
+      formId: null,
+      submittedIp: null,
+      consentSource: "api",
+      consentAt: now - 100,
+      importJobId: null,
+      subscribedAt: now - 100,
+      confirmedAt: null,
+      unsubscribedAt: now - 10,
+      unsubscribeReason: "user",
+      createdAt: now - 100,
+    });
+    const unsubscribed = await authFetch("/api/agent/approval-summary", {
+      method: "POST",
+      apiKey: member.apiKey,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        toolName: "add_to_list",
+        input: { personId: visible.id, listId: "approval-summary-list" },
+      }),
+    });
+    expect(unsubscribed.status).toBe(200);
+    expect(await unsubscribed.json()).toEqual({
+      summary: "Can't add: jane@acme.com unsubscribed from 'Beta testers'",
+    });
+
+    await db.insert(suppressions).values({
+      id: "approval-summary-suppression",
+      email: "jane@acme.com",
+      reason: "unsubscribe",
+      source: "test",
+      note: null,
+      createdAt: now,
+    });
+    const suppressed = await authFetch("/api/agent/approval-summary", {
+      method: "POST",
+      apiKey: member.apiKey,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        toolName: "add_to_list",
+        input: {
+          personId: visible.id,
+          listId: "approval-summary-suppressed-list",
+        },
+      }),
+    });
+    expect(suppressed.status).toBe(200);
+    expect(await suppressed.json()).toEqual({
+      summary: "Can't add: jane@acme.com is suppressed from 'Suppressed beta'",
     });
 
     const hidden = await authFetch("/api/agent/approval-summary", {

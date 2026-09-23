@@ -90,6 +90,7 @@ function ToolBadge({
   const outputRecord = record(output);
   const inputRecord = record(input);
   const [approvalSummary, setApprovalSummary] = useState<string | null>(null);
+  const approvalBlocked = approvalSummary?.startsWith("Can't ") ?? false;
 
   useEffect(() => {
     if (!approvalId) return;
@@ -176,19 +177,21 @@ function ToolBadge({
           </p>
           {needsApproval && approvalId && (
             <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => onApproval({ id: approvalId, approved: true })}
-                className="rounded-[6px] bg-text-primary px-2.5 py-1 font-medium text-bg"
-              >
-                Approve
-              </button>
+              {!approvalBlocked && (
+                <button
+                  type="button"
+                  onClick={() => onApproval({ id: approvalId, approved: true })}
+                  className="rounded-[6px] bg-text-primary px-2.5 py-1 font-medium text-bg"
+                >
+                  Approve
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => onApproval({ id: approvalId, approved: false })}
                 className="rounded-[6px] border border-border bg-card px-2.5 py-1 font-medium text-text-primary"
               >
-                Deny
+                {approvalBlocked ? "Dismiss" : "Deny"}
               </button>
             </div>
           )}

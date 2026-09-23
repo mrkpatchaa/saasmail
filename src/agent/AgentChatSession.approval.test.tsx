@@ -99,6 +99,33 @@ describe("AgentChatSession approvals", () => {
     });
   });
 
+  it("shows only Dismiss when the database says the action is blocked", async () => {
+    vi.mocked(api.fetchAgentApprovalSummary).mockResolvedValue({
+      summary: "Can't add: jane@acme.com unsubscribed from 'Beta testers'",
+    });
+    renderWithPart({
+      type: "tool-add_to_list",
+      toolCallId: "approval-call-blocked",
+      state: "approval-requested",
+      input: { personId: "person-1", listId: "list-1" },
+      approval: { id: "approval-id-blocked" },
+    });
+
+    expect(
+      await screen.findByText(
+        "Can't add: jane@acme.com unsubscribed from 'Beta testers'",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(sdk.approval).toHaveBeenCalledWith({
+      id: "approval-id-blocked",
+      approved: false,
+    });
+  });
+
   it("falls back to tool args and shows the recorded decision", async () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
       new Error("not found"),
