@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import ReplyComposer from "@/components/ReplyComposer";
+import SuggestedReplyCard from "@/components/SuggestedReplyCard";
 import SnoozeMenu, {
   snoozeInHours,
   toLocalDateTimeInput,
@@ -396,6 +397,15 @@ export default function MailReadingPane({
                       )}
                     </div>
                   </div>
+
+                  {selectedMessage.direction === "inbound" && (
+                    <div className="pt-5">
+                      <SuggestedReplyCard
+                        emailId={selectedMessage.ref.slice("received:".length)}
+                        onUse={() => setReplyOpen(true)}
+                      />
+                    </div>
+                  )}
 
                   <div className="py-6">
                     {selectedMessage.bodyHtml ? (
