@@ -1,0 +1,42 @@
+name: Stage 2c helper
+
+on:
+  push:
+    branches: [stage-2c-suggested-replies]
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: stage-2c-suggested-replies
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - name: Seed local D1
+        run: |
+          cp wrangler.jsonc.ci wrangler.jsonc
+          mkdir -p dist/client
+          npx wrangler d1 execute saasmail-db --local --command "SELECT 1"
+      - name: Generate migration if needed
+        run: |
+          yarn db:generate
+          if ! git diff --quiet -- migrations; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add migrations
+            git commit -m "chore: generate suggested replies migration"
+            git push origin HEAD:stage-2c-suggested-replies
+          fi
+      - run: node scripts/check-lockfile-integrity.mjs
+      - run: yarn format:check
+      - run: yarn tsc --noEmit
+      - run: yarn test
+      - run: yarn test:web
