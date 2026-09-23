@@ -1,7 +1,9 @@
+import { eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { users } from "../../db/auth.schema";
 import { emailTemplates } from "../../db/email-templates.schema";
 import { senderIdentities } from "../../db/sender-identities.schema";
 import { getDraft, upsertDraft } from "../drafts";
@@ -106,7 +108,26 @@ async function listAllowedTemplates(
 }
 
 export function createAgentTools({ db, user }: AgentToolContext): ToolSet {
-  const allowedForCall = () => resolveAllowedInboxes(db, user);
+  const currentUserForCall = async (): Promise<AgentUser> => {
+    const [current] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+      })
+      .from(users)
+      .where(eq(users.id, user.id))
+      .limit(1);
+
+    if (!current) {
+      throw new Error("Agent user no longer exists");
+    }
+    return current;
+  };
+
+  const allowedForCall = async () =>
+    resolveAllowedInboxes(db, await currentUserForCall());
 
   return {
     whoami: tool({
@@ -114,14 +135,10 @@ export function createAgentTools({ db, user }: AgentToolContext): ToolSet {
         "Identify the signed-in user and the inboxes this agent may act on.",
       inputSchema: z.object({}),
       execute: async () => {
-        const allowed = await allowedForCall();
+        const currentUser = await currentUserForCall();
+        const allowed = await resolveAllowedInboxes(db, currentUser);
         return {
-          user: {
-            id: user.id,
-            name: user.name ?? null,
-            email: user.email ?? null,
-            role: user.role,
-          },
+          user: currentUser,
           inboxes: allowed.isAdmin ? "all" : allowed.inboxes,
         };
       },

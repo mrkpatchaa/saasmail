@@ -1,5 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { users } from "../db/auth.schema";
 import { drafts } from "../db/drafts.schema";
 import { emailTemplates } from "../db/email-templates.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
@@ -250,6 +251,42 @@ describe("agent tools", () => {
     expect(templates).not.toContain("agent-denied");
 
     expect(await execute(tools, "get_playbook")).toContain("saasmail");
+  });
+
+  it("re-reads role before every tool call so demotion narrows scope immediately", async () => {
+    const { db, member } = await fixture();
+
+    await db
+      .update(users)
+      .set({ role: "admin" })
+      .where(eq(users.id, member.userId));
+
+    const tools = createAgentTools({
+      db,
+      user: {
+        id: member.userId,
+        name: "Agent Admin",
+        email: "agent-tools-member@example.com",
+        role: "admin",
+      },
+    });
+
+    const before = JSON.stringify(await execute(tools, "list_inboxes"));
+    expect(before).toContain(ALLOWED);
+    expect(before).toContain(DENIED);
+
+    await db
+      .update(users)
+      .set({ role: "member" })
+      .where(eq(users.id, member.userId));
+
+    const afterInboxes = JSON.stringify(await execute(tools, "list_inboxes"));
+    expect(afterInboxes).toContain(ALLOWED);
+    expect(afterInboxes).not.toContain(DENIED);
+
+    const afterMessages = JSON.stringify(await execute(tools, "list_messages"));
+    expect(afterMessages).toContain("agent-email-allowed");
+    expect(afterMessages).not.toContain("agent-email-denied");
   });
 
   it("rejects organise and draft actions against a denied inbox", async () => {

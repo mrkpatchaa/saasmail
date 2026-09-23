@@ -5,9 +5,16 @@ import { tool } from "ai";
 import { z } from "zod";
 import {
   buildMailAgentInstructions,
+  runMailAgentChat,
   streamMailAgentTurn,
 } from "../agent/mail-agent";
-import { applyMigrations, authFetch, cleanDb, createTestUser } from "./helpers";
+import {
+  applyMigrations,
+  authFetch,
+  cleanDb,
+  createTestUser,
+  getDb,
+} from "./helpers";
 
 const MOCK_USAGE = {
   inputTokens: {
@@ -132,6 +139,96 @@ describe("agent session runtime", () => {
     );
 
     expect(response.status).toBe(403);
+  });
+
+  it("runs a turn without lifecycle props when the session row exists", async () => {
+    const alice = await createTestUser({
+      id: "agent-no-props-alice",
+      email: "agent-no-props-alice@example.com",
+    });
+    const sessionRes = await authFetch("/api/agent/sessions", {
+      method: "POST",
+      apiKey: alice.apiKey,
+      body: JSON.stringify({ title: "No props" }),
+    });
+    const session = (await sessionRes.json()) as { instanceName: string };
+
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          { type: "text-start" as const, id: "text-no-props" },
+          {
+            type: "text-delta" as const,
+            id: "text-no-props",
+            delta: "Ready without lifecycle props.",
+          },
+          { type: "text-end" as const, id: "text-no-props" },
+          {
+            type: "finish" as const,
+            finishReason: { unified: "stop" as const, raw: "stop" },
+            usage: MOCK_USAGE,
+          },
+        ]),
+      }),
+    });
+
+    const response = await runMailAgentChat({
+      db: getDb(),
+      env: {},
+      instanceName: session.instanceName,
+      messages: [
+        {
+          id: "user-no-props",
+          role: "user",
+          parts: [{ type: "text", text: "Hello" }],
+        },
+      ],
+      modelOverride: model,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("Ready without lifecycle props.");
+  });
+
+  it("rejects a turn after its agent session is deleted", async () => {
+    const alice = await createTestUser({
+      id: "agent-deleted-alice",
+      email: "agent-deleted-alice@example.com",
+    });
+    const sessionRes = await authFetch("/api/agent/sessions", {
+      method: "POST",
+      apiKey: alice.apiKey,
+      body: JSON.stringify({ title: "Delete me" }),
+    });
+    const session = (await sessionRes.json()) as {
+      id: string;
+      instanceName: string;
+    };
+
+    const deleteRes = await authFetch(`/api/agent/sessions/${session.id}`, {
+      method: "DELETE",
+      apiKey: alice.apiKey,
+    });
+    expect(deleteRes.status).toBe(200);
+
+    const response = await runMailAgentChat({
+      db: getDb(),
+      env: {},
+      instanceName: session.instanceName,
+      messages: [
+        {
+          id: "user-after-delete",
+          role: "user",
+          parts: [{ type: "text", text: "Are you there?" }],
+        },
+      ],
+      modelOverride: new MockLanguageModelV4(),
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: "Agent session not found",
+    });
   });
 
   it("rejects unauthenticated agent requests", async () => {

@@ -1,5 +1,6 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
-import { drizzle } from "drizzle-orm/d1";
+import { eq, sql } from "drizzle-orm";
+import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   convertToModelMessages,
   isStepCount,
@@ -9,6 +10,8 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
+import { agentSessions } from "../db/agent-sessions.schema";
+import { users } from "../db/auth.schema";
 import { schema } from "../db/schema";
 import { AGENT_PLAYBOOK_INTRO } from "../lib/agent/playbook";
 import { selectModel, type AgentModelEnv } from "../lib/agent/provider";
@@ -21,9 +24,26 @@ export type MailAgentUser = {
   role: string | null;
 };
 
-export type MailAgentProps = {
-  user: MailAgentUser;
-};
+export async function resolveMailAgentUser(
+  db: DrizzleD1Database<any>,
+  instanceName: string,
+): Promise<MailAgentUser | null> {
+  const [row] = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    })
+    .from(agentSessions)
+    .innerJoin(users, eq(agentSessions.userId, users.id))
+    .where(
+      sql`'u-' || ${agentSessions.userId} || '-s-' || ${agentSessions.id} = ${instanceName}`,
+    )
+    .limit(1);
+
+  return row ?? null;
+}
 
 const MAIL_AGENT_BASE_INSTRUCTIONS = `You are saasmail's native mail agent. You act only as the signed-in user and only through the provided tools.
 
@@ -119,44 +139,64 @@ export async function streamMailAgentTurn({
   });
 }
 
-export class MailAgent extends AIChatAgent<
-  CloudflareBindings,
-  unknown,
-  MailAgentProps
-> {
-  private user: MailAgentUser | null = null;
-
-  async onStart(props?: MailAgentProps): Promise<void> {
-    this.user = props?.user ?? null;
+export async function runMailAgentChat({
+  db,
+  env,
+  instanceName,
+  messages,
+  body,
+  abortSignal,
+  modelOverride,
+}: {
+  db: DrizzleD1Database<any>;
+  env: AgentModelEnv;
+  instanceName: string;
+  messages: UIMessage[];
+  body?: Record<string, unknown>;
+  abortSignal?: AbortSignal;
+  modelOverride?: LanguageModel;
+}): Promise<Response> {
+  const user = await resolveMailAgentUser(db, instanceName);
+  if (!user) {
+    return Response.json({ error: "Agent session not found" }, { status: 404 });
   }
 
-  async onChatMessage(
-    _onFinish: unknown,
-    options?: OnChatMessageOptions,
-  ): Promise<Response> {
-    if (!this.user) {
-      return new Response("Mail agent user context is unavailable.", {
-        status: 500,
-      });
-    }
-
-    const selected = selectModel(this.env as AgentModelEnv);
+  let model = modelOverride;
+  if (!model) {
+    const selected = selectModel(env);
     if (!selected.ok) {
       return new Response(selected.error, {
         status: 503,
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     }
+    model = selected.model;
+  }
 
+  const result = await streamMailAgentTurn({
+    model,
+    messages,
+    tools: createAgentTools({ db, user }),
+    instructions: buildMailAgentInstructions(body),
+    abortSignal,
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+
+export class MailAgent extends AIChatAgent<CloudflareBindings> {
+  async onChatMessage(
+    _onFinish: unknown,
+    options?: OnChatMessageOptions,
+  ): Promise<Response> {
     const db = drizzle(this.env.DB, { schema, logger: true });
-    const result = await streamMailAgentTurn({
-      model: selected.model,
+    return runMailAgentChat({
+      db,
+      env: this.env as AgentModelEnv,
+      instanceName: this.name,
       messages: this.messages,
-      tools: createAgentTools({ db, user: this.user }),
-      instructions: buildMailAgentInstructions(options?.body),
+      body: options?.body,
       abortSignal: options?.abortSignal,
     });
-
-    return result.toUIMessageStreamResponse();
   }
 }
