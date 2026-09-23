@@ -347,11 +347,9 @@ export default function AgentPanel({
               aria-label="Message the mail agent"
               disabled={composerDisabled}
               placeholder={
-                serviceError
-                  ? "Agent service unavailable"
-                  : status?.configured
-                    ? "Create a session to start chatting"
-                    : "Configure an agent provider to start chatting"
+                status?.configured
+                  ? "Create a session to start chatting"
+                  : "Configure an agent provider to start chatting"
               }
               className="min-h-20 w-full resize-none rounded-[6px] border border-border bg-bg px-3 py-2 text-sm text-text-primary outline-none disabled:cursor-not-allowed disabled:opacity-50"
             />
