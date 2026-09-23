@@ -106,37 +106,37 @@ AFTER INSERT ON emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'received:' || NEW.id, NEW.recipient, NULL, 'c', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_emails_update
 AFTER UPDATE ON emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'received:' || NEW.id, NEW.recipient, NULL, 'u', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_emails_delete
 AFTER DELETE ON emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'received:' || OLD.id, OLD.recipient, NULL, 'd', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_sent_emails_insert
 AFTER INSERT ON sent_emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'sent:' || NEW.id, NEW.from_address, NULL, 'c', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_sent_emails_update
 AFTER UPDATE ON sent_emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'sent:' || NEW.id, NEW.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_sent_emails_delete
 AFTER DELETE ON sent_emails
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('email', 'sent:' || OLD.id, OLD.from_address, NULL, 'd', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_user_state_insert
 AFTER INSERT ON message_user_state
 BEGIN
@@ -148,7 +148,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NEW.user_id, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_user_state_update
 AFTER UPDATE ON message_user_state
 BEGIN
@@ -160,7 +160,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NEW.user_id, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_user_state_delete
 AFTER DELETE ON message_user_state
 BEGIN
@@ -172,7 +172,7 @@ BEGIN
   SELECT 'email', 'sent:' || OLD.message_id, se.from_address, OLD.user_id, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE OLD.message_kind = 'sent' AND se.id = OLD.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailbox_message_state_insert
 AFTER INSERT ON mailbox_message_state
 BEGIN
@@ -184,7 +184,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailbox_message_state_update
 AFTER UPDATE ON mailbox_message_state
 BEGIN
@@ -196,7 +196,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailbox_message_state_delete
 AFTER DELETE ON mailbox_message_state
 BEGIN
@@ -208,7 +208,7 @@ BEGIN
   SELECT 'email', 'sent:' || OLD.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE OLD.message_kind = 'sent' AND se.id = OLD.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_mailboxes_insert
 AFTER INSERT ON message_mailboxes
 BEGIN
@@ -220,7 +220,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_mailboxes_update
 AFTER UPDATE ON message_mailboxes
 BEGIN
@@ -232,7 +232,7 @@ BEGIN
   SELECT 'email', 'sent:' || NEW.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE NEW.message_kind = 'sent' AND se.id = NEW.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_message_mailboxes_delete
 AFTER DELETE ON message_mailboxes
 BEGIN
@@ -244,25 +244,25 @@ BEGIN
   SELECT 'email', 'sent:' || OLD.message_id, se.from_address, NULL, 'u', CAST(strftime('%s','now') AS INTEGER)
   FROM sent_emails se
   WHERE OLD.message_kind = 'sent' AND se.id = OLD.message_id;
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailboxes_insert
 AFTER INSERT ON mailboxes
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('mailbox', 'mbx:' || NEW.id, NEW.inbox, NULL, 'c', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailboxes_update
 AFTER UPDATE ON mailboxes
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('mailbox', 'mbx:' || NEW.id, NEW.inbox, NULL, 'u', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TRIGGER IF NOT EXISTS jmap_mailboxes_delete
 AFTER DELETE ON mailboxes
 BEGIN
   INSERT INTO jmap_changes (object_type, object_id, inbox, user_id, op, created_at)
   VALUES ('mailbox', 'mbx:' || OLD.id, OLD.inbox, NULL, 'd', CAST(strftime('%s','now') AS INTEGER));
-END;`,
+END`,
     `CREATE TABLE IF NOT EXISTS push_subscriptions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, endpoint TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, user_agent TEXT, created_at INTEGER NOT NULL, last_used_at INTEGER)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS push_subscriptions_endpoint_idx ON push_subscriptions(endpoint)`,
     `CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER NOT NULL, updated_by TEXT)`,
