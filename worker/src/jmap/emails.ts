@@ -83,7 +83,9 @@ function systemMailboxForMessage(message: UnifiedMessage): string | null {
   return systemMailboxId(inbox, "inbox");
 }
 
-function mailboxIds(message: UnifiedMessage): Record<string, true> {
+export function jmapMailboxIds(
+  message: UnifiedMessage,
+): Record<string, true> {
   const ids: Record<string, true> = {};
   const system = systemMailboxForMessage(message);
   if (system) ids[system] = true;
@@ -93,7 +95,9 @@ function mailboxIds(message: UnifiedMessage): Record<string, true> {
   return ids;
 }
 
-function keywords(message: UnifiedMessage): Record<string, true> {
+export function jmapKeywords(
+  message: UnifiedMessage,
+): Record<string, true> {
   const result: Record<string, true> = {};
   if (message.state?.seen) result.$seen = true;
   if (message.state?.starredAt) result.$flagged = true;
@@ -187,8 +191,8 @@ export function toJmapEmail(
   const full: Record<string, unknown> = {
     id,
     threadId: jmapThreadId(message),
-    mailboxIds: mailboxIds(message),
-    keywords: keywords(message),
+    mailboxIds: jmapMailboxIds(message),
+    keywords: jmapKeywords(message),
     size: approximateSize(message),
     receivedAt: utcDate(message.occurredAt),
     sentAt:
@@ -225,6 +229,35 @@ async function queryEmailObjects(
     withAttachments: true,
   });
   return page.messages;
+}
+
+export async function loadJmapEmailObjectsByIds(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  userId: string,
+  ids: string[],
+): Promise<Map<string, UnifiedMessage>> {
+  const refsById = new Map<string, MessageRef>();
+  for (const id of ids) {
+    const ref = parseMessageRef(id);
+    if (ref) refsById.set(serializeMessageRef(ref), ref);
+  }
+
+  const messages: UnifiedMessage[] = [];
+  const refs = [...refsById.values()];
+  for (let start = 0; start < refs.length; start += MESSAGE_REFS_PER_QUERY) {
+    const chunk = refs.slice(start, start + MESSAGE_REFS_PER_QUERY);
+    messages.push(
+      ...(await queryEmailObjects(db, allowed, userId, {
+        messageRefs: chunk,
+        limit: chunk.length,
+      })),
+    );
+  }
+
+  return new Map(
+    messages.map((message) => [serializeMessageRef(message.ref), message]),
+  );
 }
 
 export async function emailGet(
@@ -270,23 +303,14 @@ export async function emailGet(
     requestedIds = messages.map((message) => serializeMessageRef(message.ref));
   } else {
     requestedIds = ids as string[];
-    const refsById = new Map<string, MessageRef>();
-    for (const id of requestedIds) {
-      const ref = parseMessageRef(id);
-      if (ref) refsById.set(serializeMessageRef(ref), ref);
-    }
-
-    messages = [];
-    const refs = [...refsById.values()];
-    for (let start = 0; start < refs.length; start += MESSAGE_REFS_PER_QUERY) {
-      const chunk = refs.slice(start, start + MESSAGE_REFS_PER_QUERY);
-      messages.push(
-        ...(await queryEmailObjects(db, allowed, userId, {
-          messageRefs: chunk,
-          limit: chunk.length,
-        })),
-      );
-    }
+    messages = [
+      ...(await loadJmapEmailObjectsByIds(
+        db,
+        allowed,
+        userId,
+        requestedIds,
+      )).values(),
+    ];
   }
 
   const byId = new Map(

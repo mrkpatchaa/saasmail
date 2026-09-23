@@ -11,6 +11,7 @@ import {
   MAIL_CAPABILITY,
   MAX_CALLS_IN_REQUEST,
   MAX_OBJECTS_IN_GET,
+  MAX_OBJECTS_IN_SET,
   MAX_SIZE_REQUEST,
 } from "./constants";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./emails";
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { emailChanges, mailboxChanges } from "./changes";
+import { emailSet } from "./email-set";
 import { currentJmapState, jmapState } from "./state";
 
 const MAX_EMAILS_IN_THREAD_GET = 1024;
@@ -108,7 +110,7 @@ export async function makeSession(
         maxConcurrentRequests: 4,
         maxCallsInRequest: MAX_CALLS_IN_REQUEST,
         maxObjectsInGet: MAX_OBJECTS_IN_GET,
-        maxObjectsInSet: 0,
+        maxObjectsInSet: MAX_OBJECTS_IN_SET,
         collationAlgorithms: ["i;ascii-casemap"],
       },
       [MAIL_CAPABILITY]: {},
@@ -117,7 +119,7 @@ export async function makeSession(
       [user.id]: {
         name: user.name || user.email || user.id,
         isPersonal: true,
-        isReadOnly: true,
+        isReadOnly: false,
         accountCapabilities: {
           [MAIL_CAPABILITY]: {
             maxMailboxesPerEmail: null,
@@ -412,6 +414,17 @@ export async function executeMethod(
 ): Promise<MethodResult> {
   if (name === "Core/echo") {
     return { ok: true, name, result: args };
+  }
+
+  if (name === "Email/set") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result = await emailSet(db, allowed, user.id, user.id, args);
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
   }
 
   if (name === "Email/changes" || name === "Mailbox/changes") {
