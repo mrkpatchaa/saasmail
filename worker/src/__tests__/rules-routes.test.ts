@@ -321,11 +321,13 @@ describe("conversation assignment routes and filters", () => {
       id: "scope-a",
       personId: "scope-person-a",
       recipient: INBOX,
+      messageId: "scope-a@example.com",
     });
     await createTestEmail({
       id: "scope-b",
       personId: "scope-person-b",
       recipient: OTHER,
+      messageId: "scope-b@example.com",
     });
 
     const res = await authFetch("/api/messages/assign", {

@@ -86,7 +86,18 @@ export function htmlToText(html: string): string {
     result += char;
   }
 
-  return result;
+  let normalized = "";
+  let pendingSpace = false;
+  for (const char of result) {
+    if (char.trim() === "") {
+      pendingSpace = normalized.length > 0;
+      continue;
+    }
+    if (pendingSpace) normalized += " ";
+    normalized += char;
+    pendingSpace = false;
+  }
+  return normalized;
 }
 
 function headerValue(
