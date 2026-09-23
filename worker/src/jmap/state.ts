@@ -87,7 +87,8 @@ export function parseJmapState(value: unknown): ParsedJmapState | null {
   if (!match) return null;
   const seq = Number(match[1]);
   const issuedAt = Number(match[2]);
-  if (!Number.isSafeInteger(seq) || !Number.isSafeInteger(issuedAt)) return null;
+  if (!Number.isSafeInteger(seq) || !Number.isSafeInteger(issuedAt))
+    return null;
   return { seq, issuedAt, fp: match[3] };
 }
 

@@ -166,9 +166,7 @@ async function mailboxGet(
 
   const state = (await currentJmapState(db, allowed, userId)).state;
   const all = await listJmapMailboxes(db, allowed, userId);
-  const byId = new Map(
-    all.map((mailbox) => [mailbox.id as string, mailbox]),
-  );
+  const byId = new Map(all.map((mailbox) => [mailbox.id as string, mailbox]));
   const requested =
     ids === undefined || ids === null
       ? all.map((mailbox) => mailbox.id as string)

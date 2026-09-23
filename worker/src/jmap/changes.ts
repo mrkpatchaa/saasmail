@@ -1,10 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { mailboxes } from "../db/mailboxes.schema";
-import {
-  inboxScopeSql,
-  type AllowedInboxes,
-} from "../lib/inbox-permissions";
+import { inboxScopeSql, type AllowedInboxes } from "../lib/inbox-permissions";
 import { SYSTEM_MAILBOX_ROLES } from "./constants";
 import { customMailboxId, systemMailboxId } from "./ids";
 import {
@@ -46,15 +43,9 @@ function classify(rows: ChangeRow[]): ChangeSets {
   return result;
 }
 
-function maxChanges(
-  value: unknown,
-): number | JmapMethodError {
+function maxChanges(value: unknown): number | JmapMethodError {
   if (value === undefined || value === null) return JMAP_MAX_CHANGES;
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value <= 0
-  ) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     return { type: "invalidArguments", properties: ["maxChanges"] };
   }
   return Math.min(value, JMAP_MAX_CHANGES);
@@ -175,11 +166,7 @@ export async function emailChanges(
   const sets = classify(page);
   const lastSeq = page.at(-1)?.last_seq ?? validation.since.seq;
   const newState = hasMoreChanges
-    ? formatJmapState(
-        lastSeq,
-        validation.since.issuedAt,
-        validation.since.fp,
-      )
+    ? formatJmapState(lastSeq, validation.since.issuedAt, validation.since.fp)
     : validation.current.state;
 
   return {
@@ -214,12 +201,7 @@ export async function mailboxChanges(
   if ("type" in validation) return validation;
 
   const mailboxRows = await db.all<ChangeRow>(
-    groupedChangesSql(
-      allowed,
-      userId,
-      validation.since.seq,
-      "mailbox",
-    ),
+    groupedChangesSql(allowed, userId, validation.since.seq, "mailbox"),
   );
   const sets = classify(mailboxRows);
   const created = new Set(sets.created);

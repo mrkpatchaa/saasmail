@@ -30,7 +30,10 @@ describe("JMAP change log", () => {
 
   it("logs canonical received and sent ids for create, update and delete", async () => {
     const db = getDb();
-    await createTestPerson({ id: "jmap-change-person", email: "person@example.com" });
+    await createTestPerson({
+      id: "jmap-change-person",
+      email: "person@example.com",
+    });
 
     await createTestEmail({
       id: "jmap-change-received",
@@ -70,7 +73,10 @@ describe("JMAP change log", () => {
   it("logs personal and shared state changes against the message inbox", async () => {
     const db = getDb();
     const { userId } = await createTestUser({ id: "jmap-state-user" });
-    await createTestPerson({ id: "jmap-state-person", email: "state@example.com" });
+    await createTestPerson({
+      id: "jmap-state-person",
+      email: "state@example.com",
+    });
     await createTestEmail({
       id: "jmap-state-message",
       personId: "jmap-state-person",
@@ -141,8 +147,12 @@ describe("JMAP change log", () => {
 
     const rows = await db.select().from(jmapChanges).orderBy(jmapChanges.seq);
     expect(rows).toHaveLength(9);
-    expect(rows.every((row) => row.objectId === "received:jmap-state-message")).toBe(true);
-    expect(rows.every((row) => row.inbox === "state-inbox@example.com")).toBe(true);
+    expect(
+      rows.every((row) => row.objectId === "received:jmap-state-message"),
+    ).toBe(true);
+    expect(rows.every((row) => row.inbox === "state-inbox@example.com")).toBe(
+      true,
+    );
     expect(rows.every((row) => row.op === "u")).toBe(true);
     expect(rows.slice(0, 3).every((row) => row.userId === userId)).toBe(true);
     expect(rows.slice(3).every((row) => row.userId === null)).toBe(true);
@@ -187,7 +197,10 @@ describe("JMAP change log", () => {
   it("does not log state cleanup after the underlying message is gone", async () => {
     const db = getDb();
     const { userId } = await createTestUser({ id: "jmap-delete-user" });
-    await createTestPerson({ id: "jmap-delete-person", email: "delete@example.com" });
+    await createTestPerson({
+      id: "jmap-delete-person",
+      email: "delete@example.com",
+    });
     await createTestEmail({
       id: "jmap-delete-message",
       personId: "jmap-delete-person",
@@ -239,7 +252,9 @@ describe("JMAP change log", () => {
 
     await pruneJmapChanges(db, now);
 
-    const rows = await db.select({ objectId: jmapChanges.objectId }).from(jmapChanges);
+    const rows = await db
+      .select({ objectId: jmapChanges.objectId })
+      .from(jmapChanges);
     expect(rows).toEqual([{ objectId: "received:new" }]);
   });
 });

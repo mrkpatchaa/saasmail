@@ -83,9 +83,7 @@ function systemMailboxForMessage(message: UnifiedMessage): string | null {
   return systemMailboxId(inbox, "inbox");
 }
 
-export function jmapMailboxIds(
-  message: UnifiedMessage,
-): Record<string, true> {
+export function jmapMailboxIds(message: UnifiedMessage): Record<string, true> {
   const ids: Record<string, true> = {};
   const system = systemMailboxForMessage(message);
   if (system) ids[system] = true;
@@ -95,9 +93,7 @@ export function jmapMailboxIds(
   return ids;
 }
 
-export function jmapKeywords(
-  message: UnifiedMessage,
-): Record<string, true> {
+export function jmapKeywords(message: UnifiedMessage): Record<string, true> {
   const result: Record<string, true> = {};
   if (message.state?.seen) result.$seen = true;
   if (message.state?.starredAt) result.$flagged = true;
@@ -304,12 +300,9 @@ export async function emailGet(
   } else {
     requestedIds = ids as string[];
     messages = [
-      ...(await loadJmapEmailObjectsByIds(
-        db,
-        allowed,
-        userId,
-        requestedIds,
-      )).values(),
+      ...(
+        await loadJmapEmailObjectsByIds(db, allowed, userId, requestedIds)
+      ).values(),
     ];
   }
 

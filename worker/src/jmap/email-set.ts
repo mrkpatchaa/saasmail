@@ -15,10 +15,7 @@ import {
   loadJmapEmailObjectsByIds,
   type JmapMethodError,
 } from "./emails";
-import {
-  loadMailboxDescriptors,
-  type MailboxDescriptor,
-} from "./mailboxes";
+import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
 import { currentJmapState } from "./state";
 
 type SetError = {
@@ -37,9 +34,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function nonEmptyOrNull<T extends Record<string, unknown>>(
-  value: T,
-): T | null {
+function nonEmptyOrNull<T extends Record<string, unknown>>(value: T): T | null {
   return Object.keys(value).length === 0 ? null : value;
 }
 
@@ -48,9 +43,7 @@ function decodePointerSegment(value: string): string | null {
   return value.replaceAll("~1", "/").replaceAll("~0", "~");
 }
 
-function validateSetArguments(
-  args: Record<string, unknown>,
-):
+function validateSetArguments(args: Record<string, unknown>):
   | {
       create: Record<string, unknown>;
       update: Record<string, unknown>;
@@ -224,9 +217,7 @@ function validateMailboxTarget(
 function mailboxStateForRole(
   message: UnifiedMessage,
   role: string,
-):
-  | { archived?: boolean; spam?: boolean; trashed?: boolean }
-  | SetError {
+): { archived?: boolean; spam?: boolean; trashed?: boolean } | SetError {
   if (message.ref.kind === "sent") {
     if (role === "sent") return { trashed: false };
     if (role === "trash") return { trashed: true };
@@ -361,17 +352,12 @@ export async function emailSet(
     const remove = setDifference(currentFolders, mailboxTarget.folders);
     const keywordChanges: { seen?: boolean; starred?: boolean } = {};
     if (targetSeen !== currentSeen) keywordChanges.seen = targetSeen;
-    if (targetStarred !== currentStarred) keywordChanges.starred = targetStarred;
+    if (targetStarred !== currentStarred)
+      keywordChanges.starred = targetStarred;
 
     try {
       if (systemChanged) {
-        await setMailboxState(
-          db,
-          allowed,
-          userId,
-          [message.ref],
-          systemState,
-        );
+        await setMailboxState(db, allowed, userId, [message.ref], systemState);
       }
       if (add.length > 0 || remove.length > 0) {
         await setMailboxMembership(db, allowed, userId, [message.ref], {

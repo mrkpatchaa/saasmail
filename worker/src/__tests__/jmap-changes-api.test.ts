@@ -43,12 +43,14 @@ async function member(id: string, inbox = MINE) {
     role: "member",
     email: `${id}@example.com`,
   });
-  await getDb().insert(inboxPermissions).values({
-    userId,
-    email: inbox,
-    createdAt: Math.floor(Date.now() / 1000),
-    createdBy: null,
-  });
+  await getDb()
+    .insert(inboxPermissions)
+    .values({
+      userId,
+      email: inbox,
+      createdAt: Math.floor(Date.now() / 1000),
+      createdBy: null,
+    });
   return { userId, apiKey };
 }
 
@@ -70,7 +72,10 @@ describe("JMAP changes and snooze projection", () => {
 
   it("classifies created, updated, destroyed and omits create-then-destroy", async () => {
     const { userId, apiKey } = await member("changes-classify");
-    await createTestPerson({ id: "changes-person", email: "person@example.com" });
+    await createTestPerson({
+      id: "changes-person",
+      email: "person@example.com",
+    });
     await createTestEmail({
       id: "existing-update",
       personId: "changes-person",
@@ -117,7 +122,10 @@ describe("JMAP changes and snooze projection", () => {
   it("keeps personal seen changes private and other inbox changes out of scope", async () => {
     const first = await member("changes-first");
     const second = await member("changes-second");
-    await createTestPerson({ id: "privacy-person", email: "privacy@example.com" });
+    await createTestPerson({
+      id: "privacy-person",
+      email: "privacy@example.com",
+    });
     await createTestEmail({
       id: "privacy-email",
       personId: "privacy-person",
@@ -188,7 +196,9 @@ describe("JMAP changes and snooze projection", () => {
     }
 
     expect(new Set(seen)).toEqual(
-      new Set(Array.from({ length: 5 }, (_, index) => `received:page-${index}`)),
+      new Set(
+        Array.from({ length: 5 }, (_, index) => `received:page-${index}`),
+      ),
     );
     expect(seen).toHaveLength(5);
     expect(finalState).toBe(await stateFor(apiKey, userId));
@@ -198,12 +208,14 @@ describe("JMAP changes and snooze projection", () => {
     const { userId, apiKey } = await member("changes-invalid");
     const baseState = await stateFor(apiKey, userId);
 
-    await getDb().insert(inboxPermissions).values({
-      userId,
-      email: OTHER,
-      createdAt: Math.floor(Date.now() / 1000),
-      createdBy: null,
-    });
+    await getDb()
+      .insert(inboxPermissions)
+      .values({
+        userId,
+        email: OTHER,
+        createdAt: Math.floor(Date.now() / 1000),
+        createdBy: null,
+      });
     let result = await jmapJson(apiKey, [
       ["Email/changes", { accountId: userId, sinceState: baseState }, "c1"],
     ]);
@@ -250,7 +262,10 @@ describe("JMAP changes and snooze projection", () => {
 
   it("reports mailbox count changes and custom mailbox create/delete changes", async () => {
     const { userId, apiKey } = await member("mailbox-changes");
-    await createTestPerson({ id: "mailbox-change-person", email: "mb@example.com" });
+    await createTestPerson({
+      id: "mailbox-change-person",
+      email: "mb@example.com",
+    });
     let sinceState = await stateFor(apiKey, userId);
     await createTestEmail({
       id: "mailbox-count-email",
@@ -268,9 +283,7 @@ describe("JMAP changes and snooze projection", () => {
       "totalThreads",
       "unreadThreads",
     ]);
-    expect(result.methodResponses[0][1].updated).toContain(
-      `sys:${MINE}:inbox`,
-    );
+    expect(result.methodResponses[0][1].updated).toContain(`sys:${MINE}:inbox`);
 
     sinceState = result.methodResponses[0][1].newState;
     await getDb().insert(mailboxes).values({
@@ -310,7 +323,10 @@ describe("JMAP changes and snooze projection", () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    await createTestPerson({ id: "snooze-person", email: "snooze@example.com" });
+    await createTestPerson({
+      id: "snooze-person",
+      email: "snooze@example.com",
+    });
     await createTestEmail({
       id: "snooze-email",
       personId: "snooze-person",
@@ -318,15 +334,17 @@ describe("JMAP changes and snooze projection", () => {
       messageId: "snooze-email@example.com",
       conversationId: "snooze-thread",
     });
-    await getDb().insert(inboxConversationState).values({
-      inbox: MINE,
-      conversationKey: "snooze-thread",
-      snoozedUntil: Math.floor(Date.now() / 1000) + 3600,
-      snoozedBy: userId,
-      assignedUserId: null,
-      assignedAt: null,
-      updatedAt: Math.floor(Date.now() / 1000),
-    });
+    await getDb()
+      .insert(inboxConversationState)
+      .values({
+        inbox: MINE,
+        conversationKey: "snooze-thread",
+        snoozedUntil: Math.floor(Date.now() / 1000) + 3600,
+        snoozedBy: userId,
+        assignedUserId: null,
+        assignedAt: null,
+        updatedAt: Math.floor(Date.now() / 1000),
+      });
 
     const get = await jmapJson(apiKey, [
       ["Email/get", { accountId: userId, ids: ["received:snooze-email"] }, "g"],
@@ -338,11 +356,7 @@ describe("JMAP changes and snooze projection", () => {
         },
         "q",
       ],
-      [
-        "Mailbox/get",
-        { accountId: userId, ids: [`sys:${MINE}:inbox`] },
-        "m",
-      ],
+      ["Mailbox/get", { accountId: userId, ids: [`sys:${MINE}:inbox`] }, "m"],
     ]);
     expect(get.methodResponses[0][1].list[0].mailboxIds).toEqual({
       [`sys:${MINE}:inbox`]: true,
@@ -360,15 +374,17 @@ describe("JMAP changes and snooze projection", () => {
       updatedAt: 1,
     });
     const before = await stateFor(apiKey, userId);
-    await getDb().insert(inboxConversationState).values({
-      inbox: MINE,
-      conversationKey: "thread",
-      snoozedUntil: Math.floor(Date.now() / 1000) + 3600,
-      snoozedBy: userId,
-      assignedUserId: null,
-      assignedAt: null,
-      updatedAt: Math.floor(Date.now() / 1000),
-    });
+    await getDb()
+      .insert(inboxConversationState)
+      .values({
+        inbox: MINE,
+        conversationKey: "thread",
+        snoozedUntil: Math.floor(Date.now() / 1000) + 3600,
+        snoozedBy: userId,
+        assignedUserId: null,
+        assignedAt: null,
+        updatedAt: Math.floor(Date.now() / 1000),
+      });
     const after = await stateFor(apiKey, userId);
     const beforeParts = before.split("-");
     const afterParts = after.split("-");

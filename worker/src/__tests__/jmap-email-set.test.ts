@@ -12,10 +12,7 @@ import {
 } from "./helpers";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { mailboxes } from "../db/mailboxes.schema";
-import {
-  CORE_CAPABILITY,
-  MAIL_CAPABILITY,
-} from "../jmap/constants";
+import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
 
 const MINE = "write@saasmail.test";
 const OTHER = "other-write@saasmail.test";
@@ -26,12 +23,14 @@ async function member() {
     role: "member",
     email: "writer@example.com",
   });
-  await getDb().insert(inboxPermissions).values({
-    userId,
-    email: MINE,
-    createdAt: Math.floor(Date.now() / 1000),
-    createdBy: null,
-  });
+  await getDb()
+    .insert(inboxPermissions)
+    .values({
+      userId,
+      email: MINE,
+      createdAt: Math.floor(Date.now() / 1000),
+      createdBy: null,
+    });
   return { userId, apiKey };
 }
 
@@ -114,11 +113,7 @@ describe("JMAP Email/set", () => {
       "received:jmap-write-email": null,
     });
 
-    let get = await emailGet(
-      apiKey,
-      userId,
-      "received:jmap-write-email",
-    );
+    let get = await emailGet(apiKey, userId, "received:jmap-write-email");
     expect(get.list[0].keywords).toEqual({ $seen: true });
 
     response = await emailSet(apiKey, userId, {
@@ -295,11 +290,7 @@ describe("JMAP Email/set", () => {
       { [id]: { "keywords/$seen": true } },
       { ifInState: "wrong-state" },
     );
-    expect(response).toEqual([
-      "error",
-      { type: "stateMismatch" },
-      "s",
-    ]);
+    expect(response).toEqual(["error", { type: "stateMismatch" }, "s"]);
 
     const result = await jmapJson(apiKey, [
       [
@@ -342,11 +333,7 @@ describe("JMAP Email/set", () => {
     expect(response[0]).toBe("Email/set");
 
     const changes = await jmapJson(apiKey, [
-      [
-        "Email/changes",
-        { accountId: userId, sinceState: before.state },
-        "c",
-      ],
+      ["Email/changes", { accountId: userId, sinceState: before.state }, "c"],
     ]);
     expect(changes.methodResponses[0][1].updated).toContain(id);
   });
