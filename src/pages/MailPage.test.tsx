@@ -693,8 +693,43 @@ describe("MailPage", () => {
         expect.objectContaining({
           inbox: "support@e2e.test",
           assignedTo: "me",
+          includeTrashed: false,
+          includeSpam: false,
         }),
       ),
+    );
+  });
+  it("removes a message after unassigning it from Assigned to me", async () => {
+    api.fetchMessages.mockResolvedValue({
+      messages: [
+        message("assigned-one", "Assigned message", {
+          state: { seen: true, assignedUserId: "member-1" },
+        }),
+      ],
+      nextCursor: null,
+    });
+
+    renderMail("/mail/support%40e2e.test/assigned?m=received%3Aassigned-one");
+
+    await screen.findAllByText("Assigned message");
+    fireEvent.pointerDown(screen.getByTestId("mail-assign-menu"), {
+      button: 0,
+    });
+    const options = await screen.findAllByTestId("mail-assign-option");
+    const unassignOption = options.find(
+      (option) => option.dataset.userId === "",
+    );
+    expect(unassignOption).toBeTruthy();
+    fireEvent.click(unassignOption!);
+
+    await waitFor(() =>
+      expect(api.assignMessages).toHaveBeenCalledWith(
+        ["received:assigned-one"],
+        null,
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Assigned message")).toBeNull(),
     );
   });
 });

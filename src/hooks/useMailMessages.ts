@@ -115,6 +115,8 @@ export function useMailMessages({
               ? fetchMessages({
                   inbox,
                   assignedTo: "me",
+                  includeTrashed: false,
+                  includeSpam: false,
                   q: query || undefined,
                   cursor: cursor || undefined,
                   limit: PAGE_SIZE,
@@ -567,6 +569,12 @@ export function useMailMessages({
     setActionBusyRef(message.ref);
     try {
       await assignMessages([message.ref], userId);
+      if (systemFolder === "assigned" && userId !== previousUserId) {
+        setMessages((current) =>
+          current.filter((item) => item.ref !== message.ref),
+        );
+        if (selectedRef === message.ref) onClearSelected();
+      }
     } catch (error) {
       optimisticUpdate(message.ref, (current) =>
         patchMessageState(current, { assignedUserId: previousUserId }),
@@ -606,6 +614,17 @@ export function useMailMessages({
     setBulkBusy(true);
     try {
       await assignMessages(refs, userId);
+      if (systemFolder === "assigned") {
+        const removedRefs = new Set(
+          refs.filter((ref) => previous.get(ref) !== userId),
+        );
+        if (removedRefs.size > 0) {
+          setMessages((current) =>
+            current.filter((message) => !removedRefs.has(message.ref)),
+          );
+          if (selectedRef && removedRefs.has(selectedRef)) onClearSelected();
+        }
+      }
       return true;
     } catch (error) {
       setMessages((current) =>
