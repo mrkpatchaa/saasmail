@@ -1,6 +1,5 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { autoReplyLog } from "../../db/auto-reply-log.schema";
 import { emails } from "../../db/emails.schema";
 import { mailboxMessageState } from "../../db/mailbox-message-state.schema";
 import { people } from "../../db/people.schema";
@@ -136,27 +135,22 @@ export async function runAutoReply(
     return;
   }
 
-  const [recent] = await db
-    .select({ sentAt: autoReplyLog.sentAt })
-    .from(autoReplyLog)
-    .where(
-      and(
-        eq(autoReplyLog.ruleId, input.ruleId),
-        eq(autoReplyLog.sender, senderAddress),
-        gt(autoReplyLog.sentAt, now - 24 * 60 * 60),
-      ),
+  const cutoff = now - 24 * 60 * 60;
+  const claim = await db.run(sql`
+    INSERT INTO auto_reply_log (rule_id, sender, sent_at)
+    SELECT ${input.ruleId}, ${senderAddress}, ${now}
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM auto_reply_log
+      WHERE rule_id = ${input.ruleId}
+        AND sender = ${senderAddress}
+        AND sent_at > ${cutoff}
     )
-    .limit(1);
-  if (recent) {
+  `);
+  if ((claim.meta?.changes ?? 0) === 0) {
     skipped(input, "sender was auto-replied to within 24h");
     return;
   }
-
-  await db.insert(autoReplyLog).values({
-    ruleId: input.ruleId,
-    sender: senderAddress,
-    sentAt: now,
-  });
 
   const identity = identities.find(
     (row) => row.email.trim().toLowerCase() === inbox,

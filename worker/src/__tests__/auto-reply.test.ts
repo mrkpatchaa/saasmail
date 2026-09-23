@@ -15,6 +15,7 @@ import type {
   SendEmailResult,
 } from "../lib/email-sender";
 import { runAutoReply } from "../lib/rules/auto-reply";
+import { replyToEmail } from "../lib/send-email";
 import {
   applyMigrations,
   cleanDb,
@@ -170,6 +171,20 @@ describe("auto-reply guards", () => {
     await expectNoAttempt(sender);
   });
 
+  it("atomically claims a sender under concurrent delivery", async () => {
+    await seed();
+    const { sender, send } = fakeSender();
+
+    await Promise.all([run(sender), run(sender)]);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const logs = await getDb()
+      .select()
+      .from(autoReplyLog)
+      .where(eq(autoReplyLog.ruleId, "auto-reply-rule"));
+    expect(logs).toHaveLength(1);
+  });
+
   it("enforces the 24-hour sender window and allows exactly 24h later", async () => {
     await seed();
     const { sender, send } = fakeSender();
@@ -251,5 +266,42 @@ describe("auto-reply sending", () => {
     expect(await getDb().select().from(outboxEmails)).toHaveLength(0);
     const [stored] = await getDb().select().from(sentEmails);
     expect(stored.status).toBe("failed");
+  });
+});
+
+describe("manual reply threading", () => {
+  it("sets References equal to In-Reply-To when the original has a Message-ID", async () => {
+    const person = await createTestPerson({
+      id: "manual-reply-person",
+      email: "manual@example.com",
+    });
+    await createTestEmail({
+      id: "manual-reply-email",
+      personId: person.id,
+      recipient: INBOX,
+      subject: "Manual question",
+      messageId: "<manual-original@example.com>",
+    });
+    const { sender, sent } = fakeSender();
+
+    const result = await replyToEmail({
+      db: getDb(),
+      env: env as unknown as CloudflareBindings,
+      emailId: "manual-reply-email",
+      payload: {
+        fromAddress: INBOX,
+        bodyHtml: "<p>Manual reply</p>",
+      },
+      files: [],
+      allowed: { isAdmin: true, inboxes: [] },
+      sender,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].headers?.["In-Reply-To"]).toBe(
+      "<manual-original@example.com>",
+    );
+    expect(sent[0].headers?.References).toBe(sent[0].headers?.["In-Reply-To"]);
   });
 });
