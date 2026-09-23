@@ -53,13 +53,50 @@ async function customerSize(
   return rows.length;
 }
 
-async function cleanupCustomer(
+function isUniquePersonMembershipError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3 && current; depth += 1) {
+    const message =
+      current instanceof Error ? current.message : String(current ?? "");
+    if (
+      /unique constraint failed:\s*customer_people\.person_id/i.test(message) ||
+      /customer_people_person_id_unique/i.test(message)
+    ) {
+      return true;
+    }
+    current =
+      current instanceof Error
+        ? (current as Error & { cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
+async function removeMembershipAndCleanup(
   db: DrizzleD1Database<any>,
   customerId: string,
+  personId: string,
 ): Promise<void> {
-  if ((await customerSize(db, customerId)) < 2) {
-    await db.delete(customers).where(eq(customers.id, customerId));
+  const size = await customerSize(db, customerId);
+  const removeMembership = db
+    .delete(customerPeople)
+    .where(eq(customerPeople.personId, personId));
+
+  if (size <= 2) {
+    await db.batch([
+      removeMembership,
+      db.delete(customers).where(eq(customers.id, customerId)),
+    ]);
+    return;
   }
+
+  await db.batch([
+    removeMembership,
+    db
+      .update(customers)
+      .set({ updatedAt: Math.floor(Date.now() / 1000) })
+      .where(eq(customers.id, customerId)),
+  ]);
 }
 
 export async function resolveCustomerScope(
@@ -77,6 +114,85 @@ export async function resolveCustomerScope(
   return { customerId, personIds: rows.map((row) => row.personId) };
 }
 
+async function linkPeopleDecision(
+  db: DrizzleD1Database<any>,
+  actor: string | null,
+  a: string,
+  b: string,
+): Promise<CustomerScope> {
+  const [aCustomer, bCustomer] = await Promise.all([
+    membership(db, a),
+    membership(db, b),
+  ]);
+  if (aCustomer && aCustomer === bCustomer) {
+    return resolveCustomerScope(db, a);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!aCustomer && !bCustomer) {
+    const customerId = nanoid();
+    await db.batch([
+      db.insert(customers).values({
+        id: customerId,
+        displayName: null,
+        createdBy: actor,
+        createdAt: now,
+        updatedAt: now,
+      }),
+      db.insert(customerPeople).values({
+        customerId,
+        personId: a,
+        linkedBy: actor,
+        linkedAt: now,
+      }),
+      db.insert(customerPeople).values({
+        customerId,
+        personId: b,
+        linkedBy: actor,
+        linkedAt: now,
+      }),
+    ]);
+    return resolveCustomerScope(db, a);
+  }
+
+  if (!aCustomer || !bCustomer) {
+    const customerId = aCustomer ?? bCustomer!;
+    const personId = aCustomer ? b : a;
+    await db.batch([
+      db.insert(customerPeople).values({
+        customerId,
+        personId,
+        linkedBy: actor,
+        linkedAt: now,
+      }),
+      db
+        .update(customers)
+        .set({ updatedAt: now })
+        .where(eq(customers.id, customerId)),
+    ]);
+    return resolveCustomerScope(db, a);
+  }
+
+  const [aSize, bSize] = await Promise.all([
+    customerSize(db, aCustomer),
+    customerSize(db, bCustomer),
+  ]);
+  const winner = aSize >= bSize ? aCustomer : bCustomer;
+  const loser = winner === aCustomer ? bCustomer : aCustomer;
+  await db.batch([
+    db
+      .update(customerPeople)
+      .set({ customerId: winner })
+      .where(eq(customerPeople.customerId, loser)),
+    db.delete(customers).where(eq(customers.id, loser)),
+    db
+      .update(customers)
+      .set({ updatedAt: now })
+      .where(eq(customers.id, winner)),
+  ]);
+  return resolveCustomerScope(db, a);
+}
+
 export async function linkPeople(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
@@ -90,63 +206,12 @@ export async function linkPeople(
   ]);
   if (a === b) return resolveCustomerScope(db, a);
 
-  const [aCustomer, bCustomer] = await Promise.all([
-    membership(db, a),
-    membership(db, b),
-  ]);
-  if (aCustomer && aCustomer === bCustomer) {
-    return resolveCustomerScope(db, a);
+  try {
+    return await linkPeopleDecision(db, actor, a, b);
+  } catch (error) {
+    if (!isUniquePersonMembershipError(error)) throw error;
+    return linkPeopleDecision(db, actor, a, b);
   }
-
-  const now = Math.floor(Date.now() / 1000);
-  if (!aCustomer && !bCustomer) {
-    const customerId = nanoid();
-    await db.insert(customers).values({
-      id: customerId,
-      displayName: null,
-      createdBy: actor,
-      createdAt: now,
-      updatedAt: now,
-    });
-    await db.insert(customerPeople).values([
-      { customerId, personId: a, linkedBy: actor, linkedAt: now },
-      { customerId, personId: b, linkedBy: actor, linkedAt: now },
-    ]);
-    return resolveCustomerScope(db, a);
-  }
-
-  if (!aCustomer || !bCustomer) {
-    const customerId = aCustomer ?? bCustomer!;
-    const personId = aCustomer ? b : a;
-    await db.insert(customerPeople).values({
-      customerId,
-      personId,
-      linkedBy: actor,
-      linkedAt: now,
-    });
-    await db
-      .update(customers)
-      .set({ updatedAt: now })
-      .where(eq(customers.id, customerId));
-    return resolveCustomerScope(db, a);
-  }
-
-  const [aSize, bSize] = await Promise.all([
-    customerSize(db, aCustomer),
-    customerSize(db, bCustomer),
-  ]);
-  const winner = aSize >= bSize ? aCustomer : bCustomer;
-  const loser = winner === aCustomer ? bCustomer : aCustomer;
-  await db
-    .update(customerPeople)
-    .set({ customerId: winner })
-    .where(eq(customerPeople.customerId, loser));
-  await db.delete(customers).where(eq(customers.id, loser));
-  await db
-    .update(customers)
-    .set({ updatedAt: now })
-    .where(eq(customers.id, winner));
-  return resolveCustomerScope(db, a);
 }
 
 export async function unlinkPerson(
@@ -159,8 +224,7 @@ export async function unlinkPerson(
   const customerId = await membership(db, personId);
   if (!customerId) return { customerId: null, personIds: [personId] };
 
-  await db.delete(customerPeople).where(eq(customerPeople.personId, personId));
-  await cleanupCustomer(db, customerId);
+  await removeMembershipAndCleanup(db, customerId, personId);
   return { customerId: null, personIds: [personId] };
 }
 
@@ -170,8 +234,7 @@ export async function cleanupCustomerForPersonDeletion(
 ): Promise<void> {
   const customerId = await membership(db, personId);
   if (!customerId) return;
-  await db.delete(customerPeople).where(eq(customerPeople.personId, personId));
-  await cleanupCustomer(db, customerId);
+  await removeMembershipAndCleanup(db, customerId, personId);
 }
 
 export async function getCustomerByPerson(

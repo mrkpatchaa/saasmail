@@ -64,6 +64,52 @@ describe("identity graph", () => {
     ).toHaveLength(0);
   });
 
+  it("converges concurrent links through the same person into one customer", async () => {
+    const { apiKey } = await createTestUser({
+      id: "identity-race-admin",
+      role: "admin",
+      email: "identity-race-admin@example.com",
+    });
+    const db = getDb();
+    for (const id of ["race-a", "race-b", "race-c"]) {
+      await createTestPerson({ id, email: `${id}@example.com` });
+    }
+
+    const [ab, ac] = await Promise.all([
+      authFetch("/api/customers/link", {
+        apiKey,
+        method: "POST",
+        body: JSON.stringify({
+          personId: "race-a",
+          otherPersonId: "race-b",
+        }),
+      }),
+      authFetch("/api/customers/link", {
+        apiKey,
+        method: "POST",
+        body: JSON.stringify({
+          personId: "race-a",
+          otherPersonId: "race-c",
+        }),
+      }),
+    ]);
+
+    expect(ab.status).toBe(200);
+    expect(ac.status).toBe(200);
+
+    const customerRows = await db.select().from(customers);
+    expect(customerRows).toHaveLength(1);
+    const scope = await resolveCustomerScope(db, "race-a");
+    expect(new Set(scope.personIds)).toEqual(
+      new Set(["race-a", "race-b", "race-c"]),
+    );
+    const memberships = await db.select().from(customerPeople);
+    expect(memberships).toHaveLength(3);
+    expect(new Set(memberships.map((row) => row.customerId))).toEqual(
+      new Set([customerRows[0].id]),
+    );
+  });
+
   it("returns 404 when either person is outside the caller's existing visibility", async () => {
     const { userId, apiKey } = await createTestUser({
       id: "identity-member",
