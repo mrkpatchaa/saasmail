@@ -26,22 +26,17 @@ describe("rule condition matching", () => {
       { field: "from_address", operator: "equals", value: "alice@example.com" },
       true,
     ],
-    [
-      { field: "from_address", operator: "contains", value: "EXAMPLE" },
-      true,
-    ],
-    [
-      { field: "from_address", operator: "ends_with", value: ".com" },
-      true,
-    ],
+    [{ field: "from_address", operator: "contains", value: "EXAMPLE" }, true],
+    [{ field: "from_address", operator: "ends_with", value: ".com" }, true],
     [{ field: "from_domain", operator: "equals", value: "example.com" }, true],
     [{ field: "subject", operator: "contains", value: "INVOICE" }, true],
+    [{ field: "subject", operator: "starts_with", value: "quarterly" }, true],
     [
-      { field: "subject", operator: "starts_with", value: "quarterly" },
-      true,
-    ],
-    [
-      { field: "subject", operator: "equals", value: "Quarterly Invoice Ready" },
+      {
+        field: "subject",
+        operator: "equals",
+        value: "Quarterly Invoice Ready",
+      },
       true,
     ],
     [{ field: "body", operator: "contains", value: "DUE friday" }, true],

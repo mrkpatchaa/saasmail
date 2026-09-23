@@ -27,21 +27,21 @@ beforeEach(async () => {
 });
 
 async function grant(userId: string, inbox: string) {
-  await getDb().insert(inboxPermissions).values({
-    userId,
-    email: inbox,
-    createdAt: Math.floor(Date.now() / 1000),
-    createdBy: null,
-  });
+  await getDb()
+    .insert(inboxPermissions)
+    .values({
+      userId,
+      email: inbox,
+      createdAt: Math.floor(Date.now() / 1000),
+      createdBy: null,
+    });
 }
 
 function ruleBody(overrides: Record<string, unknown> = {}) {
   return {
     name: "Route rule",
     inbox: INBOX,
-    conditions: [
-      { field: "subject", operator: "contains", value: "invoice" },
-    ],
+    conditions: [{ field: "subject", operator: "contains", value: "invoice" }],
     actions: [{ type: "archive" }],
     position: 0,
     ...overrides,
@@ -203,7 +203,12 @@ describe("admin rule routes", () => {
       body: JSON.stringify({
         rule: {
           conditions: [
-            { field: "header", name: "x-source", operator: "equals", value: "portal" },
+            {
+              field: "header",
+              name: "x-source",
+              operator: "equals",
+              value: "portal",
+            },
           ],
           actions: [{ type: "mark_spam" }],
         },
@@ -234,7 +239,10 @@ describe("conversation assignment routes and filters", () => {
     });
     await grant(caller.userId, INBOX);
     await grant(assignee.userId, INBOX);
-    await createTestPerson({ id: "assign-person", email: "person@example.com" });
+    await createTestPerson({
+      id: "assign-person",
+      email: "person@example.com",
+    });
     await createTestEmail({
       id: "assign-message",
       personId: "assign-person",
@@ -258,7 +266,10 @@ describe("conversation assignment routes and filters", () => {
     );
     expect(res.status).toBe(200);
     let body = (await res.json()) as {
-      messages: Array<{ ref: string; state?: { assignedUserId: string | null } }>;
+      messages: Array<{
+        ref: string;
+        state?: { assignedUserId: string | null };
+      }>;
     };
     expect(body.messages).toEqual([
       expect.objectContaining({

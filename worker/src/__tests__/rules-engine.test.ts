@@ -101,20 +101,22 @@ async function addRule(options: {
   enabled?: number;
 }) {
   const now = Math.floor(Date.now() / 1000);
-  await getDb().insert(rules).values({
-    id: options.id,
-    name: options.id,
-    inbox: options.inbox === undefined ? INBOX : options.inbox,
-    trigger: "message.received",
-    conditions: options.conditions ?? [],
-    actions: options.actions,
-    position: options.position ?? 0,
-    stopProcessing: options.stopProcessing ?? 0,
-    enabled: options.enabled ?? 1,
-    matchCount: 0,
-    createdAt: now,
-    updatedAt: now,
-  });
+  await getDb()
+    .insert(rules)
+    .values({
+      id: options.id,
+      name: options.id,
+      inbox: options.inbox === undefined ? INBOX : options.inbox,
+      trigger: "message.received",
+      conditions: options.conditions ?? [],
+      actions: options.actions,
+      position: options.position ?? 0,
+      stopProcessing: options.stopProcessing ?? 0,
+      enabled: options.enabled ?? 1,
+      matchCount: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
 }
 
 async function stateFor(ruleMessageId: string) {
@@ -130,11 +132,9 @@ describe("inbound rule actions", () => {
     await addRule({ id: "archive-rule", actions: [{ type: "archive" }] });
     await deliver("archive@example.com");
     const [state] = await stateFor(
-      (
-        await getDb().query.emails.findFirst({
-          where: (email, { eq }) => eq(email.messageId, "<archive@example.com>"),
-        })
-      )!.id,
+      (await getDb().query.emails.findFirst({
+        where: (email, { eq }) => eq(email.messageId, "<archive@example.com>"),
+      }))!.id,
     );
     expect(state.archivedAt).toEqual(expect.any(Number));
     expect(state.updatedBy).toBeNull();
@@ -196,12 +196,14 @@ describe("inbound rule actions", () => {
       role: "member",
       email: "assignee@example.com",
     });
-    await getDb().insert(inboxPermissions).values({
-      userId: assignee.userId,
-      email: INBOX,
-      createdAt: Math.floor(Date.now() / 1000),
-      createdBy: null,
-    });
+    await getDb()
+      .insert(inboxPermissions)
+      .values({
+        userId: assignee.userId,
+        email: INBOX,
+        createdAt: Math.floor(Date.now() / 1000),
+        createdBy: null,
+      });
     await addRule({
       id: "assign-rule",
       actions: [{ type: "assign", userId: assignee.userId }],
@@ -266,7 +268,9 @@ describe("inbound rule evaluation semantics", () => {
     });
     await deliver("scope@example.com");
     const rows = await getDb().select().from(rules);
-    expect(Object.fromEntries(rows.map((row) => [row.id, row.matchCount]))).toMatchObject({
+    expect(
+      Object.fromEntries(rows.map((row) => [row.id, row.matchCount])),
+    ).toMatchObject({
       "global-rule": 1,
       "support-rule": 1,
       "other-rule": 0,
@@ -280,13 +284,15 @@ describe("inbound rule evaluation semantics", () => {
     });
     const now = Math.floor(Date.now() / 1000);
     const snoozedUntil = now + 3600;
-    await getDb().insert(inboxConversationState).values({
-      inbox: INBOX,
-      conversationKey: `p:${person.id}`,
-      snoozedUntil,
-      snoozedBy: null,
-      updatedAt: now,
-    });
+    await getDb()
+      .insert(inboxConversationState)
+      .values({
+        inbox: INBOX,
+        conversationKey: `p:${person.id}`,
+        snoozedUntil,
+        snoozedBy: null,
+        updatedAt: now,
+      });
     await addRule({
       id: "silent-spam-rule",
       actions: [{ type: "mark_spam" }],
