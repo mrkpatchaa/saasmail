@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  assignMessages,
   fetchMessages,
   setMailboxMembership,
   setMessageState,
@@ -24,6 +25,7 @@ export function chunkMailRefs(refs: string[]): string[][] {
 
 export type SystemFolder =
   | "inbox"
+  | "assigned"
   | "starred"
   | "snoozed"
   | "drafts"
@@ -109,15 +111,23 @@ export function useMailMessages({
                 cursor: cursor || undefined,
                 limit: PAGE_SIZE,
               })
-            : fetchMessages({
-                inbox,
-                folder: systemFolder,
-                q: query || undefined,
-                cursor: cursor || undefined,
-                limit: PAGE_SIZE,
-                excludeCampaignSends:
-                  systemFolder === "sent" ? !showCampaignSends : undefined,
-              });
+            : systemFolder === "assigned"
+              ? fetchMessages({
+                  inbox,
+                  assignedTo: "me",
+                  q: query || undefined,
+                  cursor: cursor || undefined,
+                  limit: PAGE_SIZE,
+                })
+              : fetchMessages({
+                  inbox,
+                  folder: systemFolder,
+                  q: query || undefined,
+                  cursor: cursor || undefined,
+                  limit: PAGE_SIZE,
+                  excludeCampaignSends:
+                    systemFolder === "sent" ? !showCampaignSends : undefined,
+                });
 
         const result = await request;
         setMessages((current) =>
@@ -549,6 +559,75 @@ export function useMailMessages({
     );
   }
 
+  async function assignMessage(message: MailMessage, userId: string | null) {
+    const previousUserId = message.state.assignedUserId;
+    optimisticUpdate(message.ref, (current) =>
+      patchMessageState(current, { assignedUserId: userId }),
+    );
+    setActionBusyRef(message.ref);
+    try {
+      await assignMessages([message.ref], userId);
+    } catch (error) {
+      optimisticUpdate(message.ref, (current) =>
+        patchMessageState(current, { assignedUserId: previousUserId }),
+      );
+      showToast({
+        kind: "error",
+        message: "Couldn’t update assignment",
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setActionBusyRef((current) => (current === message.ref ? null : current));
+    }
+  }
+
+  async function bulkAssign(
+    selectedMessages: MailMessage[],
+    userId: string | null,
+  ): Promise<boolean> {
+    if (selectedMessages.length === 0) return false;
+
+    const previous = new Map(
+      selectedMessages.map((message) => [
+        message.ref,
+        message.state.assignedUserId,
+      ]),
+    );
+    const refs = selectedMessages.map((message) => message.ref);
+    const selected = new Set(refs);
+
+    setMessages((current) =>
+      current.map((message) =>
+        selected.has(message.ref)
+          ? patchMessageState(message, { assignedUserId: userId })
+          : message,
+      ),
+    );
+    setBulkBusy(true);
+    try {
+      await assignMessages(refs, userId);
+      return true;
+    } catch (error) {
+      setMessages((current) =>
+        current.map((message) =>
+          previous.has(message.ref)
+            ? patchMessageState(message, {
+                assignedUserId: previous.get(message.ref) ?? null,
+              })
+            : message,
+        ),
+      );
+      showToast({
+        kind: "error",
+        message: "Couldn’t update selected assignments",
+        description: error instanceof Error ? error.message : undefined,
+      });
+      return false;
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (
       !selectedMessage ||
@@ -603,5 +682,7 @@ export function useMailMessages({
     bulkSetTrashed,
     bulkSnooze,
     bulkMoveToMailbox,
+    assignMessage,
+    bulkAssign,
   };
 }
