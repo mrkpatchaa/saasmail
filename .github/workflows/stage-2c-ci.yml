@@ -25,9 +25,9 @@ jobs:
           cp wrangler.jsonc.ci wrangler.jsonc
           mkdir -p dist/client
           npx wrangler d1 execute saasmail-db --local --command "SELECT 1"
-      - name: Generate migration if needed
+      - name: Generate suggested replies migration
         run: |
-          yarn db:generate
+          yarn db:generate --name=suggested_replies
           if ! git diff --quiet -- migrations; then
             git config user.name github-actions[bot]
             git config user.email 41898282+github-actions[bot]@users.noreply.github.com
@@ -35,6 +35,10 @@ jobs:
             git commit -m "chore: generate suggested replies migration"
             git push origin HEAD:stage-2c-suggested-replies
           fi
+      - name: Verify migration generation is clean
+        run: |
+          yarn db:generate
+          git diff --exit-code -- migrations
       - run: node scripts/check-lockfile-integrity.mjs
       - name: Format helper changes
         run: |
