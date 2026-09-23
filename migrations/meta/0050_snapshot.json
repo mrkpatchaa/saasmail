@@ -5056,6 +5056,13 @@
             "seq"
           ],
           "isUnique": false
+        },
+        "jmap_changes_created_at_idx": {
+          "name": "jmap_changes_created_at_idx",
+          "columns": [
+            "created_at"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {},

@@ -12,6 +12,8 @@ CREATE INDEX `jmap_changes_inbox_user_seq_idx` ON `jmap_changes` (`inbox`,`user_
 --> statement-breakpoint
 CREATE INDEX `jmap_changes_user_seq_idx` ON `jmap_changes` (`user_id`,`seq`);
 --> statement-breakpoint
+CREATE INDEX `jmap_changes_created_at_idx` ON `jmap_changes` (`created_at`);
+--> statement-breakpoint
 CREATE TRIGGER jmap_emails_insert
 AFTER INSERT ON emails
 BEGIN

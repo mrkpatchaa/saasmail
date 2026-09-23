@@ -18,5 +18,6 @@ export const jmapChanges = sqliteTable(
       table.seq,
     ),
     index("jmap_changes_user_seq_idx").on(table.userId, table.seq),
+    index("jmap_changes_created_at_idx").on(table.createdAt),
   ],
 );

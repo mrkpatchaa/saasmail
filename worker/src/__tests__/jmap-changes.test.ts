@@ -17,7 +17,10 @@ import { mailboxMessageState } from "../db/mailbox-message-state.schema";
 import { messageMailboxes } from "../db/message-mailboxes.schema";
 import { messageUserState } from "../db/message-user-state.schema";
 import { inboxScopeSql } from "../lib/inbox-permissions";
-import { pruneJmapChanges } from "../jmap/changes";
+import {
+  pruneJmapChanges,
+  pruneJmapChangesCandidatesSql,
+} from "../jmap/changes";
 import { currentJmapSeqQueries } from "../jmap/state";
 
 describe("JMAP change log", () => {
@@ -250,6 +253,22 @@ describe("JMAP change log", () => {
         plan.some((row) => /\bSCAN jmap_changes\b/i.test(row.detail)),
       ).toBe(false);
     }
+  });
+
+  it("uses the created_at index for prune candidates", async () => {
+    const plan = await getDb().all<{ detail: string }>(
+      sql`EXPLAIN QUERY PLAN ${pruneJmapChangesCandidatesSql(1_000_000)}`,
+    );
+    expect(
+      plan.some((row) =>
+        /USING (?:COVERING )?INDEX jmap_changes_created_at_idx/i.test(
+          row.detail,
+        ),
+      ),
+    ).toBe(true);
+    expect(plan.some((row) => /\bSCAN jmap_changes\b/i.test(row.detail))).toBe(
+      false,
+    );
   });
 
   it("prunes only changes older than thirty days", async () => {

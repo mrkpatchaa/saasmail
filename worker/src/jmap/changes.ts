@@ -372,6 +372,16 @@ export async function mailboxChanges(
   };
 }
 
+export function pruneJmapChangesCandidatesSql(cutoff: number) {
+  return sql`
+    SELECT seq
+    FROM jmap_changes
+    WHERE created_at < ${cutoff}
+    ORDER BY created_at, seq
+    LIMIT ${JMAP_CHANGE_PRUNE_LIMIT}
+  `;
+}
+
 export async function pruneJmapChanges(
   db: DrizzleD1Database<any>,
   now: number,
@@ -379,12 +389,6 @@ export async function pruneJmapChanges(
   const cutoff = now - JMAP_CHANGE_RETENTION_SECONDS;
   await db.run(sql`
     DELETE FROM jmap_changes
-    WHERE seq IN (
-      SELECT seq
-      FROM jmap_changes
-      WHERE created_at < ${cutoff}
-      ORDER BY seq
-      LIMIT ${JMAP_CHANGE_PRUNE_LIMIT}
-    )
+    WHERE seq IN (${pruneJmapChangesCandidatesSql(cutoff)})
   `);
 }
