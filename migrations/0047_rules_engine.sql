@@ -17,5 +17,5 @@ CREATE TABLE `rules` (
 );
 --> statement-breakpoint
 CREATE INDEX `rules_enabled_position_idx` ON `rules` (`enabled`,`position`);--> statement-breakpoint
-ALTER TABLE `inbox_conversation_state` ADD `assigned_user_id` text REFERENCES users(id);--> statement-breakpoint
+ALTER TABLE `inbox_conversation_state` ADD `assigned_user_id` text REFERENCES users(id) ON DELETE SET NULL;--> statement-breakpoint
 ALTER TABLE `inbox_conversation_state` ADD `assigned_at` integer;
