@@ -29,16 +29,18 @@ async function seedSuggestion(options?: {
     personId: "suggestion-person",
     recipient: "support@example.com",
   });
-  await getDb().insert(suggestedReplies).values({
-    id,
-    emailId,
-    inbox: "support@example.com",
-    bodyText: "Suggested body",
-    model: "test-model",
-    status: options?.status ?? "pending",
-    createdAt: now,
-    updatedAt: now,
-  });
+  await getDb()
+    .insert(suggestedReplies)
+    .values({
+      id,
+      emailId,
+      inbox: "support@example.com",
+      bodyText: "Suggested body",
+      model: "test-model",
+      status: options?.status ?? "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
   return { id, emailId };
 }
 
@@ -126,23 +128,17 @@ describe("suggested replies routes", () => {
       emailId: "dismiss-email",
     });
 
-    const first = await authFetch(
-      `/api/suggested-replies/${id}/dismiss`,
-      {
-        apiKey: member.apiKey,
-        method: "POST",
-      },
-    );
+    const first = await authFetch(`/api/suggested-replies/${id}/dismiss`, {
+      apiKey: member.apiKey,
+      method: "POST",
+    });
     expect(first.status).toBe(200);
     expect((await first.json()).status).toBe("dismissed");
 
-    const again = await authFetch(
-      `/api/suggested-replies/${id}/dismiss`,
-      {
-        apiKey: member.apiKey,
-        method: "POST",
-      },
-    );
+    const again = await authFetch(`/api/suggested-replies/${id}/dismiss`, {
+      apiKey: member.apiKey,
+      method: "POST",
+    });
     expect(again.status).toBe(200);
     expect((await again.json()).status).toBe("dismissed");
 

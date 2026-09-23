@@ -44,9 +44,7 @@ describe("suggested reply enqueue gates", () => {
     [{ "List-Unsubscribe": "<mailto:leave@example.com>" }],
   ])("does not enqueue automated mail with headers %o", (headers) => {
     expect(isAutomatedInbound(headers)).toBe(true);
-    expect(
-      shouldEnqueueSuggestedReply({ ...eligible, headers }),
-    ).toBe(false);
+    expect(shouldEnqueueSuggestedReply({ ...eligible, headers })).toBe(false);
   });
 
   it("allows Auto-Submitted: no", () => {

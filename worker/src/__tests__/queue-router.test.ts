@@ -54,9 +54,9 @@ describe("classifyQueueMessage", () => {
       classifyQueueMessage({ type: "suggest_reply", emailId: "email-1" }),
     ).toBe("suggest_reply");
     expect(classifyQueueMessage({ type: "suggest_reply" })).toBe("unknown");
-    expect(
-      classifyQueueMessage({ type: "suggest_reply", emailId: 123 }),
-    ).toBe("unknown");
+    expect(classifyQueueMessage({ type: "suggest_reply", emailId: 123 })).toBe(
+      "unknown",
+    );
   });
 
   it("recognises a list import coordinator message", () => {
