@@ -28,6 +28,7 @@ const suggestion: api.SuggestedReply = {
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.clearAllMocks();
   vi.mocked(api.fetchSuggestedReply).mockResolvedValue(suggestion);
   vi.mocked(api.fetchDraft).mockResolvedValue(null);
   vi.mocked(api.saveDraft).mockResolvedValue({} as api.Draft);
