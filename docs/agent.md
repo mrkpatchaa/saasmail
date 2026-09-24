@@ -25,10 +25,12 @@ Assistant text is rendered as sanitized Markdown. Markdown images are
 intentionally not rendered: model output and quoted mail are untrusted, and an
 `<img>` would make the browser automatically fetch a remote URL (including
 tracking pixels) without an explicit user action. Links remain clickable after
-sanitization. Reasoning parts normally stay hidden; if a reasoning model emits
-no final text after its last tool call, trailing reasoning is rendered through
-the same sanitizer as a fallback answer. Reasoning that precedes a tool call,
-or reasoning followed by non-empty final text, remains hidden.
+sanitization. Reasoning parts normally stay hidden. Once an assistant message
+is complete, reasoning is rendered through the same sanitizer only when there
+is no non-empty final text: for a message with tools, only reasoning after the
+last tool call is eligible; for a message with no tools, its reasoning can be
+the fallback answer. The active submitted/streaming message never uses this
+fallback, so reasoning cannot flash before a tool call or final text arrives.
 
 Admins can set up to 4000 characters of **Agent instructions** for each inbox on
 the **Inboxes** admin page. When the current navigation context identifies that
@@ -233,7 +235,9 @@ default the runtime derives a stable 32-byte HKDF-SHA256 key from
 `AGENT_APPROVAL_SECRET` overrides that derived key. Because the effective key
 is stable, pending approvals survive Durable Object reload/hibernation. Rotating
 it invalidates still-pending cards rather than executing them with a stale
-signature.
+signature. An unsigned or stale card shows "This approval expired. Ask the
+agent again."; the tool is not executed, and a later user turn treats the
+incomplete old approval as denied so the session remains usable.
 
 Execution happens only after a valid approval and re-reads the user's current
 role and inbox permissions, so access revoked while the card is waiting is
