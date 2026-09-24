@@ -3,7 +3,9 @@ import { latestAllowedInboxForPerson } from "../lib/agent/crm";
 
 describe("latestAllowedInboxForPerson", () => {
   it("pushes visibility into SQL and bounds the lookup to one row", async () => {
-    const limit = vi.fn().mockResolvedValue([{ recipient: "allowed@example.com" }]);
+    const limit = vi
+      .fn()
+      .mockResolvedValue([{ recipient: "allowed@example.com" }]);
     const orderBy = vi.fn(() => ({ limit }));
     const where = vi.fn(() => ({ orderBy }));
     const from = vi.fn(() => ({ where }));

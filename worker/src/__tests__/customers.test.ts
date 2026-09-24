@@ -212,7 +212,10 @@ describe("identity graph", () => {
     );
     expect(customer?.people.map((person) => person.id)).toEqual(["view-a"]);
   });
-  it("requires admin to merge two existing customers without moving rows on denial", async () => {
+
+  it(
+    "requires admin to merge two existing customers without moving rows on denial",
+    async () => {
     const member = await createTestUser({
       id: "identity-merge-member",
       role: "member",
@@ -269,12 +272,15 @@ describe("identity graph", () => {
       }),
     });
     expect(allowed.status).toBe(200);
-    expect((await resolveCustomerScope(db, "merge-a")).personIds).toHaveLength(
-      4,
-    );
-  });
+      expect(
+        (await resolveCustomerScope(db, "merge-a")).personIds,
+      ).toHaveLength(4);
+    },
+  );
 
-  it("allows a non-admin to add a visible unlinked person to an existing customer", async () => {
+  it(
+    "allows a non-admin to add a visible unlinked person to an existing customer",
+    async () => {
     const member = await createTestUser({
       id: "identity-grow-member",
       role: "member",
@@ -305,10 +311,11 @@ describe("identity graph", () => {
       body: JSON.stringify({ personId: "grow-a", otherPersonId: "grow-c" }),
     });
     expect(response.status).toBe(200);
-    expect(
-      new Set((await resolveCustomerScope(db, "grow-a")).personIds),
-    ).toEqual(new Set(["grow-a", "grow-b", "grow-c"]));
-  });
+      expect(
+        new Set((await resolveCustomerScope(db, "grow-a")).personIds),
+      ).toEqual(new Set(["grow-a", "grow-b", "grow-c"]));
+    },
+  );
 
   it("rejects linking a person to themselves", async () => {
     const admin = await createTestUser({
@@ -331,5 +338,4 @@ describe("identity graph", () => {
       error: "Cannot link a person to themselves",
     });
   });
-
 });

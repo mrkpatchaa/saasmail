@@ -253,6 +253,7 @@ describe("agent approval summaries", () => {
     });
     expect(revoked.status).toBe(404);
   });
+
   it("labels an existing-customer merge as admin-only in the approval summary", async () => {
     const member = await createTestUser({
       id: "approval-merge-member",
@@ -335,5 +336,4 @@ describe("agent approval summaries", () => {
         "Merge two existing customers (admin only): approval-a@example.com and approval-c@example.com",
     });
   });
-
 });

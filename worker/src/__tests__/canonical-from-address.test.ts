@@ -30,7 +30,9 @@ describe("canonical sequence sending inboxes", () => {
     await cleanDb();
   });
 
-  it("normalizes a legacy mixed-case enrollment before Sent and JMAP reads", async () => {
+  it(
+    "normalizes a legacy mixed-case enrollment before Sent and JMAP reads",
+    async () => {
     const { userId, apiKey } = await createTestUser({
       id: "mixed-sequence-member",
       role: "member",
@@ -129,6 +131,9 @@ describe("canonical sequence sending inboxes", () => {
     const result = (await response.json()) as {
       methodResponses: [string, { ids: string[] }, string][];
     };
-    expect(result.methodResponses[0][1].ids).toEqual([`sent:${sent[0].id}`]);
-  });
+      expect(result.methodResponses[0][1].ids).toEqual([
+        `sent:${sent[0].id}`,
+      ]);
+    },
+  );
 });

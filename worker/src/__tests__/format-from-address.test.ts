@@ -29,7 +29,6 @@ describe("encodeDisplayName", () => {
   });
 });
 
-
 describe("parseFrom", () => {
   it.each([
     ["Privacy @ Snowlan", "Privacy @ Snowlan"],

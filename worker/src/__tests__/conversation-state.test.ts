@@ -358,7 +358,10 @@ describe("conversation snooze state", () => {
     expect(response.status).toBe(200);
     expect(await getDb().select().from(inboxConversationState)).toEqual([]);
   });
-  it("removes orphaned group state but keeps state for conversations with remaining messages", async () => {
+
+  it(
+    "removes orphaned group state but keeps state for conversations with remaining messages",
+    async () => {
     const { apiKey, userId } = await createTestUser({
       id: "delete-group-admin",
       email: "delete-group-admin@example.com",
@@ -420,8 +423,8 @@ describe("conversation snooze state", () => {
       method: "DELETE",
     });
     expect(response.status).toBe(200);
-    const rows = await getDb().select().from(inboxConversationState);
-    expect(rows.map((row) => row.conversationKey)).toEqual(["group-shared"]);
-  });
-
+      const rows = await getDb().select().from(inboxConversationState);
+      expect(rows.map((row) => row.conversationKey)).toEqual(["group-shared"]);
+    },
+  );
 });
