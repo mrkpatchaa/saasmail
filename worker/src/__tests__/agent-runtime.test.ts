@@ -243,8 +243,7 @@ describe("agent session runtime", () => {
         messageId: `${emailId}@example.net`,
       });
 
-      const compositeId =
-        `functions.assign_conversation:3::cf-wai-tool-call::${approved ? "approved" : "denied"}`;
+      const compositeId = `functions.assign_conversation:3::cf-wai-tool-call::${approved ? "approved" : "denied"}`;
       const model = new MockLanguageModelV4({
         doStream: async () => ({
           stream: convertArrayToReadableStream([
@@ -292,7 +291,9 @@ describe("agent session runtime", () => {
 
       const response = await runMailAgentChat({
         db,
-        env: {},
+        env: {
+          BETTER_AUTH_SECRET: (env as any).BETTER_AUTH_SECRET as string,
+        },
         instanceName: session.instanceName,
         messages,
         modelOverride: model,

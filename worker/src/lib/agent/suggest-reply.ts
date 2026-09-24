@@ -61,7 +61,12 @@ function quoteUntrusted(label: string, value: unknown): string {
 }
 
 function screenVerdict(text: string): string {
-  return text.trim().match(/[A-Za-z]+/)?.[0]?.toUpperCase() ?? "";
+  return (
+    text
+      .trim()
+      .match(/[A-Za-z]+/)?.[0]
+      ?.toUpperCase() ?? ""
+  );
 }
 
 async function screenMessage(

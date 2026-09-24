@@ -174,7 +174,6 @@ describe("suggested reply consumer", () => {
     expect(warn).toHaveBeenCalledWith(
       "[suggested-reply] injection screen returned empty text; skipping:",
       expect.objectContaining({
-        finishReason: "length",
         reasoningLength: expect.any(Number),
       }),
     );

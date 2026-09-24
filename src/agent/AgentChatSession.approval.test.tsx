@@ -74,13 +74,15 @@ function renderWithParts(parts: Record<string, unknown>[]) {
 
 describe("AgentChatSession approvals", () => {
   it("renders the database summary and sends the approval id for approve and deny", async () => {
-    renderWithParts([{
-      type: "tool-add_to_list",
-      toolCallId: "approval-call",
-      state: "approval-requested",
-      input: { personId: "person-1", listId: "list-1" },
-      approval: { id: "approval-id-1" },
-    }]);
+    renderWithParts([
+      {
+        type: "tool-add_to_list",
+        toolCallId: "approval-call",
+        state: "approval-requested",
+        input: { personId: "person-1", listId: "list-1" },
+        approval: { id: "approval-id-1" },
+      },
+    ]);
 
     expect(
       await screen.findByText("Add jane@acme.com to list 'Beta testers'"),
@@ -103,13 +105,15 @@ describe("AgentChatSession approvals", () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockResolvedValue({
       summary: "Can't add: jane@acme.com unsubscribed from 'Beta testers'",
     });
-    renderWithParts([{
-      type: "tool-add_to_list",
-      toolCallId: "approval-call-blocked",
-      state: "approval-requested",
-      input: { personId: "person-1", listId: "list-1" },
-      approval: { id: "approval-id-blocked" },
-    }]);
+    renderWithParts([
+      {
+        type: "tool-add_to_list",
+        toolCallId: "approval-call-blocked",
+        state: "approval-requested",
+        input: { personId: "person-1", listId: "list-1" },
+        approval: { id: "approval-id-blocked" },
+      },
+    ]);
 
     expect(
       await screen.findByText(
@@ -130,13 +134,15 @@ describe("AgentChatSession approvals", () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
       new Error("not found"),
     );
-    renderWithParts([{
-      type: "tool-link_customer",
-      toolCallId: "approval-call-2",
-      state: "approval-responded",
-      input: { personId: "person-1", otherPersonId: "person-2" },
-      approval: { id: "approval-id-2", approved: false },
-    }]);
+    renderWithParts([
+      {
+        type: "tool-link_customer",
+        toolCallId: "approval-call-2",
+        state: "approval-responded",
+        input: { personId: "person-1", otherPersonId: "person-2" },
+        approval: { id: "approval-id-2", approved: false },
+      },
+    ]);
 
     expect(screen.getByText("Denied")).toBeTruthy();
     await waitFor(() =>
