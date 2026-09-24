@@ -93,7 +93,7 @@ describe("suggested replies routes", () => {
       `/api/suggested-replies?emailId=${encodeURIComponent(emailId)}`,
       { apiKey: admin.apiKey },
     );
-    expect((await res.json()).suggestion).toBeNull();
+    expect((await jsonBody<SuggestionResponse>(res)).suggestion).toBeNull();
   });
 
   it("returns 404 when the caller cannot see the inbox", async () => {
@@ -157,7 +157,9 @@ describe("suggested replies routes", () => {
       method: "POST",
     });
     expect(again.status).toBe(200);
-    expect((await again.json()).status).toBe("dismissed");
+    expect((await jsonBody<SuggestionStatusResponse>(again)).status).toBe(
+      "dismissed",
+    );
 
     const use = await authFetch(`/api/suggested-replies/${id}/use`, {
       apiKey: member.apiKey,
