@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   applyMigrations,
@@ -16,6 +16,7 @@ import { messageUserState } from "../db/message-user-state.schema";
 import { mailboxMessageState } from "../db/mailbox-message-state.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { messageMailboxes } from "../db/message-mailboxes.schema";
+import { sentEmails } from "../db/sent-emails.schema";
 import { blocklist } from "../db/blocklist.schema";
 import { deleteEmailWithAttachments } from "../lib/delete-email";
 import { purgeBlockedMail } from "../lib/purge-blocked";
@@ -702,4 +703,51 @@ describe("message state services", () => {
     expect(res.status).toBe(200);
     await expectNoMessageState(refs);
   });
+  it("batches a 500-message move into three folders without N+1 writes", async () => {
+    await createTestUser({
+      id: "bulk-state-admin",
+      role: "admin",
+      email: "bulk-state-admin@example.com",
+    });
+    const db = getDb();
+    const now = Math.floor(Date.now() / 1000);
+    const inbox = "support@saasmail.test";
+    const rows = Array.from({ length: 500 }, (_, i) => ({
+      id: `bulk-sent-${i}`,
+      personId: null,
+      fromAddress: inbox,
+      toAddress: `recipient-${i}@example.com`,
+      subject: `Bulk ${i}`,
+      status: "sent",
+      sentAt: now,
+      createdAt: now,
+    }));
+    for (let start = 0; start < rows.length; start += 10) {
+      await db.insert(sentEmails).values(rows.slice(start, start + 10));
+    }
+
+    const folders = [];
+    for (const name of ["One", "Two", "Three"]) {
+      folders.push(
+        await createMailbox(db, { isAdmin: true }, "bulk-state-admin", {
+          inbox,
+          name,
+        }),
+      );
+    }
+
+    const refs = rows.map((row) => ({ kind: "sent" as const, id: row.id }));
+    const batchSpy = vi.spyOn(db, "batch");
+    await setMailboxMembership(
+      db,
+      { isAdmin: true },
+      "bulk-state-admin",
+      refs,
+      { add: folders.map((folder) => folder.id) },
+    );
+
+    expect(await db.select().from(messageMailboxes)).toHaveLength(1500);
+    expect(batchSpy).toHaveBeenCalledTimes(3);
+  });
+
 });
