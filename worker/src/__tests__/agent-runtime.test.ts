@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   buildMailAgentInstructions,
   countCompletedApprovalActions,
+  deriveAgentApprovalSecret,
   runMailAgentChat,
   streamMailAgentTurn,
 } from "../agent/mail-agent";
@@ -186,7 +187,9 @@ describe("agent session runtime", () => {
 
     const response = await runMailAgentChat({
       db: getDb(),
-      env: {},
+      env: {
+        BETTER_AUTH_SECRET: (env as any).BETTER_AUTH_SECRET as string,
+      },
       instanceName: session.instanceName,
       messages: [
         {
@@ -328,7 +331,9 @@ describe("agent session runtime", () => {
 
     const response = await runMailAgentChat({
       db: getDb(),
-      env: {},
+      env: {
+        BETTER_AUTH_SECRET: (env as any).BETTER_AUTH_SECRET as string,
+      },
       instanceName: session.instanceName,
       messages: [
         {
@@ -578,6 +583,149 @@ describe("agent model loop", () => {
     });
     await denied.consumeStream();
     expect(executions).toEqual([]);
+  });
+
+  it("binds approvals to a stable secret and rejects missing or invalid signatures", async () => {
+    const executions: string[] = [];
+    const approvalSecret = await deriveAgentApprovalSecret(
+      "approval-signing-root",
+    );
+    const requestModel = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          {
+            type: "tool-call" as const,
+            toolCallId:
+              "functions.crm_action:1::cf-wai-tool-call::signed-approval",
+            toolName: "crm_action",
+            input: JSON.stringify({ value: "signed" }),
+          },
+          {
+            type: "finish" as const,
+            finishReason: {
+              unified: "tool-calls" as const,
+              raw: "tool-calls",
+            },
+            usage: MOCK_USAGE,
+          },
+        ]),
+      }),
+    });
+    const approvalTool = tool({
+      inputSchema: z.object({ value: z.string() }),
+      needsApproval: true,
+      execute: async ({ value }) => {
+        executions.push(value);
+        return { success: true };
+      },
+    });
+    const pending = await streamMailAgentTurn({
+      model: requestModel,
+      messages: [
+        {
+          id: "signed-approval-user",
+          role: "user",
+          parts: [{ type: "text", text: "Do it" }],
+        },
+      ],
+      tools: { crm_action: approvalTool },
+      instructions: "Test instructions",
+      toolApprovalSecret: approvalSecret,
+    });
+
+    let approvalId = "";
+    let signature = "";
+    for await (const part of pending.stream) {
+      if (part.type === "tool-approval-request") {
+        approvalId = part.approvalId;
+        signature = part.signature ?? "";
+      }
+    }
+    expect(approvalId).not.toBe("");
+    expect(signature).not.toBe("");
+
+    const finalModel = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          { type: "text-start" as const, id: "signed-result" },
+          {
+            type: "text-delta" as const,
+            id: "signed-result",
+            delta: "Handled.",
+          },
+          { type: "text-end" as const, id: "signed-result" },
+          {
+            type: "finish" as const,
+            finishReason: { unified: "stop" as const, raw: "stop" },
+            usage: MOCK_USAGE,
+          },
+        ]),
+      }),
+    });
+
+    const resume = async (approvalSignature?: string) => {
+      const result = await streamMailAgentTurn({
+        model: finalModel,
+        messages: [
+          {
+            id: "signed-approval-user",
+            role: "user",
+            parts: [{ type: "text", text: "Do it" }],
+          },
+          {
+            id: "signed-approval-assistant",
+            role: "assistant",
+            parts: [
+              {
+                type: "tool-crm_action",
+                toolCallId:
+                  "functions.crm_action:1::cf-wai-tool-call::signed-approval",
+                state: "approval-responded",
+                input: { value: "signed" },
+                approval: {
+                  id: approvalId,
+                  approved: true,
+                  ...(approvalSignature
+                    ? { signature: approvalSignature }
+                    : {}),
+                },
+              } as any,
+            ],
+          },
+        ],
+        tools: { crm_action: approvalTool },
+        instructions: "Test instructions",
+        toolApprovalSecret: approvalSecret,
+      });
+      const parts: any[] = [];
+      for await (const part of result.stream) parts.push(part);
+      return parts;
+    };
+
+    executions.length = 0;
+    const missing = await resume();
+    expect(executions).toEqual([]);
+    expect(missing.some((part) => part.type === "error")).toBe(true);
+
+    executions.length = 0;
+    const invalid = await resume("invalid-signature");
+    expect(executions).toEqual([]);
+    expect(invalid.some((part) => part.type === "error")).toBe(true);
+
+    executions.length = 0;
+    const valid = await resume(signature);
+    expect(executions).toEqual(["signed"]);
+    expect(valid.some((part) => part.type === "error")).toBe(false);
+  });
+
+  it("derives a stable 32-byte approval key from BETTER_AUTH_SECRET", async () => {
+    const first = await deriveAgentApprovalSecret("stable-agent-secret");
+    const second = await deriveAgentApprovalSecret("stable-agent-secret");
+    const different = await deriveAgentApprovalSecret("different-agent-secret");
+
+    expect(first).toHaveLength(32);
+    expect(Array.from(first)).toEqual(Array.from(second));
+    expect(Array.from(first)).not.toEqual(Array.from(different));
   });
 
   it("fails cleanly when inbox permission is revoked before approval executes", async () => {

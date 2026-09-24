@@ -27,6 +27,52 @@ import {
   createAgentTools,
 } from "../lib/agent/tools";
 
+const AGENT_APPROVAL_INFO = "saasmail/agent-tool-approval/v1";
+
+export type MailAgentEnv = AgentModelEnv & {
+  BETTER_AUTH_SECRET?: string;
+  AGENT_APPROVAL_SECRET?: string;
+};
+
+export async function deriveAgentApprovalSecret(
+  betterAuthSecret: string,
+): Promise<Uint8Array> {
+  const encoder = new TextEncoder();
+  const sourceKey = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(betterAuthSecret),
+    "HKDF",
+    false,
+    ["deriveBits"],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(0),
+      info: encoder.encode(AGENT_APPROVAL_INFO),
+    },
+    sourceKey,
+    256,
+  );
+  return new Uint8Array(bits);
+}
+
+export async function resolveAgentApprovalSecret(
+  env: Pick<MailAgentEnv, "BETTER_AUTH_SECRET" | "AGENT_APPROVAL_SECRET">,
+): Promise<string | Uint8Array> {
+  const override = env.AGENT_APPROVAL_SECRET?.trim();
+  if (override) return override;
+
+  const betterAuthSecret = env.BETTER_AUTH_SECRET?.trim();
+  if (!betterAuthSecret) {
+    throw new Error(
+      "BETTER_AUTH_SECRET is required to sign agent tool approvals",
+    );
+  }
+  return deriveAgentApprovalSecret(betterAuthSecret);
+}
+
 export type MailAgentUser = {
   id: string;
   name?: string | null;
@@ -182,12 +228,14 @@ export async function streamMailAgentTurn({
   tools,
   instructions,
   abortSignal,
+  toolApprovalSecret,
 }: {
   model: LanguageModel;
   messages: UIMessage[];
   tools: ToolSet;
   instructions: string;
   abortSignal?: AbortSignal;
+  toolApprovalSecret?: string | Uint8Array;
 }) {
   return streamText({
     model,
@@ -195,6 +243,7 @@ export async function streamMailAgentTurn({
     instructions,
     tools,
     abortSignal,
+    experimental_toolApprovalSecret: toolApprovalSecret,
     stopWhen: isStepCount(8),
     repairToolCall: async ({ toolCall, error }) => {
       if (!NoSuchToolError.isInstance(error)) return null;
@@ -222,7 +271,7 @@ export async function runMailAgentChat({
   modelOverride,
 }: {
   db: DrizzleD1Database<any>;
-  env: AgentModelEnv;
+  env: MailAgentEnv;
   instanceName: string;
   messages: UIMessage[];
   body?: Record<string, unknown>;
@@ -246,6 +295,7 @@ export async function runMailAgentChat({
     model = selected.model;
   }
 
+  const toolApprovalSecret = await resolveAgentApprovalSecret(env);
   const result = await streamMailAgentTurn({
     model,
     messages,
@@ -257,6 +307,7 @@ export async function runMailAgentChat({
     }),
     instructions: await buildMailAgentInstructions({ db, user, body }),
     abortSignal,
+    toolApprovalSecret,
   });
 
   return result.toUIMessageStreamResponse({ originalMessages: messages });
@@ -270,7 +321,7 @@ export class MailAgent extends AIChatAgent<CloudflareBindings> {
     const db = drizzle(this.env.DB, { schema, logger: true });
     return runMailAgentChat({
       db,
-      env: this.env as AgentModelEnv,
+      env: this.env as MailAgentEnv,
       instanceName: this.name,
       messages: this.messages,
       body: options?.body,
