@@ -62,9 +62,9 @@ describe("suggested reply enqueue gates", () => {
     "do-not-reply@example.com",
   ])("does not enqueue automated sender %s", (senderAddress) => {
     expect(isAutomatedInbound({}, senderAddress)).toBe(true);
-    expect(
-      shouldEnqueueSuggestedReply({ ...eligible, senderAddress }),
-    ).toBe(false);
+    expect(shouldEnqueueSuggestedReply({ ...eligible, senderAddress })).toBe(
+      false,
+    );
   });
 
   it("allows Auto-Submitted: no", () => {

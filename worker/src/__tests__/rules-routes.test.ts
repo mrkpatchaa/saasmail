@@ -240,9 +240,7 @@ describe("admin rule routes", () => {
       body: JSON.stringify(
         ruleBody({
           name: "Folder warning",
-          actions: [
-            { type: "move_to_folder", mailboxId: "warning-folder" },
-          ],
+          actions: [{ type: "move_to_folder", mailboxId: "warning-folder" }],
         }),
       ),
     });
@@ -263,10 +261,9 @@ describe("admin rule routes", () => {
     expect(res.status).toBe(201);
     const assigneeRule = (await res.json()) as { id: string };
 
-    res = await authFetch(
-      `/api/mailboxes?inbox=${encodeURIComponent(INBOX)}`,
-      { apiKey: admin.apiKey },
-    );
+    res = await authFetch(`/api/mailboxes?inbox=${encodeURIComponent(INBOX)}`, {
+      apiKey: admin.apiKey,
+    });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({
       mailboxes: [

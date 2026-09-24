@@ -242,7 +242,8 @@ describe("auto-reply guards", () => {
       ).bind("auto-reply-rule", CUSTOMER, NOW - 10),
     ]);
 
-    await env.DB.prepare(`
+    await env.DB.prepare(
+      `
       DELETE FROM auto_reply_log
       WHERE rowid NOT IN (
         SELECT (
@@ -256,7 +257,8 @@ describe("auto-reply guards", () => {
         FROM auto_reply_log AS grouped
         GROUP BY grouped.rule_id, grouped.sender
       )
-    `).run();
+    `,
+    ).run();
     await env.DB.prepare(
       "DROP INDEX auto_reply_log_rule_sender_sent_idx",
     ).run();

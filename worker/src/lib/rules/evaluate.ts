@@ -53,7 +53,9 @@ async function runAction(
       const [mailbox] = await db
         .select({ id: mailboxes.id })
         .from(mailboxes)
-        .where(and(eq(mailboxes.id, action.mailboxId), eq(mailboxes.inbox, inbox)))
+        .where(
+          and(eq(mailboxes.id, action.mailboxId), eq(mailboxes.inbox, inbox)),
+        )
         .limit(1);
       if (!mailbox) {
         console.warn(

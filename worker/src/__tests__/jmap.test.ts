@@ -475,21 +475,9 @@ describe("JMAP", () => {
     });
 
     const result = await jmapJson(apiKey, [
-      [
-        "Email/query",
-        { accountId: userId, position: -1, limit: 1 },
-        "e1",
-      ],
-      [
-        "Mailbox/query",
-        { accountId: userId, position: -1, limit: 1 },
-        "m1",
-      ],
-      [
-        "Email/query",
-        { accountId: userId, position: -99, limit: 1 },
-        "e2",
-      ],
+      ["Email/query", { accountId: userId, position: -1, limit: 1 }, "e1"],
+      ["Mailbox/query", { accountId: userId, position: -1, limit: 1 }, "m1"],
+      ["Email/query", { accountId: userId, position: -99, limit: 1 }, "e2"],
     ]);
 
     expect(result.methodResponses[0][1]).toMatchObject({

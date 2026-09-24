@@ -106,7 +106,11 @@ async function computeRuleWarnings(
 
   const mailboxById = new Map<string, { id: string; inbox: string }>();
   const folderList = [...folderIds];
-  for (let start = 0; start < folderList.length; start += WARNING_LOOKUP_BATCH_SIZE) {
+  for (
+    let start = 0;
+    start < folderList.length;
+    start += WARNING_LOOKUP_BATCH_SIZE
+  ) {
     const batch = folderList.slice(start, start + WARNING_LOOKUP_BATCH_SIZE);
     const found = await db
       .select({ id: mailboxes.id, inbox: mailboxes.inbox })
@@ -117,7 +121,11 @@ async function computeRuleWarnings(
 
   const userById = new Map<string, { id: string; role: string | null }>();
   const assigneeList = [...assigneeIds];
-  for (let start = 0; start < assigneeList.length; start += WARNING_LOOKUP_BATCH_SIZE) {
+  for (
+    let start = 0;
+    start < assigneeList.length;
+    start += WARNING_LOOKUP_BATCH_SIZE
+  ) {
     const batch = assigneeList.slice(start, start + WARNING_LOOKUP_BATCH_SIZE);
     const found = await db
       .select({ id: users.id, role: users.role })
@@ -127,14 +135,22 @@ async function computeRuleWarnings(
   }
 
   const permissionsByUser = new Map<string, Set<string>>();
-  for (let start = 0; start < assigneeList.length; start += WARNING_LOOKUP_BATCH_SIZE) {
+  for (
+    let start = 0;
+    start < assigneeList.length;
+    start += WARNING_LOOKUP_BATCH_SIZE
+  ) {
     const batch = assigneeList.slice(start, start + WARNING_LOOKUP_BATCH_SIZE);
     const found = await db
-      .select({ userId: inboxPermissions.userId, email: inboxPermissions.email })
+      .select({
+        userId: inboxPermissions.userId,
+        email: inboxPermissions.email,
+      })
       .from(inboxPermissions)
       .where(inArray(inboxPermissions.userId, batch));
     for (const permission of found) {
-      const inboxes = permissionsByUser.get(permission.userId) ?? new Set<string>();
+      const inboxes =
+        permissionsByUser.get(permission.userId) ?? new Set<string>();
       inboxes.add(permission.email.trim().toLowerCase());
       permissionsByUser.set(permission.userId, inboxes);
     }
@@ -147,7 +163,11 @@ async function computeRuleWarnings(
     row.actions.forEach((action, actionIndex) => {
       if (action.type === "move_to_folder") {
         const mailbox = mailboxById.get(action.mailboxId);
-        if (!ruleInbox || !mailbox || mailbox.inbox.trim().toLowerCase() !== ruleInbox) {
+        if (
+          !ruleInbox ||
+          !mailbox ||
+          mailbox.inbox.trim().toLowerCase() !== ruleInbox
+        ) {
           warnings.push({ actionIndex, code: "missing_folder" });
         }
       }
@@ -155,8 +175,11 @@ async function computeRuleWarnings(
         const user = userById.get(action.userId);
         const available =
           user?.role === "admin" ||
-          (!!user && !!ruleInbox && permissionsByUser.get(user.id)?.has(ruleInbox) === true);
-        if (!available) warnings.push({ actionIndex, code: "assignee_unavailable" });
+          (!!user &&
+            !!ruleInbox &&
+            permissionsByUser.get(user.id)?.has(ruleInbox) === true);
+        if (!available)
+          warnings.push({ actionIndex, code: "assignee_unavailable" });
       }
     });
     result.set(row.id, warnings);
