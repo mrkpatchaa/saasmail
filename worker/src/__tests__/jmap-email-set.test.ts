@@ -7,7 +7,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { eq } from "drizzle-orm";
 import {
   applyMigrations,
   authFetch,
