@@ -345,12 +345,7 @@ describe("JMAP", () => {
         {
           accountId: userId,
           ids: ["received:standard-properties-mail"],
-          properties: [
-            "id",
-            "blobId",
-            "messageId",
-            "header:List-Id:asText",
-          ],
+          properties: ["id", "blobId", "messageId", "header:List-Id:asText"],
         },
         "e1",
       ],
