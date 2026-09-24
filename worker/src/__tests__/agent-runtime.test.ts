@@ -245,6 +245,70 @@ describe("agent session runtime", () => {
       });
 
       const compositeId = `functions.assign_conversation:3::cf-wai-tool-call::${approved ? "approved" : "denied"}`;
+      const toolInput = {
+        ref: `received:${emailId}`,
+        userId: member.userId,
+      };
+      const approvalSecret = await deriveAgentApprovalSecret(
+        (env as any).BETTER_AUTH_SECRET as string,
+      );
+      const requestModel = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            {
+              type: "tool-call" as const,
+              toolCallId: compositeId,
+              toolName: "assign_conversation",
+              input: JSON.stringify(toolInput),
+            },
+            {
+              type: "finish" as const,
+              finishReason: {
+                unified: "tool-calls" as const,
+                raw: "tool-calls",
+              },
+              usage: MOCK_USAGE,
+            },
+          ]),
+        }),
+      });
+      const pending = await streamMailAgentTurn({
+        model: requestModel,
+        messages: [
+          {
+            id: "approval-continuation-request-user",
+            role: "user",
+            parts: [
+              { type: "text", text: "Assign this conversation." },
+            ],
+          },
+        ],
+        tools: {
+          assign_conversation: tool({
+            inputSchema: z.object({
+              ref: z.string(),
+              userId: z.string().nullable(),
+            }),
+            needsApproval: true,
+            execute: async () => {
+              throw new Error("approval request must not execute");
+            },
+          }),
+        },
+        instructions: "Test instructions",
+        toolApprovalSecret: approvalSecret,
+      });
+      let approvalId = "";
+      let approvalSignature = "";
+      for await (const part of pending.stream) {
+        if (part.type === "tool-approval-request") {
+          approvalId = part.approvalId;
+          approvalSignature = part.signature ?? "";
+        }
+      }
+      expect(approvalId).not.toBe("");
+      expect(approvalSignature).not.toBe("");
+
       const model = new MockLanguageModelV4({
         doStream: async () => ({
           stream: convertArrayToReadableStream([
@@ -277,13 +341,11 @@ describe("agent session runtime", () => {
               type: "tool-assign_conversation",
               toolCallId: compositeId,
               state: "approval-responded",
-              input: {
-                ref: `received:${emailId}`,
-                userId: member.userId,
-              },
+              input: toolInput,
               approval: {
-                id: `approval-${approved ? "approved" : "denied"}`,
+                id: approvalId,
                 approved,
+                signature: approvalSignature,
               },
             } as any,
           ],
