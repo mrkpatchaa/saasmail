@@ -712,6 +712,7 @@ describe("agent tools", () => {
       bodyText: "Human in-progress reply",
     });
   });
+
   it("returns typed customer-link errors cleanly for non-admin merges and self-links", async () => {
     const { db, tools, allowedPerson } = await fixture();
     const now = Math.floor(Date.now() / 1000);
@@ -724,14 +725,45 @@ describe("agent tools", () => {
         messageId: `${id}@example.test`,
       });
     }
-    await db.insert(customers).values({
-      id: "agent-other-customer",
-      displayName: null,
-      createdBy: null,
-      createdAt: now,
-      updatedAt: now,
+    const primaryAlias = await createTestPerson({
+      id: "agent-primary-alias",
+      email: "agent-primary-alias@example.net",
     });
+    await createTestEmail({
+      id: "agent-primary-alias-mail",
+      personId: primaryAlias.id,
+      recipient: ALLOWED,
+      messageId: "agent-primary-alias@example.test",
+    });
+    await db.insert(customers).values([
+      {
+        id: "agent-primary-customer",
+        displayName: null,
+        createdBy: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: "agent-other-customer",
+        displayName: null,
+        createdBy: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
     await db.insert(customerPeople).values([
+      {
+        customerId: "agent-primary-customer",
+        personId: allowedPerson.id,
+        linkedBy: null,
+        linkedAt: now,
+      },
+      {
+        customerId: "agent-primary-customer",
+        personId: primaryAlias.id,
+        linkedBy: null,
+        linkedAt: now,
+      },
       {
         customerId: "agent-other-customer",
         personId: "agent-merge-a",
@@ -767,5 +799,4 @@ describe("agent tools", () => {
       error: "Cannot link a person to themselves",
     });
   });
-
 });

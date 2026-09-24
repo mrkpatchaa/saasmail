@@ -108,6 +108,46 @@ describe("message state services", () => {
     expect(rows).toEqual([]);
   });
 
+  it("preserves sent seen_at in a mixed seen/starred batch", async () => {
+    await createTestUser({
+      id: "mixed-state-admin",
+      role: "admin",
+      email: "mixed-state-admin@example.com",
+    });
+    await seedMessages();
+    const db = getDb();
+
+    await db.insert(messageUserState).values({
+      userId: "mixed-state-admin",
+      messageKind: "sent",
+      messageId: "state-sent",
+      seenAt: 123,
+      starredAt: null,
+      updatedAt: 123,
+    });
+
+    await setUserState(
+      db,
+      "mixed-state-admin",
+      [
+        { kind: "received", id: "state-received" },
+        { kind: "sent", id: "state-sent" },
+      ],
+      { seen: true, starred: true },
+    );
+
+    const rows = await db
+      .select()
+      .from(messageUserState)
+      .where(eq(messageUserState.userId, "mixed-state-admin"));
+    const byId = new Map(rows.map((row) => [row.messageId, row]));
+
+    expect(byId.get("state-received")?.seenAt).not.toBeNull();
+    expect(byId.get("state-received")?.starredAt).not.toBeNull();
+    expect(byId.get("state-sent")?.seenAt).toBe(123);
+    expect(byId.get("state-sent")?.starredAt).not.toBeNull();
+  });
+
   it("bootstraps seen state from legacy is_read when first creating a personal row", async () => {
     await createTestUser({
       id: "bootstrap-admin",
@@ -508,6 +548,7 @@ describe("message state services", () => {
       ),
     ).toBe(true);
   });
+
   async function seedAllMessageState(
     userId: string,
     refs: Array<{ kind: "received" | "sent"; id: string }>,
@@ -703,6 +744,7 @@ describe("message state services", () => {
     expect(res.status).toBe(200);
     await expectNoMessageState(refs);
   });
+
   it("batches a 500-message move into three folders without N+1 writes", async () => {
     await createTestUser({
       id: "bulk-state-admin",
@@ -749,5 +791,4 @@ describe("message state services", () => {
     expect(await db.select().from(messageMailboxes)).toHaveLength(1500);
     expect(batchSpy).toHaveBeenCalledTimes(3);
   });
-
 });

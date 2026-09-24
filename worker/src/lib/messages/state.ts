@@ -52,8 +52,14 @@ async function runWriteBatches(
   // If a later batch fails, earlier batches remain applied. The writes here are
   // idempotent upserts/deletes, matching the Stage 3 (#11) chunk-and-retry
   // behavior used by bulk mailbox actions.
-  for (let start = 0; start < statements.length; start += WRITE_BATCH_STATEMENTS) {
-    await db.batch(statements.slice(start, start + WRITE_BATCH_STATEMENTS) as any);
+  for (
+    let start = 0;
+    start < statements.length;
+    start += WRITE_BATCH_STATEMENTS
+  ) {
+    await db.batch(
+      statements.slice(start, start + WRITE_BATCH_STATEMENTS) as any,
+    );
   }
 }
 
@@ -184,18 +190,24 @@ export async function setUserState(
               ? now
               : null;
     const starredAt = changes.starred === true ? now : null;
-    return [{
-      userId,
-      messageKind: message.ref.kind,
-      messageId: message.ref.id,
-      seenAt,
-      starredAt,
-      updatedAt: now,
-    }];
+    return [
+      {
+        userId,
+        messageKind: message.ref.kind,
+        messageId: message.ref.id,
+        seenAt,
+        starredAt,
+        updatedAt: now,
+      },
+    ];
   });
 
   const statements: any[] = [];
-  for (let start = 0; start < rows.length; start += USER_STATE_ROWS_PER_STATEMENT) {
+  for (
+    let start = 0;
+    start < rows.length;
+    start += USER_STATE_ROWS_PER_STATEMENT
+  ) {
     const chunk = rows.slice(start, start + USER_STATE_ROWS_PER_STATEMENT);
     statements.push(
       db
@@ -210,7 +222,9 @@ export async function setUserState(
           set: {
             updatedAt: sql`excluded.updated_at`,
             ...(changes.seen !== undefined
-              ? { seenAt: sql`excluded.seen_at` }
+              ? {
+                  seenAt: sql`CASE WHEN excluded.message_kind = 'received' THEN excluded.seen_at ELSE message_user_state.seen_at END`,
+                }
               : {}),
             ...(changes.starred !== undefined
               ? { starredAt: sql`excluded.starred_at` }
