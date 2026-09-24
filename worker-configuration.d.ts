@@ -24,6 +24,8 @@ declare namespace Cloudflare {
 		BETTER_AUTH_SECRET: string;
 		/** Optional secret: set via `wrangler secret put AGENT_APPROVAL_SECRET`. Overrides the BETTER_AUTH_SECRET-derived key used to sign native-agent tool approvals. Not emitted by `wrangler types`; added manually. */
 		AGENT_APPROVAL_SECRET?: string;
+		/** Optional query logging toggle. Set to "true" only while debugging; Drizzle logs SQL parameters. Not emitted by `wrangler types`; added manually. */
+		DB_LOG_QUERIES?: string;
 		NOTIFICATIONS_HUB: DurableObjectNamespace<import("./worker/src/index").NotificationsHub>;
 	}
 }
