@@ -151,6 +151,38 @@ function approximateSize(message: UnifiedMessage): number {
   );
 }
 
+const EMAIL_PROPERTIES = new Set([
+  "id",
+  "threadId",
+  "mailboxIds",
+  "keywords",
+  "size",
+  "receivedAt",
+  "sentAt",
+  "from",
+  "to",
+  "cc",
+  "subject",
+  "preview",
+  "hasAttachment",
+  "textBody",
+  "htmlBody",
+  "attachments",
+  "bodyValues",
+]);
+
+function validEmailProperties(properties: unknown): boolean {
+  return (
+    properties === undefined ||
+    properties === null ||
+    (Array.isArray(properties) &&
+      properties.every(
+        (property) =>
+          typeof property === "string" && EMAIL_PROPERTIES.has(property),
+      ))
+  );
+}
+
 function supportedProperties(
   full: Record<string, unknown>,
   properties: unknown,
@@ -263,6 +295,10 @@ export async function emailGet(
   accountId: string,
   args: Record<string, unknown>,
 ): Promise<Record<string, unknown> | JmapMethodError> {
+  if (!validEmailProperties(args.properties)) {
+    return { type: "invalidArguments", properties: ["properties"] };
+  }
+
   const ids = args.ids;
   if (
     ids !== undefined &&
@@ -480,7 +516,6 @@ export async function emailQuery(
   if (
     typeof position !== "number" ||
     !Number.isInteger(position) ||
-    position < 0 ||
     typeof requestedLimit !== "number" ||
     !Number.isInteger(requestedLimit) ||
     requestedLimit < 0
@@ -525,6 +560,21 @@ export async function emailQuery(
   }
 
   const queryState = await jmapState(db, allowed, userId);
+  let total: number | undefined;
+  if (position < 0 || args.calculateTotal === true) {
+    total = impossible
+      ? 0
+      : await countMessages(db, allowed, {
+          ...queryExtra,
+          limit: undefined,
+          offset: undefined,
+        });
+  }
+
+  const resolvedPosition =
+    position < 0 ? Math.max(0, (total ?? 0) + position) : position;
+  queryExtra = { ...queryExtra, offset: resolvedPosition };
+
   let ids: string[] = [];
   if (!impossible && limit > 0) {
     const page = await queryMessages(db, allowed, queryExtra);
@@ -535,17 +585,11 @@ export async function emailQuery(
     accountId,
     queryState,
     canCalculateChanges: false,
-    position,
+    position: resolvedPosition,
     ids,
   };
   if (args.calculateTotal === true) {
-    result.total = impossible
-      ? 0
-      : await countMessages(db, allowed, {
-          ...queryExtra,
-          limit: undefined,
-          offset: undefined,
-        });
+    result.total = total;
   }
   return result;
 }

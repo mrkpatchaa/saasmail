@@ -21,7 +21,7 @@ import {
   MAIL_CAPABILITY,
   MAX_CALLS_IN_REQUEST,
 } from "../jmap/constants";
-import { executeJmapCalls } from "../jmap/http";
+import { executeJmapCalls, validateJmapPostRequest } from "../jmap/http";
 
 const MINE = "mine@saasmail.test";
 const THEIRS = "theirs@saasmail.test";
@@ -119,6 +119,69 @@ describe("JMAP", () => {
       isReadOnly: false,
     });
     expect(session.primaryAccounts[MAIL_CAPABILITY]).toBe(userId);
+  });
+
+  it("guards cookie-authenticated POSTs while leaving Bearer requests unchanged", async () => {
+    const requestBody = JSON.stringify({
+      using: [CORE_CAPABILITY],
+      methodCalls: [["Core/echo", { ok: true }, "c1"]],
+    });
+
+    const badType = validateJmapPostRequest(
+      new Request("http://localhost/jmap/api", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: requestBody,
+      }),
+      env as unknown as CloudflareBindings,
+      "session",
+    );
+    expect(badType?.status).toBe(400);
+    expect(await badType!.json()).toMatchObject({
+      type: "urn:ietf:params:jmap:error:notJSON",
+      status: 400,
+    });
+
+    const badOrigin = validateJmapPostRequest(
+      new Request("http://localhost/jmap/api", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          Origin: "https://evil.example",
+        },
+        body: requestBody,
+      }),
+      env as unknown as CloudflareBindings,
+      "session",
+    );
+    expect(badOrigin?.status).toBe(403);
+
+    expect(
+      validateJmapPostRequest(
+        new Request("http://localhost/jmap/api", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            Origin: env.BASE_URL,
+          },
+          body: requestBody,
+        }),
+        env as unknown as CloudflareBindings,
+        "session",
+      ),
+    ).toBeNull();
+
+    const { apiKey } = await createTestUser({ id: "jmap-bearer-user" });
+    const bearer = await authFetch("/jmap/api", {
+      method: "POST",
+      apiKey,
+      headers: {
+        "Content-Type": "text/plain",
+        Origin: "https://evil.example",
+      },
+      body: requestBody,
+    });
+    expect(bearer.status).toBe(200);
   });
 
   it("supports Core/echo, rejects bad capabilities, and enforces the call limit", async () => {
@@ -222,6 +285,42 @@ describe("JMAP", () => {
         mayDelete: false,
       }),
     ]);
+  });
+
+  it("rejects unknown properties in every supported get method", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "jmap-properties-user",
+    });
+    const result = await jmapJson(apiKey, [
+      [
+        "Email/get",
+        { accountId: userId, ids: [], properties: ["id", "unknown"] },
+        "e1",
+      ],
+      [
+        "Mailbox/get",
+        { accountId: userId, ids: [], properties: ["id", "unknown"] },
+        "m1",
+      ],
+      [
+        "Thread/get",
+        { accountId: userId, ids: [], properties: ["id", "unknown"] },
+        "t1",
+      ],
+      [
+        "Identity/get",
+        { accountId: userId, ids: [], properties: ["id", "unknown"] },
+        "i1",
+      ],
+    ]);
+
+    for (const [index, callId] of ["e1", "m1", "t1", "i1"].entries()) {
+      expect(result.methodResponses[index]).toEqual([
+        "error",
+        { type: "invalidArguments", properties: ["properties"] },
+        callId,
+      ]);
+    }
   });
 
   it("returns Email/get fields, body values, state keywords, and attachment blob ids", async () => {
@@ -348,6 +447,65 @@ describe("JMAP", () => {
       { type: "unsupportedSort" },
       "q2",
     ]);
+  });
+
+  it("supports negative positions for Email/query and Mailbox/query", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "jmap-negative-position-user",
+    });
+    await addIdentity(MINE);
+    const base = 1_800_000_000;
+    await createTestSentEmail({
+      id: "negative-1",
+      fromAddress: MINE,
+      toAddress: "alice@example.com",
+      sentAt: base + 1,
+    });
+    await createTestSentEmail({
+      id: "negative-2",
+      fromAddress: MINE,
+      toAddress: "alice@example.com",
+      sentAt: base + 2,
+    });
+    await createTestSentEmail({
+      id: "negative-3",
+      fromAddress: MINE,
+      toAddress: "alice@example.com",
+      sentAt: base + 3,
+    });
+
+    const result = await jmapJson(apiKey, [
+      [
+        "Email/query",
+        { accountId: userId, position: -1, limit: 1 },
+        "e1",
+      ],
+      [
+        "Mailbox/query",
+        { accountId: userId, position: -1, limit: 1 },
+        "m1",
+      ],
+      [
+        "Email/query",
+        { accountId: userId, position: -99, limit: 1 },
+        "e2",
+      ],
+    ]);
+
+    expect(result.methodResponses[0][1]).toMatchObject({
+      position: 2,
+      ids: ["sent:negative-1"],
+    });
+    expect(result.methodResponses[0][1]).not.toHaveProperty("total");
+    expect(result.methodResponses[1][1]).toMatchObject({
+      position: 5,
+      ids: [`sys:${MINE}:trash`],
+      total: 6,
+    });
+    expect(result.methodResponses[2][1]).toMatchObject({
+      position: 0,
+      ids: ["sent:negative-3"],
+    });
   });
 
   it("supports result references and Thread/get", async () => {
