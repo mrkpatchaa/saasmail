@@ -295,7 +295,9 @@ export async function deletePersonConversationState(
         WHERE from_address = ${inbox} AND conversation_id IN ${chunk}
       `);
       const live = new Set(remaining.map((row) => row.conversation_id));
-      const orphaned = chunk.filter((conversationId) => !live.has(conversationId));
+      const orphaned = chunk.filter(
+        (conversationId) => !live.has(conversationId),
+      );
       if (orphaned.length === 0) continue;
       await db
         .delete(inboxConversationState)

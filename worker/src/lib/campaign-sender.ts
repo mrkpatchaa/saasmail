@@ -430,9 +430,7 @@ export async function sendCampaignRecipient(
     },
   );
 
-  const fromAddress = (
-    campaign.fromAddressSnapshot ?? campaign.fromAddress
-  )
+  const fromAddress = (campaign.fromAddressSnapshot ?? campaign.fromAddress)
     .trim()
     .toLowerCase();
   const messageId = generateMessageId(fromAddress);
@@ -549,9 +547,7 @@ export async function completeCampaignBookkeeping(
     .values({
       id: sentEmailId,
       personId,
-      fromAddress: (
-        campaign.fromAddressSnapshot ?? campaign.fromAddress
-      )
+      fromAddress: (campaign.fromAddressSnapshot ?? campaign.fromAddress)
         .trim()
         .toLowerCase(),
       toAddress: recipient.email,

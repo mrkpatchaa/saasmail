@@ -4,9 +4,7 @@ export function parseFrom(input: string): { name?: string; address: string } {
     const rawName = match[1].trim();
     const name =
       rawName.length >= 2 && rawName.startsWith('"') && rawName.endsWith('"')
-        ? rawName
-            .slice(1, -1)
-            .replace(/\\(["\\])/g, "$1")
+        ? rawName.slice(1, -1).replace(/\\(["\\])/g, "$1")
         : rawName;
     return { name: name || undefined, address: match[2].trim() };
   }
