@@ -73,6 +73,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **QA data correctness:** canonicalize every persisted outbound inbox key used by sequences, campaigns, templates, lists, drafts, the outbox, and sent history so mixed-case sender addresses cannot disappear from permission-scoped Sent or JMAP reads. Migration `0051` repairs existing rows.
+- **Customer identity safety:** merging two existing customer graphs is admin-only after both people pass visibility checks; self-links are rejected, agent approvals identify merges, and PersonDetail surfaces the server error inline.
+- **Bulk message state writes:** state and folder mutations use bounded multi-row statements inside D1 batches instead of one sequential write per message/folder pair.
+- **Agent CRM lookup:** selecting the latest permitted inbox is performed in SQL with the permission predicate and `LIMIT 1`.
+- **Person deletion:** group-conversation snooze/assignment state is removed only when deleting a person's messages leaves no message in that inbox conversation.
+- **Display-name parsing:** quoted From names containing `@`, commas, escaped quotes, or backslashes now round-trip through the formatter without retaining a stray quote.
+
 - **Native agent reasoning and approvals.** Suggested replies now work with the default reasoning-capable Workers AI model by disabling thinking for the classifier/drafter, using adequate output budgets, and failing closed on missing final text. Once an assistant message is complete, the chat panel can surface a reasoning-only answer when no final text exists, including no-tool answers, without flashing reasoning while a message is still streaming. Approval continuations retain their original composite tool invocation, approval requests are signed with a stable server secret, and old or rotated approval cards fail with a readable expiry message without executing or poisoning later turns.
 - **Native agent teammate lookup.** The agent can now list permission-scoped assignees for an inbox and resolve teammate names before requesting an assignment. The route and tool share one assignee query, and approval-gated CRM tools rely on the approval card instead of asking for a duplicate text confirmation.
 

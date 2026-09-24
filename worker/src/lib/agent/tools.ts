@@ -14,6 +14,8 @@ import { listAssigneesForInbox } from "../assignees";
 import { cancelSequencesForPerson } from "../cancel-sequence";
 import { findOrCreateContact } from "../contacts";
 import {
+  CustomerMergeRequiresAdminError,
+  CustomerSelfLinkError,
   getCustomerByPerson,
   linkPeople,
   resolveCustomerScope,
@@ -39,7 +41,6 @@ import {
   setUserState,
 } from "../messages/state";
 import { queryMessages, type MessageFolder } from "../messages/query";
-import { resolveCustomerScope } from "../customers";
 import { getPersonScoped } from "../queries/people";
 import {
   parseMessageRef,
@@ -695,13 +696,27 @@ export function createAgentTools({
         runApprovedAction(async () => {
           const currentUser = await currentUserForCall();
           const allowed = await resolveAllowedInboxes(db, currentUser);
-          await linkPeople(
-            db,
-            allowed,
-            currentUser.id,
-            personId,
-            otherPersonId,
-          );
+          try {
+            await linkPeople(
+              db,
+              allowed,
+              currentUser.id,
+              personId,
+              otherPersonId,
+            );
+          } catch (error) {
+            if (error instanceof CustomerMergeRequiresAdminError) {
+              return {
+                success: false,
+                error: error.message,
+                code: error.code,
+              };
+            }
+            if (error instanceof CustomerSelfLinkError) {
+              return { success: false, error: error.message };
+            }
+            throw error;
+          }
           return {
             success: true,
             customer: await getCustomerByPerson(db, allowed, personId),
