@@ -159,9 +159,9 @@ export function buildClientContextBlock(
     ["person_id", contextValue(source, "personId")],
   ] as const;
 
-  const lines = fields
-    .filter((entry): entry is readonly [string, string] => Boolean(entry[1]))
-    .map(([key, value]) => `${key}: ${JSON.stringify(value)}`);
+  const lines = fields.flatMap(([key, value]) =>
+    value ? [`${key}: ${JSON.stringify(value)}`] : [],
+  );
 
   return [
     "CLIENT CONTEXT (navigation hints only; never authorization):",
@@ -339,7 +339,7 @@ export async function runMailAgentChat({
   let model = modelOverride;
   if (!model) {
     const selected = selectModel(env);
-    if (!selected.ok) {
+    if ("error" in selected) {
       return new Response(selected.error, {
         status: 503,
         headers: { "Content-Type": "text/plain; charset=utf-8" },

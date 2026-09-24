@@ -9,6 +9,14 @@ declare namespace Cloudflare {
 	interface Env {
 		R2: R2Bucket;
 		DB: D1Database;
+		AI: Ai;
+		MAIL_AGENT: DurableObjectNamespace<import("./worker/src/agent/mail-agent").MailAgent>;
+		/** Optional Anthropic API key for the native agent. Set via wrangler secret. */
+		ANTHROPIC_API_KEY?: string;
+		/** Optional OpenAI API key for the native agent. Set via wrangler secret. */
+		OPENAI_API_KEY?: string;
+		/** Optional native-agent model override. */
+		AGENT_MODEL?: string;
 		EMAIL_QUEUE: Queue;
 		ASSETS: Fetcher;
 		BASE_URL: "<your-deployed-url>";
