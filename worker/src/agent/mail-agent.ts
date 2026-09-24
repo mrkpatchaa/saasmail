@@ -4,6 +4,7 @@ import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
 import {
   convertToModelMessages,
   getToolName,
+  InvalidToolApprovalSignatureError,
   isStepCount,
   isToolUIPart,
   NoSuchToolError,
@@ -28,6 +29,8 @@ import {
 } from "../lib/agent/tools";
 
 const AGENT_APPROVAL_INFO = "saasmail/agent-tool-approval/v1";
+const AGENT_APPROVAL_EXPIRED_MESSAGE =
+  "This approval expired. Ask the agent again.";
 
 export type MailAgentEnv = AgentModelEnv & {
   BETTER_AUTH_SECRET?: string;
@@ -222,6 +225,56 @@ export function countCompletedApprovalActions(messages: UIMessage[]): number {
   return count;
 }
 
+function expireHistoricalApprovedResponses(
+  messages: UIMessage[],
+): UIMessage[] {
+  let lastUserIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === "user") lastUserIndex = index;
+  }
+  if (lastUserIndex <= 0) return messages;
+
+  return messages.map((message, messageIndex) => {
+    if (messageIndex >= lastUserIndex || message.role !== "assistant") {
+      return message;
+    }
+
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      if (!isToolUIPart(part)) return part;
+      const approval = (
+        part as {
+          state?: string;
+          approval?: {
+            id: string;
+            approved?: boolean;
+            reason?: string;
+            [key: string]: unknown;
+          };
+        }
+      ).approval;
+      if (
+        (part as { state?: string }).state !== "approval-responded" ||
+        approval?.approved !== true
+      ) {
+        return part;
+      }
+
+      changed = true;
+      return {
+        ...part,
+        approval: {
+          ...approval,
+          approved: false,
+          reason: AGENT_APPROVAL_EXPIRED_MESSAGE,
+        },
+      } as typeof part;
+    });
+
+    return changed ? { ...message, parts } : message;
+  });
+}
+
 export async function streamMailAgentTurn({
   model,
   messages,
@@ -237,9 +290,11 @@ export async function streamMailAgentTurn({
   abortSignal?: AbortSignal;
   toolApprovalSecret?: string | Uint8Array;
 }) {
+  const modelMessages = expireHistoricalApprovedResponses(messages);
+
   return streamText({
     model,
-    messages: await convertToModelMessages(messages),
+    messages: await convertToModelMessages(modelMessages),
     instructions,
     tools,
     abortSignal,
@@ -310,7 +365,16 @@ export async function runMailAgentChat({
     toolApprovalSecret,
   });
 
-  return result.toUIMessageStreamResponse({ originalMessages: messages });
+  return result.toUIMessageStreamResponse({
+    originalMessages: messages,
+    onError: (error) => {
+      if (InvalidToolApprovalSignatureError.isInstance(error)) {
+        return AGENT_APPROVAL_EXPIRED_MESSAGE;
+      }
+      console.error("[mail-agent] stream failed:", error);
+      return "The agent response failed. Please try again.";
+    },
+  });
 }
 
 export class MailAgent extends AIChatAgent<CloudflareBindings> {

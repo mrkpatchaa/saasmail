@@ -6,6 +6,7 @@ import { tool } from "ai";
 import { sessions } from "../db/auth.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
+import { inboxConversationState } from "../db/inbox-conversation-state.schema";
 import { z } from "zod";
 import {
   buildMailAgentInstructions,
@@ -717,6 +718,131 @@ describe("agent model loop", () => {
     const valid = await resume(signature);
     expect(executions).toEqual(["signed"]);
     expect(valid.some((part) => part.type === "error")).toBe(false);
+  });
+
+  it("expires an unsigned approval without executing and allows the next turn", async () => {
+    const member = await createTestUser({
+      id: "expired-approval-user",
+      email: "expired-approval-user@example.com",
+      role: "member",
+    });
+    const sessionRes = await authFetch("/api/agent/sessions", {
+      method: "POST",
+      apiKey: member.apiKey,
+      body: JSON.stringify({ title: "Expired approval" }),
+    });
+    const session = (await sessionRes.json()) as { instanceName: string };
+    const db = getDb();
+    const now = Math.floor(Date.now() / 1000);
+    const inbox = "expired-approval@example.com";
+    await db.insert(inboxPermissions).values({
+      userId: member.userId,
+      email: inbox,
+      createdAt: now,
+      createdBy: null,
+    });
+    const person = await createTestPerson({
+      id: "expired-approval-person",
+      email: "expired-approval-customer@example.net",
+    });
+    const emailId = "expired-approval-email";
+    await createTestEmail({
+      id: emailId,
+      personId: person.id,
+      recipient: inbox,
+      messageId: "expired-approval@example.net",
+    });
+
+    const staleMessages = [
+      {
+        id: "expired-approval-user-message",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text: "Assign this conversation." }],
+      },
+      {
+        id: "expired-approval-assistant",
+        role: "assistant" as const,
+        parts: [
+          {
+            type: "tool-assign_conversation",
+            toolCallId:
+              "functions.assign_conversation:3::cf-wai-tool-call::expired",
+            state: "approval-responded",
+            input: {
+              ref: `received:${emailId}`,
+              userId: member.userId,
+            },
+            approval: {
+              id: "unsigned-expired-approval",
+              approved: true,
+            },
+          } as any,
+        ],
+      },
+    ];
+
+    const shouldNotRunModel = new MockLanguageModelV4({
+      doStream: async () => {
+        throw new Error("model should not run for an invalid approval");
+      },
+    });
+    const expiredResponse = await runMailAgentChat({
+      db,
+      env: {
+        BETTER_AUTH_SECRET: (env as any).BETTER_AUTH_SECRET as string,
+      },
+      instanceName: session.instanceName,
+      messages: staleMessages,
+      modelOverride: shouldNotRunModel,
+    });
+    const expiredBody = await expiredResponse.text();
+
+    expect(expiredBody).toContain(
+      "This approval expired. Ask the agent again.",
+    );
+    expect(shouldNotRunModel.doStreamCalls).toHaveLength(0);
+    expect(await db.select().from(inboxConversationState)).toEqual([]);
+
+    const nextModel = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          { type: "text-start" as const, id: "after-expired-text" },
+          {
+            type: "text-delta" as const,
+            id: "after-expired-text",
+            delta: "The session is still usable.",
+          },
+          { type: "text-end" as const, id: "after-expired-text" },
+          {
+            type: "finish" as const,
+            finishReason: { unified: "stop" as const, raw: "stop" },
+            usage: MOCK_USAGE,
+          },
+        ]),
+      }),
+    });
+    const nextResponse = await runMailAgentChat({
+      db,
+      env: {
+        BETTER_AUTH_SECRET: (env as any).BETTER_AUTH_SECRET as string,
+      },
+      instanceName: session.instanceName,
+      messages: [
+        ...staleMessages,
+        {
+          id: "after-expired-user",
+          role: "user",
+          parts: [{ type: "text", text: "Can we continue?" }],
+        },
+      ],
+      modelOverride: nextModel,
+    });
+    const nextBody = await nextResponse.text();
+
+    expect(nextBody).toContain("The session is still usable.");
+    expect(nextBody).not.toContain("InvalidToolApprovalSignatureError");
+    expect(nextModel.doStreamCalls).toHaveLength(1);
+    expect(await db.select().from(inboxConversationState)).toEqual([]);
   });
 
   it("derives a stable 32-byte approval key from BETTER_AUTH_SECRET", async () => {
