@@ -9,6 +9,7 @@ import {
   type AgentNavigationContext,
 } from "@/agent/AgentContext";
 import * as api from "@/lib/api";
+import type { ComposePrefill } from "@/pages/ComposeModal";
 
 const sdk = vi.hoisted(() => ({
   useAgent: vi.fn(),
