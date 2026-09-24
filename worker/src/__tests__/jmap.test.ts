@@ -336,7 +336,14 @@ describe("JMAP", () => {
       id: "standard-properties-mail",
       personId: "jmap-standard-properties-person",
       recipient: MINE,
-      messageId: "standard-message@example.com",
+      messageId: "<a@x>",
+    });
+    await createTestSentEmail({
+      id: "standard-properties-reply",
+      fromAddress: MINE,
+      toAddress: "alice@example.com",
+      messageId: "<reply@x>",
+      inReplyTo: "<a@x> <b@y>",
     });
 
     const result = await jmapJson(apiKey, [
@@ -349,6 +356,15 @@ describe("JMAP", () => {
         },
         "e1",
       ],
+      [
+        "Email/get",
+        {
+          accountId: userId,
+          ids: ["sent:standard-properties-reply"],
+          properties: ["id", "inReplyTo"],
+        },
+        "e2",
+      ],
     ]);
 
     expect(result.methodResponses[0][0]).toBe("Email/get");
@@ -356,8 +372,14 @@ describe("JMAP", () => {
       {
         id: "received:standard-properties-mail",
         blobId: null,
-        messageId: ["standard-message@example.com"],
+        messageId: ["a@x"],
         "header:List-Id:asText": null,
+      },
+    ]);
+    expect(result.methodResponses[1][1].list).toEqual([
+      {
+        id: "sent:standard-properties-reply",
+        inReplyTo: ["a@x", "b@y"],
       },
     ]);
   });

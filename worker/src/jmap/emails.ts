@@ -233,6 +233,17 @@ function validEmailProperties(properties: unknown): boolean {
   );
 }
 
+function messageIds(value: string | null): string[] | null {
+  if (!value) return null;
+  const ids = value
+    .split(/\s+/)
+    .map((part) =>
+      part.startsWith("<") && part.endsWith(">") ? part.slice(1, -1) : part,
+    )
+    .filter((part) => part.length > 0);
+  return ids.length > 0 ? ids : null;
+}
+
 function supportedProperties(
   full: Record<string, unknown>,
   properties: unknown,
@@ -274,8 +285,8 @@ export function toJmapEmail(
     keywords: jmapKeywords(message),
     size: approximateSize(message),
     receivedAt: utcDate(message.occurredAt),
-    messageId: message.messageId ? [message.messageId] : null,
-    inReplyTo: message.inReplyTo ? [message.inReplyTo] : null,
+    messageId: messageIds(message.messageId),
+    inReplyTo: messageIds(message.inReplyTo),
     references: null,
     sender: null,
     from: from ? [from] : [],
