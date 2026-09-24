@@ -259,7 +259,7 @@ export async function runMailAgentChat({
     abortSignal,
   });
 
-  return result.toUIMessageStreamResponse();
+  return result.toUIMessageStreamResponse({ originalMessages: messages });
 }
 
 export class MailAgent extends AIChatAgent<CloudflareBindings> {

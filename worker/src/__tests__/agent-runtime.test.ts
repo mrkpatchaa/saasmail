@@ -202,6 +202,109 @@ describe("agent session runtime", () => {
     expect(await response.text()).toContain("Ready without lifecycle props.");
   });
 
+  it.each([
+    ["approved", true],
+    ["denied", false],
+  ] as const)(
+    "preserves a composite tool invocation through an %s approval continuation",
+    async (_label, approved) => {
+      const member = await createTestUser({
+        id: `agent-approval-continuation-${approved ? "yes" : "no"}`,
+        email: `agent-approval-continuation-${approved ? "yes" : "no"}@example.com`,
+        role: "member",
+      });
+      const sessionRes = await authFetch("/api/agent/sessions", {
+        method: "POST",
+        apiKey: member.apiKey,
+        body: JSON.stringify({ title: "Approval continuation" }),
+      });
+      const session = (await sessionRes.json()) as { instanceName: string };
+      const db = getDb();
+      const now = Math.floor(Date.now() / 1000);
+      const inbox = `approval-continuation-${approved ? "yes" : "no"}@example.com`;
+      await db.insert(inboxPermissions).values({
+        userId: member.userId,
+        email: inbox,
+        createdAt: now,
+        createdBy: null,
+      });
+      const person = await createTestPerson({
+        id: `approval-continuation-person-${approved ? "yes" : "no"}`,
+        email: `approval-customer-${approved ? "yes" : "no"}@example.net`,
+      });
+      const emailId = `approval-continuation-email-${approved ? "yes" : "no"}`;
+      await createTestEmail({
+        id: emailId,
+        personId: person.id,
+        recipient: inbox,
+        messageId: `${emailId}@example.net`,
+      });
+
+      const compositeId =
+        `functions.assign_conversation:3::cf-wai-tool-call::${approved ? "approved" : "denied"}`;
+      const model = new MockLanguageModelV4({
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: "text-start" as const, id: "approval-continuation-text" },
+            {
+              type: "text-delta" as const,
+              id: "approval-continuation-text",
+              delta: approved ? "Assignment complete." : "Assignment denied.",
+            },
+            { type: "text-end" as const, id: "approval-continuation-text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: "stop" },
+              usage: MOCK_USAGE,
+            },
+          ]),
+        }),
+      });
+      const messages = [
+        {
+          id: "approval-continuation-user",
+          role: "user" as const,
+          parts: [{ type: "text" as const, text: "Assign this conversation." }],
+        },
+        {
+          id: "approval-continuation-assistant",
+          role: "assistant" as const,
+          parts: [
+            {
+              type: "tool-assign_conversation",
+              toolCallId: compositeId,
+              state: "approval-responded",
+              input: {
+                ref: `received:${emailId}`,
+                userId: member.userId,
+              },
+              approval: {
+                id: `approval-${approved ? "approved" : "denied"}`,
+                approved,
+              },
+            } as any,
+          ],
+        },
+      ];
+
+      const response = await runMailAgentChat({
+        db,
+        env: {},
+        instanceName: session.instanceName,
+        messages,
+        modelOverride: model,
+      });
+      const streamed = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(streamed).not.toContain('"type":"error"');
+      expect(streamed).not.toContain("No tool invocation found");
+      expect(streamed).toContain(
+        approved ? "Assignment complete." : "Assignment denied.",
+      );
+    },
+  );
+
   it("rejects a turn after its agent session is deleted", async () => {
     const alice = await createTestUser({
       id: "agent-deleted-alice",
