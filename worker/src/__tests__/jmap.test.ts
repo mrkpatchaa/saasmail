@@ -294,7 +294,7 @@ describe("JMAP", () => {
     const result = await jmapJson(apiKey, [
       [
         "Email/get",
-        { accountId: userId, ids: [], properties: ["id", "unknown"] },
+        { accountId: userId, ids: [], properties: ["id", "bogus"] },
         "e1",
       ],
       [
@@ -321,6 +321,50 @@ describe("JMAP", () => {
         callId,
       ]);
     }
+  });
+
+  it("accepts standard Email properties and header selectors it cannot yet model", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "jmap-standard-properties-user",
+    });
+    await addIdentity(MINE);
+    await createTestPerson({
+      id: "jmap-standard-properties-person",
+      email: "alice@example.com",
+    });
+    await createTestEmail({
+      id: "standard-properties-mail",
+      personId: "jmap-standard-properties-person",
+      recipient: MINE,
+      messageId: "standard-message@example.com",
+    });
+
+    const result = await jmapJson(apiKey, [
+      [
+        "Email/get",
+        {
+          accountId: userId,
+          ids: ["received:standard-properties-mail"],
+          properties: [
+            "id",
+            "blobId",
+            "messageId",
+            "header:List-Id:asText",
+          ],
+        },
+        "e1",
+      ],
+    ]);
+
+    expect(result.methodResponses[0][0]).toBe("Email/get");
+    expect(result.methodResponses[0][1].list).toEqual([
+      {
+        id: "received:standard-properties-mail",
+        blobId: null,
+        messageId: ["standard-message@example.com"],
+        "header:List-Id:asText": null,
+      },
+    ]);
   });
 
   it("returns Email/get fields, body values, state keywords, and attachment blob ids", async () => {

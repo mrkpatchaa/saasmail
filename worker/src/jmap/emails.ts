@@ -153,23 +153,72 @@ function approximateSize(message: UnifiedMessage): number {
 
 const EMAIL_PROPERTIES = new Set([
   "id",
+  "blobId",
   "threadId",
   "mailboxIds",
   "keywords",
   "size",
   "receivedAt",
-  "sentAt",
+  "messageId",
+  "inReplyTo",
+  "references",
+  "sender",
   "from",
   "to",
   "cc",
+  "bcc",
+  "replyTo",
   "subject",
-  "preview",
+  "sentAt",
   "hasAttachment",
+  "preview",
+  "bodyValues",
   "textBody",
   "htmlBody",
   "attachments",
-  "bodyValues",
+  "bodyStructure",
+  "headers",
 ]);
+
+const EMAIL_HEADER_FORMS = new Set([
+  "asRaw",
+  "asText",
+  "asAddresses",
+  "asGroupedAddresses",
+  "asMessageIds",
+  "asDate",
+  "asURLs",
+]);
+
+function validHeaderName(value: string): boolean {
+  if (value.length === 0) return false;
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    if (!((code >= 33 && code <= 57) || (code >= 59 && code <= 126))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validHeaderProperty(property: string): boolean {
+  const parts = property.split(":");
+  if (parts[0] !== "header" || parts.length < 2 || parts.length > 4) {
+    return false;
+  }
+  if (!validHeaderName(parts[1]!)) return false;
+
+  let index = 2;
+  if (index < parts.length && parts[index] !== "all") {
+    if (!EMAIL_HEADER_FORMS.has(parts[index]!)) return false;
+    index += 1;
+  }
+  if (index < parts.length) {
+    if (parts[index] !== "all") return false;
+    index += 1;
+  }
+  return index === parts.length;
+}
 
 function validEmailProperties(properties: unknown): boolean {
   return (
@@ -178,7 +227,8 @@ function validEmailProperties(properties: unknown): boolean {
     (Array.isArray(properties) &&
       properties.every(
         (property) =>
-          typeof property === "string" && EMAIL_PROPERTIES.has(property),
+          typeof property === "string" &&
+          (EMAIL_PROPERTIES.has(property) || validHeaderProperty(property)),
       ))
   );
 }
@@ -197,7 +247,7 @@ function supportedProperties(
 
   const selected: Record<string, unknown> = { id: full.id };
   for (const property of properties as string[]) {
-    if (property in full) selected[property] = full[property];
+    selected[property] = property in full ? full[property] : null;
   }
   return selected;
 }
@@ -218,27 +268,36 @@ export function toJmapEmail(
   const from = emailAddress(message.from);
   const full: Record<string, unknown> = {
     id,
+    blobId: null,
     threadId: jmapThreadId(message),
     mailboxIds: jmapMailboxIds(message),
     keywords: jmapKeywords(message),
     size: approximateSize(message),
     receivedAt: utcDate(message.occurredAt),
-    sentAt:
-      message.direction === "outbound" ? utcDate(message.occurredAt) : null,
+    messageId: message.messageId ? [message.messageId] : null,
+    inReplyTo: message.inReplyTo ? [message.inReplyTo] : null,
+    references: null,
+    sender: null,
     from: from ? [from] : [],
     to: [emailAddress(message.to)],
     cc: message.cc.map((address) => emailAddress(address)),
+    bcc: null,
+    replyTo: null,
     subject: message.subject ?? "",
-    preview,
+    sentAt:
+      message.direction === "outbound" ? utcDate(message.occurredAt) : null,
     hasAttachment: attachments.length > 0,
-    textBody,
-    htmlBody,
-    attachments: attachments.map(attachmentPart),
+    preview,
     bodyValues: bodyValues(
       message,
       args.fetchTextBodyValues === true,
       args.fetchHTMLBodyValues === true,
     ),
+    textBody,
+    htmlBody,
+    attachments: attachments.map(attachmentPart),
+    bodyStructure: null,
+    headers: null,
   };
   return supportedProperties(full, args.properties);
 }
