@@ -37,12 +37,12 @@ describe("parseFrom", () => {
     ["back\\slash, inc", "back\\slash, inc"],
     ["The Support Team", "The Support Team"],
   ])("round-trips %s through encodeDisplayName", (name, expected) => {
-    expect(
-      parseFrom(`${encodeDisplayName(name)} <hello@example.com>`),
-    ).toEqual({
-      name: expected,
-      address: "hello@example.com",
-    });
+    expect(parseFrom(`${encodeDisplayName(name)} <hello@example.com>`)).toEqual(
+      {
+        name: expected,
+        address: "hello@example.com",
+      },
+    );
   });
 
   it("parses a bare address without inventing a display name", () => {
