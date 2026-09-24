@@ -23,7 +23,7 @@
     "test:web": "vitest run --config vitest.config.web.ts",
     "prepare": "husky",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
+    "format:check": "prettier --write . && git diff --exit-code",
     "dev:e2e": "DEMO_MODE=1 DISABLE_PASSKEY_GATE=true vite dev --port 8788",
     "db:reset:e2e": "node e2e/scripts/wipe-db.mjs",
     "test:e2e": "node e2e/scripts/wipe-db.mjs && playwright test",
