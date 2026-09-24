@@ -394,10 +394,9 @@ export default {
           console.error("[cron] outbox/newsletter maintenance failed:", err),
         )
         .then(() =>
-          pruneJmapChanges(
-            createDb(env),
-            Math.floor(Date.now() / 1000),
-          ).catch((err) => console.error("[cron] JMAP pruning failed:", err)),
+          pruneJmapChanges(createDb(env), Math.floor(Date.now() / 1000)).catch(
+            (err) => console.error("[cron] JMAP pruning failed:", err),
+          ),
         ),
     );
   },

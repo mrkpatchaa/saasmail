@@ -68,7 +68,10 @@ describe("suggested replies routes", () => {
       { apiKey: admin.apiKey },
     );
     expect(res.status).toBe(200);
-    expect((await jsonBody<SuggestionResponse>(res)).suggestion).toMatchObject({ id, emailId });
+    expect((await jsonBody<SuggestionResponse>(res)).suggestion).toMatchObject({
+      id,
+      emailId,
+    });
 
     res = await authFetch(`/api/suggested-replies/${id}/use`, {
       apiKey: admin.apiKey,
@@ -82,7 +85,9 @@ describe("suggested replies routes", () => {
       method: "POST",
     });
     expect(again.status).toBe(200);
-    expect((await jsonBody<SuggestionStatusResponse>(again)).status).toBe("used");
+    expect((await jsonBody<SuggestionStatusResponse>(again)).status).toBe(
+      "used",
+    );
 
     res = await authFetch(
       `/api/suggested-replies?emailId=${encodeURIComponent(emailId)}`,
@@ -143,7 +148,9 @@ describe("suggested replies routes", () => {
       method: "POST",
     });
     expect(first.status).toBe(200);
-    expect((await jsonBody<SuggestionStatusResponse>(first)).status).toBe("dismissed");
+    expect((await jsonBody<SuggestionStatusResponse>(first)).status).toBe(
+      "dismissed",
+    );
 
     const again = await authFetch(`/api/suggested-replies/${id}/dismiss`, {
       apiKey: member.apiKey,
