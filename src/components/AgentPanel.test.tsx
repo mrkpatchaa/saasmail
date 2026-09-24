@@ -61,7 +61,10 @@ function SeedContext({ value }: { value: AgentNavigationContext }) {
 
 function renderPanel(options?: {
   context?: AgentNavigationContext;
-  onOpenCompose?: ReturnType<typeof vi.fn>;
+  onOpenCompose?: (
+    prefill?: ComposePrefill,
+    contextKey?: string,
+  ) => void;
 }) {
   const onOpenCompose = options?.onOpenCompose ?? vi.fn();
   const router = createMemoryRouter(
