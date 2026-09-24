@@ -17,9 +17,17 @@ import {
 } from "./helpers";
 
 const USAGE = {
-  inputTokens: 10,
-  outputTokens: 5,
-  totalTokens: 15,
+  inputTokens: {
+    total: 10,
+    noCache: 10,
+    cacheRead: undefined,
+    cacheWrite: undefined,
+  },
+  outputTokens: {
+    total: 5,
+    text: 5,
+    reasoning: undefined,
+  },
 };
 
 beforeAll(applyMigrations);
