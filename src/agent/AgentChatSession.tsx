@@ -32,6 +32,35 @@ function messageText(message: UIMessage): string {
     .join("");
 }
 
+function fallbackReasoningIndexes(message: UIMessage): Set<number> {
+  let lastToolIndex = -1;
+  message.parts.forEach((part, index) => {
+    if (isToolUIPart(part)) lastToolIndex = index;
+  });
+  if (lastToolIndex < 0) return new Set();
+
+  const trailingParts = message.parts.slice(lastToolIndex + 1);
+  if (
+    trailingParts.some(
+      (part) => part.type === "text" && part.text.trim().length > 0,
+    )
+  ) {
+    return new Set();
+  }
+
+  const indexes = new Set<number>();
+  message.parts.forEach((part, index) => {
+    if (
+      index > lastToolIndex &&
+      part.type === "reasoning" &&
+      part.text.trim().length > 0
+    ) {
+      indexes.add(index);
+    }
+  });
+  return indexes;
+}
+
 function jsonForDisplay(value: unknown): string {
   let text: string;
   try {
@@ -307,47 +336,65 @@ export default function AgentChatSession({
           </div>
         )}
 
-        {messages.map((message) => (
-          <div
-            key={message.id}
-            className={
-              message.role === "user"
-                ? "ml-8 rounded-[8px] bg-bg-muted p-2.5 text-sm text-text-primary"
-                : "mr-2 rounded-[8px] border border-border bg-card p-2.5"
-            }
-          >
-            {message.role === "user" ? (
-              <p className="whitespace-pre-wrap text-sm">
-                {messageText(message)}
-              </p>
-            ) : (
-              message.parts.map((part, index) => {
-                if (part.type === "text") {
-                  return (
-                    <AgentMarkdown
-                      key={`${message.id}-text-${index}`}
-                      text={part.text}
-                    />
-                  );
-                }
-                if (isToolUIPart(part)) {
-                  return (
-                    <ToolBadge
-                      key={
-                        (part as { toolCallId?: string }).toolCallId ??
-                        `${message.id}-tool-${index}`
-                      }
-                      part={part}
-                      onOpenCompose={onOpenCompose}
-                      onApproval={addToolApprovalResponse}
-                    />
-                  );
-                }
-                return null;
-              })
-            )}
-          </div>
-        ))}
+        {messages.map((message) => {
+          const fallbackReasoning =
+            message.role === "assistant"
+              ? fallbackReasoningIndexes(message)
+              : new Set<number>();
+
+          return (
+            <div
+              key={message.id}
+              className={
+                message.role === "user"
+                  ? "ml-8 rounded-[8px] bg-bg-muted p-2.5 text-sm text-text-primary"
+                  : "mr-2 rounded-[8px] border border-border bg-card p-2.5"
+              }
+            >
+              {message.role === "user" ? (
+                <p className="whitespace-pre-wrap text-sm">
+                  {messageText(message)}
+                </p>
+              ) : (
+                message.parts.map((part, index) => {
+                  if (part.type === "text") {
+                    return (
+                      <AgentMarkdown
+                        key={`${message.id}-text-${index}`}
+                        text={part.text}
+                      />
+                    );
+                  }
+                  if (
+                    part.type === "reasoning" &&
+                    fallbackReasoning.has(index)
+                  ) {
+                    return (
+                      <AgentMarkdown
+                        key={`${message.id}-reasoning-${index}`}
+                        text={part.text}
+                      />
+                    );
+                  }
+                  if (isToolUIPart(part)) {
+                    return (
+                      <ToolBadge
+                        key={
+                          (part as { toolCallId?: string }).toolCallId ??
+                          `${message.id}-tool-${index}`
+                        }
+                        part={part}
+                        onOpenCompose={onOpenCompose}
+                        onApproval={addToolApprovalResponse}
+                      />
+                    );
+                  }
+                  return null;
+                })
+              )}
+            </div>
+          );
+        })}
 
         {error && (
           <div

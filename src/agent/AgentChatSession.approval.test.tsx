@@ -43,13 +43,13 @@ beforeEach(() => {
   });
 });
 
-function renderWithPart(part: Record<string, unknown>) {
+function renderWithParts(parts: Record<string, unknown>[]) {
   sdk.useAgentChat.mockReturnValue({
     messages: [
       {
         id: "approval-message",
         role: "assistant",
-        parts: [part],
+        parts,
       },
     ],
     sendMessage: vi.fn(),
@@ -74,13 +74,13 @@ function renderWithPart(part: Record<string, unknown>) {
 
 describe("AgentChatSession approvals", () => {
   it("renders the database summary and sends the approval id for approve and deny", async () => {
-    renderWithPart({
+    renderWithParts([{
       type: "tool-add_to_list",
       toolCallId: "approval-call",
       state: "approval-requested",
       input: { personId: "person-1", listId: "list-1" },
       approval: { id: "approval-id-1" },
-    });
+    }]);
 
     expect(
       await screen.findByText("Add jane@acme.com to list 'Beta testers'"),
@@ -103,13 +103,13 @@ describe("AgentChatSession approvals", () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockResolvedValue({
       summary: "Can't add: jane@acme.com unsubscribed from 'Beta testers'",
     });
-    renderWithPart({
+    renderWithParts([{
       type: "tool-add_to_list",
       toolCallId: "approval-call-blocked",
       state: "approval-requested",
       input: { personId: "person-1", listId: "list-1" },
       approval: { id: "approval-id-blocked" },
-    });
+    }]);
 
     expect(
       await screen.findByText(
@@ -130,13 +130,13 @@ describe("AgentChatSession approvals", () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
       new Error("not found"),
     );
-    renderWithPart({
+    renderWithParts([{
       type: "tool-link_customer",
       toolCallId: "approval-call-2",
       state: "approval-responded",
       input: { personId: "person-1", otherPersonId: "person-2" },
       approval: { id: "approval-id-2", approved: false },
-    });
+    }]);
 
     expect(screen.getByText("Denied")).toBeTruthy();
     await waitFor(() =>
@@ -144,5 +144,44 @@ describe("AgentChatSession approvals", () => {
         screen.getByTestId("agent-approval-link_customer").textContent,
       ).toContain("link_customer"),
     );
+  });
+});
+
+describe("AgentChatSession reasoning fallback", () => {
+  const toolPart = {
+    type: "tool-list_messages",
+    toolCallId: "functions.list_messages:1::cf-wai-tool-call::reasoning-test",
+    state: "output-available",
+    input: { inbox: "support@example.com" },
+    output: { messages: [] },
+  };
+
+  it("renders trailing reasoning when a tool has no final text", () => {
+    renderWithParts([
+      toolPart,
+      { type: "reasoning", text: "The mailbox is currently empty." },
+    ]);
+
+    expect(screen.getByText("The mailbox is currently empty.")).toBeTruthy();
+  });
+
+  it("renders final text instead of trailing reasoning when both exist", () => {
+    renderWithParts([
+      toolPart,
+      { type: "reasoning", text: "Hidden analysis answer." },
+      { type: "text", text: "Visible final answer." },
+    ]);
+
+    expect(screen.getByText("Visible final answer.")).toBeTruthy();
+    expect(screen.queryByText("Hidden analysis answer.")).toBeNull();
+  });
+
+  it("does not render reasoning that appears before the last tool call", () => {
+    renderWithParts([
+      { type: "reasoning", text: "Early hidden analysis." },
+      toolPart,
+    ]);
+
+    expect(screen.queryByText("Early hidden analysis.")).toBeNull();
   });
 });
