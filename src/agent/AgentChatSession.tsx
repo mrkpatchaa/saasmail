@@ -37,11 +37,11 @@ function fallbackReasoningIndexes(message: UIMessage): Set<number> {
   message.parts.forEach((part, index) => {
     if (isToolUIPart(part)) lastToolIndex = index;
   });
-  if (lastToolIndex < 0) return new Set();
 
-  const trailingParts = message.parts.slice(lastToolIndex + 1);
+  const answerStart = lastToolIndex + 1;
+  const answerParts = message.parts.slice(answerStart);
   if (
-    trailingParts.some(
+    answerParts.some(
       (part) => part.type === "text" && part.text.trim().length > 0,
     )
   ) {
@@ -51,7 +51,7 @@ function fallbackReasoningIndexes(message: UIMessage): Set<number> {
   const indexes = new Set<number>();
   message.parts.forEach((part, index) => {
     if (
-      index > lastToolIndex &&
+      index >= answerStart &&
       part.type === "reasoning" &&
       part.text.trim().length > 0
     ) {
@@ -336,9 +336,12 @@ export default function AgentChatSession({
           </div>
         )}
 
-        {messages.map((message) => {
+        {messages.map((message, messageIndex) => {
+          const isCurrentStreamingMessage =
+            messageIndex === messages.length - 1 &&
+            (status === "submitted" || status === "streaming");
           const fallbackReasoning =
-            message.role === "assistant"
+            message.role === "assistant" && !isCurrentStreamingMessage
               ? fallbackReasoningIndexes(message)
               : new Set<number>();
 

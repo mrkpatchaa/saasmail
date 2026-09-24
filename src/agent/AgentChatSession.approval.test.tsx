@@ -43,7 +43,10 @@ beforeEach(() => {
   });
 });
 
-function renderWithParts(parts: Record<string, unknown>[]) {
+function renderWithParts(
+  parts: Record<string, unknown>[],
+  status: "ready" | "submitted" | "streaming" = "ready",
+) {
   sdk.useAgentChat.mockReturnValue({
     messages: [
       {
@@ -57,8 +60,8 @@ function renderWithParts(parts: Record<string, unknown>[]) {
     regenerate: vi.fn(),
     addToolApprovalResponse: sdk.approval,
     error: null,
-    status: "ready",
-    isStreaming: false,
+    status,
+    isStreaming: status !== "ready",
   });
 
   return render(
@@ -154,6 +157,26 @@ describe("AgentChatSession approvals", () => {
 });
 
 describe("AgentChatSession reasoning fallback", () => {
+  it("renders a reasoning-only assistant answer without tool calls", () => {
+    renderWithParts([
+      { type: "reasoning", text: "The answer came back as reasoning." },
+    ]);
+
+    expect(screen.getByText("The answer came back as reasoning.")).toBeTruthy();
+  });
+
+  it.each(["submitted", "streaming"] as const)(
+    "does not render reasoning fallback while the last message is %s",
+    (status) => {
+      renderWithParts(
+        [{ type: "reasoning", text: "Still thinking about the answer." }],
+        status,
+      );
+
+      expect(screen.queryByText("Still thinking about the answer.")).toBeNull();
+    },
+  );
+
   const toolPart = {
     type: "tool-list_messages",
     toolCallId: "functions.list_messages:1::cf-wai-tool-call::reasoning-test",
