@@ -278,9 +278,7 @@ describe("agent session runtime", () => {
           {
             id: "approval-continuation-request-user",
             role: "user",
-            parts: [
-              { type: "text", text: "Assign this conversation." },
-            ],
+            parts: [{ type: "text", text: "Assign this conversation." }],
           },
         ],
         tools: {

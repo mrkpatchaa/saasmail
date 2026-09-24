@@ -225,9 +225,7 @@ export function countCompletedApprovalActions(messages: UIMessage[]): number {
   return count;
 }
 
-function expireHistoricalApprovedResponses(
-  messages: UIMessage[],
-): UIMessage[] {
+function expireHistoricalApprovedResponses(messages: UIMessage[]): UIMessage[] {
   let lastUserIndex = -1;
   for (let index = 0; index < messages.length; index += 1) {
     if (messages[index]?.role === "user") lastUserIndex = index;
