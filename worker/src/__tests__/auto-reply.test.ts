@@ -48,10 +48,13 @@ function fakeSender(
   return { sender, sent, send };
 }
 
-async function seed(rawHeaders: Record<string, string> = {}) {
+async function seed(
+  rawHeaders: Record<string, string> = {},
+  senderAddress = CUSTOMER,
+) {
   await createTestPerson({
     id: "auto-reply-person",
-    email: CUSTOMER,
+    email: senderAddress,
   });
   await createTestEmail({
     id: "auto-reply-email",
@@ -117,6 +120,18 @@ describe("auto-reply guards", () => {
     [{ "List-Unsubscribe": "<mailto:leave@example.com>" }],
   ])("skips automated inbound mail %o", async (headers) => {
     await seed(headers);
+    const { sender } = fakeSender();
+    await expectNoAttempt(sender);
+  });
+
+  it.each([
+    "mailer-daemon@example.com",
+    "postmaster+dsn@example.com",
+    "noreply@example.com",
+    "no-reply+tag@example.com",
+    "do-not-reply@example.com",
+  ])("skips automated sender %s", async (senderAddress) => {
+    await seed({}, senderAddress);
     const { sender } = fakeSender();
     await expectNoAttempt(sender);
   });

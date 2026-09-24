@@ -91,7 +91,7 @@ export async function runAutoReply(
   }
 
   const senderAddress = person.email.trim().toLowerCase();
-  if (isAutomatedInbound(parseHeaders(email.rawHeaders))) {
+  if (isAutomatedInbound(parseHeaders(email.rawHeaders), senderAddress)) {
     skipped(input, "automated inbound mail");
     return;
   }
