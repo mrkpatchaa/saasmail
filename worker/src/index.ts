@@ -4,10 +4,10 @@ import { swaggerUI } from "@hono/swagger-ui";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { injectDb } from "./db/middleware";
+import { createDb } from "./db/client";
 import { createAuth } from "./auth";
 import { users } from "./db/auth.schema";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/d1";
 import { handleEmail } from "./email-handler";
 import { peopleRouter } from "./routers/people-router";
 import { customersRouter } from "./routers/customers-router";
@@ -395,7 +395,7 @@ export default {
         )
         .then(() =>
           pruneJmapChanges(
-            drizzle(env.DB),
+            createDb(env),
             Math.floor(Date.now() / 1000),
           ).catch((err) => console.error("[cron] JMAP pruning failed:", err)),
         ),

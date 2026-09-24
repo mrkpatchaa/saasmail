@@ -1,6 +1,6 @@
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { eq, sql } from "drizzle-orm";
-import { drizzle, type DrizzleD1Database } from "drizzle-orm/d1";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
 import {
   convertToModelMessages,
   getToolName,
@@ -16,7 +16,7 @@ import {
 import { agentSessions } from "../db/agent-sessions.schema";
 import { users } from "../db/auth.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
-import { schema } from "../db/schema";
+import { createDb } from "../db/client";
 import { AGENT_PLAYBOOK_INTRO } from "../lib/agent/playbook";
 import {
   isInboxAllowed,
@@ -380,7 +380,7 @@ export class MailAgent extends AIChatAgent<CloudflareBindings> {
     _onFinish: unknown,
     options?: OnChatMessageOptions,
   ): Promise<Response> {
-    const db = drizzle(this.env.DB, { schema, logger: true });
+    const db = createDb(this.env);
     return runMailAgentChat({
       db,
       env: this.env as MailAgentEnv,
