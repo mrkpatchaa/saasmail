@@ -18,21 +18,26 @@ The `-X ours` flag tells rebase to prefer upstream for conflicting hunks (during
 
 ## Temporary AI SDK approval-continuation patch
 
-This release carries `patches/ai+7.0.109.patch`. AI SDK 7.0.61 changed
-`resumeStream()` so it starts from an empty assistant message
+This release carries `scripts/patch-ai-resume.mjs`, run by `postinstall`. AI SDK
+7.0.61 changed `resumeStream()` so it starts from an empty assistant message
 ([vercel/ai#18462](https://github.com/vercel/ai/pull/18462)), while released
 `agents@0.24.0` / `@cloudflare/ai-chat@0.12.0` still use that API for tool
 approval continuations and strip the continuation start chunk's `messageId`.
-The patch restores the previous-message seed **only** while Cloudflare's
-`WebSocketChatTransport` has marked a tool continuation; ordinary page-load
-resume keeps AI SDK 7.0.109 behavior.
 
-Remove the patch, the `patch-package` dev dependency, and the `postinstall`
-script once a released Cloudflare Agents / AI Chat pair explicitly supports
-AI SDK >= 7.0.61 approval continuations without this compatibility shim. The
-server-side approval ledger added in #31 remains necessary: the released
-Cloudflare message builder still does not retain the tool-approval
-`signature` field when rebuilding the persisted tool part.
+The install-time script patches only `node_modules/ai/dist/index.js` for the
+pinned `ai@7.0.109`, restoring the previous-message seed only while
+Cloudflare's `WebSocketChatTransport` has marked a tool continuation. Ordinary
+page-load resume keeps AI SDK 7.0.109 behavior. The script is idempotent and
+fails installation if the AI version or either exact patch anchor changes; do
+not bump `ai` until this section and the compatibility patch have been
+re-validated.
+
+Remove the script and `postinstall` hook once a released Cloudflare Agents /
+AI Chat pair explicitly supports AI SDK >= 7.0.61 approval continuations
+without this compatibility shim. The server-side approval ledger added in #31
+remains necessary: the released Cloudflare message builder still does not
+retain the tool-approval `signature` field when rebuilding the persisted tool
+part.
 
 ## Check your `wrangler.jsonc`
 

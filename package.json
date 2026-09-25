@@ -31,7 +31,7 @@
     "test:e2e:debug": "PWDEBUG=1 playwright test",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && node scripts/check-worker-types.mjs",
     "typecheck:update-baseline": "node scripts/check-worker-types.mjs --update",
-    "postinstall": "patch-package"
+    "postinstall": "node scripts/patch-ai-resume.mjs"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,json,css,md,html}": "prettier --write"
@@ -124,7 +124,6 @@
     "vite": "^7.3.5",
     "vitest": "^4.1.11",
     "webmcp-types": "^0.1.5",
-    "wrangler": "^4.84.1",
-    "patch-package": "8.0.1"
+    "wrangler": "^4.84.1"
   }
 }
