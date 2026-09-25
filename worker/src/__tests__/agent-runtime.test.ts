@@ -2,7 +2,12 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { env, exports } from "cloudflare:workers";
 import { makeSignature } from "better-auth/crypto";
 import { convertArrayToReadableStream, MockLanguageModelV4 } from "ai/test";
-import { tool } from "ai";
+import { tool, type UIMessage } from "ai";
+import {
+  applyChunkToParts,
+  applyToolUpdate,
+  toolApprovalUpdate,
+} from "agents/chat";
 import { sessions } from "../db/auth.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
@@ -12,8 +17,11 @@ import {
   buildMailAgentInstructions,
   countCompletedApprovalActions,
   deriveAgentApprovalSecret,
+  prepareApprovalMessages,
   runMailAgentChat,
   streamMailAgentTurn,
+  type AgentApprovalLedger,
+  type AgentApprovalLedgerEntry,
 } from "../agent/mail-agent";
 import { createAgentTools } from "../lib/agent/tools";
 import {
@@ -25,6 +33,56 @@ import {
   createTestUser,
   getDb,
 } from "./helpers";
+
+function createMemoryApprovalLedger(
+  seed: AgentApprovalLedgerEntry[] = [],
+): {
+  ledger: AgentApprovalLedger;
+  entries: Map<string, AgentApprovalLedgerEntry>;
+} {
+  const entries = new Map(seed.map((entry) => [entry.approvalId, entry]));
+  const ledger: AgentApprovalLedger = {
+    record: async (nextEntries) => {
+      for (const entry of nextEntries) {
+        if (!entries.has(entry.approvalId)) {
+          entries.set(entry.approvalId, entry);
+        }
+      }
+    },
+    lookup: async (approvalIds) =>
+      approvalIds
+        .map((approvalId) => entries.get(approvalId))
+        .filter(
+          (entry): entry is AgentApprovalLedgerEntry => entry !== undefined,
+        ),
+    remove: async (approvalIds) => {
+      for (const approvalId of approvalIds) entries.delete(approvalId);
+    },
+    removeByToolCallIds: async (toolCallIds) => {
+      const wanted = new Set(toolCallIds);
+      for (const [approvalId, entry] of entries) {
+        if (wanted.has(entry.toolCallId)) entries.delete(approvalId);
+      }
+    },
+  };
+  return { ledger, entries };
+}
+
+async function persistApprovalRequest(
+  result: Awaited<ReturnType<typeof streamMailAgentTurn>>,
+  toolCallId: string,
+): Promise<UIMessage["parts"]> {
+  const parts: UIMessage["parts"] = [];
+  for await (const chunk of result.toUIMessageStream()) {
+    applyChunkToParts(parts, chunk);
+  }
+  const updated = applyToolUpdate(
+    parts as Array<Record<string, unknown>>,
+    toolApprovalUpdate(toolCallId, true),
+  );
+  if (!updated) throw new Error("approval request was not reconstructed");
+  return updated.parts as UIMessage["parts"];
+}
 
 const MOCK_USAGE = {
   inputTokens: {
