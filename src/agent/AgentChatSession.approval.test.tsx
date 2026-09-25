@@ -133,6 +133,30 @@ describe("AgentChatSession approvals", () => {
     });
   });
 
+  it("shows the persisted reason for an expired denied approval", async () => {
+    vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
+      new Error("not found"),
+    );
+    renderWithParts([
+      {
+        type: "tool-link_customer",
+        toolCallId: "approval-call-expired",
+        state: "approval-responded",
+        input: { personId: "person-1", otherPersonId: "person-2" },
+        approval: {
+          id: "approval-id-expired",
+          approved: false,
+          reason: "This approval expired. Ask the agent again.",
+        },
+      },
+    ]);
+
+    expect(
+      screen.getByText("This approval expired. Ask the agent again."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Denied")).toBeNull();
+  });
+
   it("falls back to tool args and shows the recorded decision", async () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
       new Error("not found"),
