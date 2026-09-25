@@ -14,13 +14,17 @@ beforeEach(cleanDb);
 function fakeBatch(bodies: unknown[], attempts = 1) {
   const acked: number[] = [];
   const retried: number[] = [];
+  const retryDelays: Array<number | undefined> = [];
   const messages = bodies.map((body, i) => ({
     id: String(i),
     timestamp: new Date(),
     body,
     attempts,
     ack: () => void acked.push(i),
-    retry: () => void retried.push(i),
+    retry: (options?: { delaySeconds?: number }) => {
+      retried.push(i);
+      retryDelays.push(options?.delaySeconds);
+    },
   }));
   return {
     batch: {
@@ -31,6 +35,7 @@ function fakeBatch(bodies: unknown[], attempts = 1) {
     } as unknown as MessageBatch<unknown>,
     acked,
     retried,
+    retryDelays,
   };
 }
 
@@ -122,7 +127,7 @@ describe("handleQueueBatch", () => {
     const runSuggestedReply = vi
       .fn()
       .mockRejectedValue(new Error("provider timeout"));
-    const { batch, acked, retried } = fakeBatch(
+    const { batch, acked, retried, retryDelays } = fakeBatch(
       [{ type: "suggest_reply", emailId: "email-1" }],
       SUGGEST_REPLY_MAX_ATTEMPTS - 1,
     );
@@ -133,6 +138,7 @@ describe("handleQueueBatch", () => {
 
     expect(runSuggestedReply).toHaveBeenCalledTimes(1);
     expect(retried).toEqual([0]);
+    expect(retryDelays).toEqual([30]);
     expect(acked).toEqual([]);
     warn.mockRestore();
   });

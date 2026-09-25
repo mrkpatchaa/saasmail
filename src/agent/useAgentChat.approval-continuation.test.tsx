@@ -228,6 +228,21 @@ describe("useAgentChat approval continuation", () => {
         body: "",
         done: true,
       });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("chat-error").textContent).toBe("");
+      expect(screen.getByTestId("tool-state").textContent).toBe(
+        "output-available",
+      );
+      expect(screen.getByTestId("answer").textContent).toContain(
+        "Assigned to Alex.",
+      );
+      expect(screen.getByTestId("assistant-count").textContent).toBe("1");
+    });
+
+    await act(async () => {
       dispatch(target, {
         type: "cf_agent_chat_messages",
         messages: [

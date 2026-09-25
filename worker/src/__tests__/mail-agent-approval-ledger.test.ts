@@ -2,7 +2,6 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
-  MailAgent,
   type AgentApprovalLedger,
   type AgentApprovalLedgerEntry,
 } from "../agent/mail-agent";
@@ -42,7 +41,7 @@ describe("MailAgent SQL approval ledger", () => {
       createdAt: now,
     };
 
-    await runInDurableObject<MailAgent, void>(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance) => {
       const ledger = (
         instance as unknown as { approvalLedger(): AgentApprovalLedger }
       ).approvalLedger();

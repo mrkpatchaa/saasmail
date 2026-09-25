@@ -89,7 +89,9 @@ if (
   import.meta.url === pathToFileURL(resolve(process.argv[1])).href
 ) {
   patchInstalledAi().catch((error) => {
-    console.error(`[patch-ai-resume] ${error instanceof Error ? error.message : String(error)}`);
+    console.error(
+      `[patch-ai-resume] ${error instanceof Error ? error.message : String(error)}`,
+    );
     process.exitCode = 1;
   });
 }

@@ -37,6 +37,7 @@ export type QueueMessageBody =
   | SuggestReplyMessage;
 
 export const SUGGEST_REPLY_MAX_ATTEMPTS = 3;
+const SUGGEST_REPLY_RETRY_DELAY_SECONDS = 30;
 
 export type QueueMessageKind =
   | "sequence_email"
@@ -158,7 +159,11 @@ export async function handleQueueBatch(
         msg.ack();
       } else {
         console.error(`[queue] ${kind} failed:`, err);
-        msg.retry();
+        if (kind === "suggest_reply") {
+          msg.retry({ delaySeconds: SUGGEST_REPLY_RETRY_DELAY_SECONDS });
+        } else {
+          msg.retry();
+        }
       }
     }
   }
