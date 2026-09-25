@@ -110,7 +110,8 @@ export async function handleQueueBatch(
 
   const db = createDb(env);
   const sender = createEmailSender(env);
-  const suggestedReplyRunner = overrides.runSuggestedReply ?? runSuggestedReply;
+  const suggestedReplyRunner =
+    overrides.runSuggestedReply ?? runSuggestedReply;
 
   for (const msg of batch.messages) {
     const kind = classifyQueueMessage(msg.body);
@@ -146,7 +147,10 @@ export async function handleQueueBatch(
       }
       msg.ack();
     } catch (err) {
-      if (kind === "suggest_reply" && msg.attempts >= SUGGEST_REPLY_MAX_ATTEMPTS) {
+      if (
+        kind === "suggest_reply" &&
+        msg.attempts >= SUGGEST_REPLY_MAX_ATTEMPTS
+      ) {
         console.error(
           `[queue] suggest_reply failed after ${msg.attempts} attempts; acking:`,
           err,

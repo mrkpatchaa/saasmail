@@ -218,7 +218,6 @@ describe("AgentChatSession approvals", () => {
 });
 
 describe("AgentChatSession continuation errors and scrolling", () => {
-
   it("hides a stale missing-tool error once that tool call is terminal", async () => {
     const toolCallId =
       "functions.assign_conversation:3::cf-wai-tool-call::terminal-test";
@@ -247,6 +246,7 @@ describe("AgentChatSession continuation errors and scrolling", () => {
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     await waitFor(() => expect(sdk.clearError).toHaveBeenCalledTimes(1));
   });
+
   it("renders an approval-signature continuation error from useAgentChat", () => {
     renderWithParts(
       [],
@@ -325,9 +325,9 @@ describe("AgentChatSession reasoning fallback", () => {
 
       expect(screen.queryByText("Still thinking about the answer.")).toBeNull();
       expect(screen.getByText("Thinking…")).toBeTruthy();
-      expect(screen.getByTestId("agent-thinking").getAttribute("aria-live")).toBe(
-        "polite",
-      );
+      expect(
+        screen.getByTestId("agent-thinking").getAttribute("aria-live"),
+      ).toBe("polite");
     },
   );
 
@@ -338,7 +338,6 @@ describe("AgentChatSession reasoning fallback", () => {
     input: { inbox: "support@example.com" },
     output: { messages: [] },
   };
-
 
   it("shows Thinking after a tool while the final answer has not started", () => {
     renderWithParts([toolPart], "submitted");

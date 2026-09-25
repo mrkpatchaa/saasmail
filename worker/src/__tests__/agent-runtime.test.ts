@@ -386,7 +386,10 @@ describe("agent session runtime", () => {
             { type: "text-end" as const, id: "approval-continuation-text" },
             {
               type: "finish" as const,
-              finishReason: { unified: "stop" as const, raw: "stop" },
+              finishReason: {
+                unified: "stop" as const,
+                raw: "stop",
+              },
               usage: MOCK_USAGE,
             },
           ]),
@@ -1011,7 +1014,6 @@ describe("agent session runtime", () => {
 });
 
 describe("agent model loop", () => {
-
   it("removes approval ledger entries when a step ends in tool-error content", async () => {
     const toolCallId = "ledger-terminal-tool-error";
     const { ledger, entries } = createMemoryApprovalLedger([
@@ -1039,7 +1041,10 @@ describe("agent model loop", () => {
               },
               {
                 type: "finish" as const,
-                finishReason: { unified: "tool-calls" as const, raw: "tool-calls" },
+                finishReason: {
+                  unified: "tool-calls" as const,
+                  raw: "tool-calls",
+                },
                 usage: MOCK_USAGE,
               },
             ]),
@@ -1076,7 +1081,7 @@ describe("agent model loop", () => {
       tools: {
         failing_action: tool({
           inputSchema: z.object({ value: z.string() }),
-          execute: async () => {
+          execute: async (): Promise<{ success: true }> => {
             throw new Error("expected failure");
           },
         }),
@@ -1088,6 +1093,7 @@ describe("agent model loop", () => {
 
     expect(entries.size).toBe(0);
   });
+
   it("pauses an approval-gated tool without executing it", async () => {
     const executions: string[] = [];
     const model = new MockLanguageModelV4({

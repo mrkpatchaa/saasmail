@@ -456,38 +456,38 @@ export default function AgentChatSession({
               ) : (
                 <>
                   {message.parts.map((part, index) => {
-                  if (part.type === "text") {
-                    return (
-                      <AgentMarkdown
-                        key={`${message.id}-text-${index}`}
-                        text={part.text}
-                      />
-                    );
-                  }
-                  if (
-                    part.type === "reasoning" &&
-                    fallbackReasoning.has(index)
-                  ) {
-                    return (
-                      <AgentMarkdown
-                        key={`${message.id}-reasoning-${index}`}
-                        text={part.text}
-                      />
-                    );
-                  }
-                  if (isToolUIPart(part)) {
-                    return (
-                      <ToolBadge
-                        key={
-                          (part as { toolCallId?: string }).toolCallId ??
-                          `${message.id}-tool-${index}`
-                        }
-                        part={part}
-                        onOpenCompose={onOpenCompose}
-                        onApproval={addToolApprovalResponse}
-                      />
-                    );
-                  }
+                    if (part.type === "text") {
+                      return (
+                        <AgentMarkdown
+                          key={`${message.id}-text-${index}`}
+                          text={part.text}
+                        />
+                      );
+                    }
+                    if (
+                      part.type === "reasoning" &&
+                      fallbackReasoning.has(index)
+                    ) {
+                      return (
+                        <AgentMarkdown
+                          key={`${message.id}-reasoning-${index}`}
+                          text={part.text}
+                        />
+                      );
+                    }
+                    if (isToolUIPart(part)) {
+                      return (
+                        <ToolBadge
+                          key={
+                            (part as { toolCallId?: string }).toolCallId ??
+                            `${message.id}-tool-${index}`
+                          }
+                          part={part}
+                          onOpenCompose={onOpenCompose}
+                          onApproval={addToolApprovalResponse}
+                        />
+                      );
+                    }
                     return null;
                   })}
                   {showThinking && (

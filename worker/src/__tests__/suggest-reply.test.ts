@@ -90,7 +90,6 @@ describe("suggested reply post-processing", () => {
     });
   });
 
-
   it("keeps legitimate bracketed labels but flags actual placeholders", () => {
     expect(
       postProcessSuggestedReply(
@@ -104,12 +103,12 @@ describe("suggested reply post-processing", () => {
     expect(postProcessSuggestedReply("Hello [Your Name]").hasPlaceholder).toBe(
       true,
     );
-    expect(postProcessSuggestedReply("Hello [Customer Name]").hasPlaceholder).toBe(
-      true,
-    );
-    expect(postProcessSuggestedReply("Use [insert account number]").hasPlaceholder).toBe(
-      true,
-    );
+    expect(
+      postProcessSuggestedReply("Hello [Customer Name]").hasPlaceholder,
+    ).toBe(true);
+    expect(
+      postProcessSuggestedReply("Use [insert account number]").hasPlaceholder,
+    ).toBe(true);
     expect(postProcessSuggestedReply("Hello [NAME]").hasPlaceholder).toBe(true);
     expect(postProcessSuggestedReply("Hello [X]").hasPlaceholder).toBe(true);
   });

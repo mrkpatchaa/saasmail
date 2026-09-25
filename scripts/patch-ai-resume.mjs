@@ -54,9 +54,7 @@ export function transformAiResumeSource(source) {
   return withSeed.replace(ORIGINAL_LAST_MESSAGE, PATCHED_LAST_MESSAGE);
 }
 
-export async function patchInstalledAi({
-  root = process.cwd(),
-} = {}) {
+export async function patchInstalledAi({ root = process.cwd() } = {}) {
   const packagePath = resolve(root, "node_modules/ai/package.json");
   const distPath = resolve(root, "node_modules/ai/dist/index.js");
 

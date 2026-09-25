@@ -1,5 +1,11 @@
 import { Suspense } from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { useAgent } from "agents/react";
 import { isToolUIPart, type UIMessage } from "ai";
@@ -50,7 +56,11 @@ describe("useAgentChat approval continuation", () => {
     const toolCallId =
       "functions.assign_conversation:3::cf-wai-tool-call::qa-r1";
     const initialMessages: UIMessage[] = [
-      { id: "user-1", role: "user", parts: [{ type: "text", text: "Assign it" }] },
+      {
+        id: "user-1",
+        role: "user",
+        parts: [{ type: "text", text: "Assign it" }],
+      },
       {
         id: "assistant-1",
         role: "assistant",
@@ -72,7 +82,9 @@ describe("useAgentChat approval continuation", () => {
         getInitialMessages: () => Promise.resolve(initialMessages),
         resume: false,
       });
-      const assistant = chat.messages.find((message) => message.id === "assistant-1");
+      const assistant = chat.messages.find(
+        (message) => message.id === "assistant-1",
+      );
       const tool = assistant?.parts.find(
         (part) =>
           isToolUIPart(part) &&
@@ -84,7 +96,10 @@ describe("useAgentChat approval continuation", () => {
           <button
             type="button"
             onClick={() =>
-              chat.addToolApprovalResponse({ id: "approval-r1", approved: true })
+              chat.addToolApprovalResponse({
+                id: "approval-r1",
+                approved: true,
+              })
             }
           >
             Approve

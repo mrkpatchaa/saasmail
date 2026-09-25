@@ -117,7 +117,6 @@ describe("handleQueueBatch", () => {
     expect(retried).toEqual([]);
   });
 
-
   it("retries a transient suggested-reply failure before the attempt cap", async () => {
     const warn = vi.spyOn(console, "error").mockImplementation(() => {});
     const runSuggestedReply = vi

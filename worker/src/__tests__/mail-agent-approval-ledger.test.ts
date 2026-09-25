@@ -7,10 +7,6 @@ import {
   type AgentApprovalLedgerEntry,
 } from "../agent/mail-agent";
 
-type MailAgentWithLedger = MailAgent & {
-  approvalLedger(): AgentApprovalLedger;
-};
-
 describe("MailAgent SQL approval ledger", () => {
   it("persists, prunes, and removes approval metadata in the SQLite DO", async () => {
     const stub = env.MAIL_AGENT.get(
@@ -47,7 +43,9 @@ describe("MailAgent SQL approval ledger", () => {
     };
 
     await runInDurableObject<MailAgent, void>(stub, async (instance) => {
-      const ledger = (instance as MailAgentWithLedger).approvalLedger();
+      const ledger = (
+        instance as unknown as { approvalLedger(): AgentApprovalLedger }
+      ).approvalLedger();
 
       await ledger.record([expired]);
       expect(await ledger.lookup([expired.approvalId])).toEqual([expired]);
@@ -56,19 +54,18 @@ describe("MailAgent SQL approval ledger", () => {
       await ledger.record([first, second]);
       expect(await ledger.lookup([expired.approvalId])).toEqual([]);
 
-      expect(await ledger.lookup([first.approvalId, second.approvalId])).toEqual([
-        first,
-        second,
-      ]);
+      expect(
+        await ledger.lookup([first.approvalId, second.approvalId]),
+      ).toEqual([first, second]);
 
       // INSERT OR IGNORE keeps the original signed approval immutable.
       await ledger.record([{ ...first, signature: "replacement-signature" }]);
       expect(await ledger.lookup([first.approvalId])).toEqual([first]);
 
       await ledger.removeByToolCallIds([first.toolCallId]);
-      expect(await ledger.lookup([first.approvalId, second.approvalId])).toEqual([
-        second,
-      ]);
+      expect(
+        await ledger.lookup([first.approvalId, second.approvalId]),
+      ).toEqual([second]);
 
       await ledger.remove([second.approvalId]);
       expect(await ledger.lookup([second.approvalId])).toEqual([]);
