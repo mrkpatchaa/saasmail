@@ -248,39 +248,126 @@ export function countCompletedApprovalActions(messages: UIMessage[]): number {
   return count;
 }
 
-function expireHistoricalApprovedResponses(messages: UIMessage[]): UIMessage[] {
-  let lastUserIndex = -1;
-  for (let index = 0; index < messages.length; index += 1) {
-    if (messages[index]?.role === "user") lastUserIndex = index;
-  }
-  if (lastUserIndex <= 0) return messages;
+function toolApproval(part: UIMessage["parts"][number]): Record<string, unknown> | null {
+  if (!isToolUIPart(part)) return null;
+  return record((part as { approval?: unknown }).approval) ?? null;
+}
 
-  return messages.map((message, messageIndex) => {
-    if (messageIndex >= lastUserIndex || message.role !== "assistant") {
-      return message;
+function terminalApprovalIds(messages: UIMessage[]): string[] {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      const state = (part as { state?: string }).state;
+      if (
+        state !== "output-available" &&
+        state !== "output-error" &&
+        state !== "output-denied"
+      ) {
+        continue;
+      }
+      const approval = toolApproval(part);
+      if (typeof approval?.id === "string") ids.add(approval.id);
     }
+  }
+  return [...ids];
+}
+
+async function restoreApprovalMetadata(
+  messages: UIMessage[],
+  approvalLedger?: AgentApprovalLedger,
+): Promise<UIMessage[]> {
+  if (!approvalLedger) return messages;
+
+  const approvalIds = new Set<string>();
+  for (const message of messages) {
+    for (const part of message.parts) {
+      const approval = toolApproval(part);
+      if (typeof approval?.id === "string") approvalIds.add(approval.id);
+    }
+  }
+  if (approvalIds.size === 0) return messages;
+
+  const entries = await approvalLedger.lookup([...approvalIds]);
+  const byId = new Map(entries.map((entry) => [entry.approvalId, entry]));
+
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message;
 
     let changed = false;
     const parts = message.parts.map((part) => {
       if (!isToolUIPart(part)) return part;
-      const approval = (
-        part as {
-          state?: string;
-          approval?: {
-            id: string;
-            approved?: boolean;
-            reason?: string;
-            [key: string]: unknown;
-          };
-        }
-      ).approval;
+      const approval = toolApproval(part);
+      const approvalId =
+        typeof approval?.id === "string" ? approval.id : undefined;
+      if (!approvalId) return part;
+
+      const entry = byId.get(approvalId);
+      const toolCallId = (part as { toolCallId?: string }).toolCallId;
       if (
-        (part as { state?: string }).state !== "approval-responded" ||
-        approval?.approved !== true
+        !entry ||
+        entry.toolCallId !== toolCallId ||
+        entry.toolName !== getToolName(part)
       ) {
         return part;
       }
 
+      const nextApproval: Record<string, unknown> = {
+        ...approval,
+        signature: entry.signature,
+      };
+      if (entry.isAutomatic !== undefined) {
+        nextApproval.isAutomatic = entry.isAutomatic;
+      }
+      if (entry.requestReason !== undefined) {
+        nextApproval.requestReason = entry.requestReason;
+      }
+      if (entry.hasInputSchemaInput) {
+        nextApproval.inputSchemaInput = entry.inputSchemaInput;
+      }
+
+      changed = true;
+      return { ...part, approval: nextApproval } as typeof part;
+    });
+
+    return changed ? { ...message, parts } : message;
+  });
+}
+
+function expireInvalidApprovedResponses(messages: UIMessage[]): {
+  messages: UIMessage[];
+  expiredApprovalIds: Set<string>;
+} {
+  let lastUserIndex = -1;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (messages[index]?.role === "user") lastUserIndex = index;
+  }
+
+  const expiredApprovalIds = new Set<string>();
+  const nextMessages = messages.map((message, messageIndex) => {
+    if (message.role !== "assistant") return message;
+
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      if (!isToolUIPart(part)) return part;
+      const state = (part as { state?: string }).state;
+      const approval = toolApproval(part);
+      const approvalId =
+        typeof approval?.id === "string" ? approval.id : undefined;
+      if (
+        state !== "approval-responded" ||
+        approval?.approved !== true ||
+        !approvalId
+      ) {
+        return part;
+      }
+
+      const historical = lastUserIndex > 0 && messageIndex < lastUserIndex;
+      const signature =
+        typeof approval.signature === "string" ? approval.signature.trim() : "";
+      if (!historical && signature) return part;
+
+      expiredApprovalIds.add(approvalId);
       changed = true;
       return {
         ...part,
@@ -294,6 +381,126 @@ function expireHistoricalApprovedResponses(messages: UIMessage[]): UIMessage[] {
 
     return changed ? { ...message, parts } : message;
   });
+
+  return { messages: nextMessages, expiredApprovalIds };
+}
+
+function persistableExpiredMessages(
+  messages: UIMessage[],
+  expiredApprovalIds: Set<string>,
+): UIMessage[] {
+  if (expiredApprovalIds.size === 0) return messages;
+
+  return messages.map((message) => {
+    if (message.role !== "assistant") return message;
+
+    let changed = false;
+    const parts = message.parts.map((part) => {
+      const approval = toolApproval(part);
+      if (
+        typeof approval?.id !== "string" ||
+        !expiredApprovalIds.has(approval.id)
+      ) {
+        return part;
+      }
+      changed = true;
+      return {
+        ...part,
+        approval: {
+          ...approval,
+          approved: false,
+          reason: AGENT_APPROVAL_EXPIRED_MESSAGE,
+        },
+      } as typeof part;
+    });
+    return changed ? { ...message, parts } : message;
+  });
+}
+
+export async function prepareApprovalMessages(
+  messages: UIMessage[],
+  approvalLedger?: AgentApprovalLedger,
+): Promise<{
+  messages: UIMessage[];
+  persistedRepair: UIMessage[] | null;
+  settledApprovalIds: string[];
+}> {
+  const restored = await restoreApprovalMetadata(messages, approvalLedger);
+  const expired = expireInvalidApprovedResponses(restored);
+  const settled = new Set(terminalApprovalIds(messages));
+  for (const id of expired.expiredApprovalIds) settled.add(id);
+
+  return {
+    messages: expired.messages,
+    persistedRepair:
+      expired.expiredApprovalIds.size > 0
+        ? persistableExpiredMessages(messages, expired.expiredApprovalIds)
+        : null,
+    settledApprovalIds: [...settled],
+  };
+}
+
+function approvalLedgerEntryFromStepPart(
+  part: unknown,
+): AgentApprovalLedgerEntry | null {
+  const value = record(part);
+  if (value?.type !== "tool-approval-request") return null;
+  const toolCall = record(value.toolCall);
+  const approvalId =
+    typeof value.approvalId === "string" ? value.approvalId : undefined;
+  const toolCallId =
+    typeof value.toolCallId === "string"
+      ? value.toolCallId
+      : typeof toolCall?.toolCallId === "string"
+        ? toolCall.toolCallId
+        : undefined;
+  const toolName =
+    typeof value.toolName === "string"
+      ? value.toolName
+      : typeof toolCall?.toolName === "string"
+        ? toolCall.toolName
+        : undefined;
+  const signature =
+    typeof value.signature === "string" ? value.signature : undefined;
+  if (!approvalId || !toolCallId || !toolName || !signature) return null;
+
+  const hasInputSchemaInput = Object.prototype.hasOwnProperty.call(
+    value,
+    "inputSchemaInput",
+  );
+  return {
+    approvalId,
+    toolCallId,
+    toolName,
+    signature,
+    ...(typeof value.isAutomatic === "boolean"
+      ? { isAutomatic: value.isAutomatic }
+      : {}),
+    ...(typeof value.reason === "string"
+      ? { requestReason: value.reason }
+      : {}),
+    hasInputSchemaInput,
+    ...(hasInputSchemaInput
+      ? { inputSchemaInput: value.inputSchemaInput }
+      : {}),
+    createdAt: Math.floor(Date.now() / 1000),
+  };
+}
+
+function terminalToolCallIdsFromStep(content: readonly unknown[]): string[] {
+  const ids = new Set<string>();
+  for (const part of content) {
+    const value = record(part);
+    if (
+      value?.type !== "tool-result" &&
+      value?.type !== "tool-error" &&
+      value?.type !== "tool-output-denied"
+    ) {
+      continue;
+    }
+    if (typeof value.toolCallId === "string") ids.add(value.toolCallId);
+  }
+  return [...ids];
 }
 
 export async function streamMailAgentTurn({
