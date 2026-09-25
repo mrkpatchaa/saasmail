@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { UIMessageStreamError } from "ai";
 import AgentChatSession from "@/agent/AgentChatSession";
 import * as api from "@/lib/api";
 
@@ -8,6 +9,7 @@ const sdk = vi.hoisted(() => ({
   useAgent: vi.fn(),
   useAgentChat: vi.fn(),
   approval: vi.fn(),
+  clearError: vi.fn(),
 }));
 
 vi.mock("agents/react", () => ({ useAgent: sdk.useAgent }));
@@ -37,6 +39,7 @@ const session: api.AgentSession = {
 beforeEach(() => {
   vi.restoreAllMocks();
   sdk.approval.mockReset();
+  sdk.clearError.mockReset();
   sdk.useAgent.mockReturnValue({ agent: "mail-agent" });
   vi.mocked(api.fetchAgentApprovalSummary).mockResolvedValue({
     summary: "Add jane@acme.com to list 'Beta testers'",
@@ -60,6 +63,7 @@ function mockAgentChat(
     stop: vi.fn(),
     regenerate: vi.fn(),
     addToolApprovalResponse: sdk.approval,
+    clearError: sdk.clearError,
     error,
     status,
     isStreaming: status !== "ready",
@@ -214,6 +218,35 @@ describe("AgentChatSession approvals", () => {
 });
 
 describe("AgentChatSession continuation errors and scrolling", () => {
+
+  it("hides a stale missing-tool error once that tool call is terminal", async () => {
+    const toolCallId =
+      "functions.assign_conversation:3::cf-wai-tool-call::terminal-test";
+    const error = new UIMessageStreamError({
+      chunkType: "tool-invocation",
+      chunkId: toolCallId,
+      message: `No tool invocation found for tool call ID "${toolCallId}".`,
+    });
+
+    renderWithParts(
+      [
+        {
+          type: "tool-assign_conversation",
+          toolCallId,
+          state: "output-available",
+          input: { inbox: "support@example.com", personId: "person-1" },
+          output: { assigned: true },
+          approval: { id: "approval-terminal", approved: true },
+        },
+      ],
+      "ready",
+      error,
+    );
+
+    expect(screen.queryByTestId("agent-chat-error")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await waitFor(() => expect(sdk.clearError).toHaveBeenCalledTimes(1));
+  });
   it("renders an approval-signature continuation error from useAgentChat", () => {
     renderWithParts(
       [],
