@@ -3,6 +3,8 @@ import { eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import {
   convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   getToolName,
   InvalidToolApprovalSignatureError,
   isStepCount,
@@ -530,7 +532,7 @@ export async function streamMailAgentTurn({
     abortSignal,
     experimental_toolApprovalSecret: toolApprovalSecret,
     stopWhen: isStepCount(8),
-    onStepFinish: async ({ content }) => {
+    onStepFinish: async ({ content, toolResults }) => {
       if (!approvalLedger) return;
 
       const entries = content
@@ -540,7 +542,7 @@ export async function streamMailAgentTurn({
         await approvalLedger.record(entries);
       }
 
-      const settledToolCallIds = terminalToolCallIdsFromStep(content);
+      const settledToolCallIds = terminalToolCallIdsFromStep(toolResults);
       if (settledToolCallIds.length > 0) {
         await approvalLedger.removeByToolCallIds(settledToolCallIds);
       }
@@ -605,6 +607,19 @@ export async function runMailAgentChat({
   }
   if (approvalLedger && prepared.settledApprovalIds.length > 0) {
     await approvalLedger.remove(prepared.settledApprovalIds);
+  }
+
+  if (prepared.persistedRepair) {
+    return createUIMessageStreamResponse({
+      stream: createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.write({
+            type: "error",
+            errorText: AGENT_APPROVAL_EXPIRED_MESSAGE,
+          });
+        },
+      }),
+    });
   }
 
   const toolApprovalSecret = await resolveAgentApprovalSecret(env);
