@@ -318,7 +318,7 @@ export default function AgentChatSession({
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript || !transcriptSticksToBottomRef.current) return;
-    transcript.scrollTo({ top: transcript.scrollHeight });
+    transcript.scrollTop = transcript.scrollHeight;
   }, [error, messages, status]);
 
   function handleTranscriptScroll() {
