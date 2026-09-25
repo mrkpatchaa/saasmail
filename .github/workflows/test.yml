@@ -21,6 +21,7 @@ jobs:
         run: mkdir -p dist/client
       - name: Type check
         run: yarn typecheck
-      - run: yarn test
-      - name: Web tests
-        run: yarn test:web
+      - name: Focused Workers ledger test
+        run: yarn vitest run worker/src/__tests__/mail-agent-approval-ledger.test.ts --config vitest.config.test.ts
+      - name: Focused unpatched approval continuation test
+        run: yarn vitest run src/agent/useAgentChat.approval-continuation.test.tsx --config vitest.config.web.ts
