@@ -6,6 +6,7 @@ import { tool, type UIMessage } from "ai";
 import {
   applyChunkToParts,
   applyToolUpdate,
+  reconcileMessages,
   toolApprovalUpdate,
 } from "agents/chat";
 import { sessions } from "../db/auth.schema";
@@ -667,12 +668,14 @@ describe("agent session runtime", () => {
     });
     await response.text();
 
-    const repairedApproval = (
-      persisted?.[1]?.parts[0] as
-        | { approval?: { approved?: boolean; reason?: string } }
-        | undefined
-    )?.approval;
-    expect(repairedApproval).toEqual(
+    const repairedPart = persisted?.[1]?.parts[0] as
+      | {
+          state?: string;
+          approval?: { approved?: boolean; reason?: string };
+        }
+      | undefined;
+    expect(repairedPart?.state).toBe("output-denied");
+    expect(repairedPart?.approval).toEqual(
       expect.objectContaining({
         approved: false,
         reason: "This approval expired. Ask the agent again.",
@@ -722,13 +725,13 @@ describe("agent session runtime", () => {
         ledger,
       );
 
-      const approval = (
-        prepared.messages[1].parts[0] as {
-          approval?: Record<string, unknown>;
-        }
-      ).approval;
-      expect(approval?.signature).toBeUndefined();
-      expect(approval).toEqual(
+      const repairedPart = prepared.messages[1].parts[0] as {
+        state?: string;
+        approval?: Record<string, unknown>;
+      };
+      expect(repairedPart.state).toBe("output-denied");
+      expect(repairedPart.approval?.signature).toBeUndefined();
+      expect(repairedPart.approval).toEqual(
         expect.objectContaining({
           approved: false,
           reason: "This approval expired. Ask the agent again.",
@@ -1384,6 +1387,7 @@ describe("agent model loop", () => {
         ]),
       }),
     });
+    let historicalRepair: UIMessage[] | null = null;
     const nextResponse = await runMailAgentChat({
       db,
       env: {
@@ -1399,13 +1403,85 @@ describe("agent model loop", () => {
         },
       ],
       modelOverride: nextModel,
+      persistMessages: async (nextMessages) => {
+        historicalRepair = nextMessages;
+      },
     });
     const nextBody = await nextResponse.text();
 
+    const historicalPart = historicalRepair?.[1]?.parts[0] as
+      | {
+          state?: string;
+          approval?: { approved?: boolean; reason?: string };
+        }
+      | undefined;
+    expect(historicalPart?.state).toBe("output-denied");
+    expect(historicalPart?.approval).toEqual(
+      expect.objectContaining({
+        approved: false,
+        reason: "This approval expired. Ask the agent again.",
+      }),
+    );
     expect(nextBody).toContain("The session is still usable.");
+    expect(nextBody).not.toContain('"type":"error"');
     expect(nextBody).not.toContain("InvalidToolApprovalSignatureError");
     expect(nextModel.doStreamCalls).toHaveLength(1);
     expect(await db.select().from(inboxConversationState)).toEqual([]);
+  });
+
+  it("keeps a terminal expired repair when a stale client still submits approved", () => {
+    const toolCallId = "stale-client-approved-call";
+    const serverMessages: UIMessage[] = [
+      {
+        id: "server-assistant",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-assign_conversation",
+            toolCallId,
+            state: "output-denied",
+            input: { ref: "received:one", userId: null },
+            approval: {
+              id: "stale-client-approved-id",
+              approved: false,
+              reason: "This approval expired. Ask the agent again.",
+            },
+          } as any,
+        ],
+      },
+    ];
+    const incoming: UIMessage[] = [
+      {
+        id: "server-assistant",
+        role: "assistant",
+        parts: [
+          {
+            type: "tool-assign_conversation",
+            toolCallId,
+            state: "approval-responded",
+            input: { ref: "received:one", userId: null },
+            approval: {
+              id: "stale-client-approved-id",
+              approved: true,
+            },
+          } as any,
+        ],
+      },
+    ];
+
+    const reconciled = reconcileMessages(incoming, serverMessages);
+    const part = reconciled[0]?.parts[0] as {
+      state?: string;
+      approval?: { approved?: boolean; reason?: string };
+    };
+
+    expect(part.state).toBe("output-denied");
+    expect(part.approval).toEqual(
+      expect.objectContaining({
+        approved: false,
+        reason: "This approval expired. Ask the agent again.",
+      }),
+    );
   });
 
   it("derives a stable 32-byte approval key from BETTER_AUTH_SECRET", async () => {
