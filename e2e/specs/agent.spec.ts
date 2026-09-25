@@ -82,6 +82,33 @@ test.describe.serial("native agent panel", () => {
     ).toBe(0);
   });
 
+  test("keeps document scrolling on long dashboard content", async ({
+    page,
+  }) => {
+    await page.goto("/");
+
+    await page.locator("main").evaluate((main) => {
+      const filler = document.createElement("div");
+      filler.dataset.testid = "dashboard-scroll-filler";
+      filler.style.height = "3000px";
+      filler.textContent = "Long dashboard content";
+      main.appendChild(filler);
+    });
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (document.scrollingElement?.scrollHeight ?? 0) > window.innerHeight,
+        ),
+      )
+      .toBe(true);
+
+    await page.evaluate(() => window.scrollTo(0, 200));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await expect(page.locator("nav").first()).toHaveClass(/shadow-2xl/);
+  });
+
   test("creates, renames, and archives a session", async ({
     page,
     uniqueName,
