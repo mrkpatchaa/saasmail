@@ -33,5 +33,4 @@ describe("agent markdown sanitizer", () => {
     expect(html).not.toContain("style=");
     expect(html).not.toContain("data-bad");
   });
-
 });

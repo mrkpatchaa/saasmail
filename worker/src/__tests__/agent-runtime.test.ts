@@ -34,9 +34,7 @@ import {
   getDb,
 } from "./helpers";
 
-function createMemoryApprovalLedger(
-  seed: AgentApprovalLedgerEntry[] = [],
-): {
+function createMemoryApprovalLedger(seed: AgentApprovalLedgerEntry[] = []): {
   ledger: AgentApprovalLedger;
   entries: Map<string, AgentApprovalLedgerEntry>;
 } {

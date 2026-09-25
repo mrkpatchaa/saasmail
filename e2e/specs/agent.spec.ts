@@ -11,7 +11,11 @@ test.describe.serial("native agent panel", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ configured: false, provider: null, model: null }),
+        body: JSON.stringify({
+          configured: false,
+          provider: null,
+          model: null,
+        }),
       });
     });
     await page.goto("/");

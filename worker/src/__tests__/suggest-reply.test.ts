@@ -75,12 +75,16 @@ function textModel(outputs: string[]) {
 describe("suggested reply post-processing", () => {
   it("drops a trailing placeholder and its closing phrase", () => {
     expect(
-      postProcessSuggestedReply("Thanks for the details.\n\nBest regards,\n[Your Name]"),
+      postProcessSuggestedReply(
+        "Thanks for the details.\n\nBest regards,\n[Your Name]",
+      ),
     ).toEqual({
       bodyText: "Thanks for the details.",
       hasPlaceholder: false,
     });
-    expect(postProcessSuggestedReply("I can help with that.\n[Company]")).toEqual({
+    expect(
+      postProcessSuggestedReply("I can help with that.\n[Company]"),
+    ).toEqual({
       bodyText: "I can help with that.",
       hasPlaceholder: false,
     });

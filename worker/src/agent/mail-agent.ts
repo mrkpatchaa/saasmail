@@ -248,7 +248,9 @@ export function countCompletedApprovalActions(messages: UIMessage[]): number {
   return count;
 }
 
-function toolApproval(part: UIMessage["parts"][number]): Record<string, unknown> | null {
+function toolApproval(
+  part: UIMessage["parts"][number],
+): Record<string, unknown> | null {
   if (!isToolUIPart(part)) return null;
   return record((part as { approval?: unknown }).approval) ?? null;
 }

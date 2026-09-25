@@ -204,9 +204,7 @@ describe("AgentChatSession continuation errors and scrolling", () => {
 
   it("auto-scrolls new content unless the user has scrolled up", () => {
     const view = renderWithParts([{ type: "text", text: "First answer." }]);
-    const transcript = screen.getByTestId(
-      "agent-transcript",
-    ) as HTMLDivElement;
+    const transcript = screen.getByTestId("agent-transcript") as HTMLDivElement;
     let scrollHeight = 1000;
     Object.defineProperty(transcript, "scrollHeight", {
       configurable: true,
@@ -220,9 +218,7 @@ describe("AgentChatSession continuation errors and scrolling", () => {
     transcript.scrollTop = 790;
     fireEvent.scroll(transcript);
     scrollHeight = 1200;
-    mockAgentChat([
-      { type: "text", text: "First answer.\nSecond chunk." },
-    ]);
+    mockAgentChat([{ type: "text", text: "First answer.\nSecond chunk." }]);
     view.rerender(
       <MemoryRouter>
         <AgentChatSession
