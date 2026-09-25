@@ -324,6 +324,10 @@ describe("AgentChatSession reasoning fallback", () => {
       );
 
       expect(screen.queryByText("Still thinking about the answer.")).toBeNull();
+      expect(screen.getByText("Thinking…")).toBeTruthy();
+      expect(screen.getByTestId("agent-thinking").getAttribute("aria-live")).toBe(
+        "polite",
+      );
     },
   );
 
@@ -334,6 +338,28 @@ describe("AgentChatSession reasoning fallback", () => {
     input: { inbox: "support@example.com" },
     output: { messages: [] },
   };
+
+
+  it("shows Thinking after a tool while the final answer has not started", () => {
+    renderWithParts([toolPart], "submitted");
+
+    expect(screen.getByText("Thinking…")).toBeTruthy();
+  });
+
+  it("hides Thinking once visible text arrives after the last tool", () => {
+    renderWithParts(
+      [
+        toolPart,
+        { type: "reasoning", text: "Hidden chain.", state: "done" },
+        { type: "text", text: "Visible answer." },
+      ],
+      "streaming",
+    );
+
+    expect(screen.queryByText("Thinking…")).toBeNull();
+    expect(screen.queryByText("Hidden chain.")).toBeNull();
+    expect(screen.getByText("Visible answer.")).toBeTruthy();
+  });
 
   it("renders trailing reasoning when a tool has no final text", () => {
     renderWithParts([

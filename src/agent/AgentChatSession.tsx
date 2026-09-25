@@ -63,6 +63,28 @@ function messageText(message: UIMessage): string {
     .join("");
 }
 
+function shouldShowThinking(message: UIMessage): boolean {
+  let lastToolIndex = -1;
+  let hasInProgressReasoning = false;
+
+  message.parts.forEach((part, index) => {
+    if (isToolUIPart(part)) lastToolIndex = index;
+    if (
+      part.type === "reasoning" &&
+      (part as { state?: string }).state !== "done"
+    ) {
+      hasInProgressReasoning = true;
+    }
+  });
+
+  if (hasInProgressReasoning) return true;
+  if (lastToolIndex < 0) return false;
+
+  return !message.parts
+    .slice(lastToolIndex + 1)
+    .some((part) => part.type === "text" && part.text.trim().length > 0);
+}
+
 function fallbackReasoningIndexes(message: UIMessage): Set<number> {
   let lastToolIndex = -1;
   message.parts.forEach((part, index) => {
@@ -413,6 +435,10 @@ export default function AgentChatSession({
             message.role === "assistant" && !isCurrentStreamingMessage
               ? fallbackReasoningIndexes(message)
               : new Set<number>();
+          const showThinking =
+            message.role === "assistant" &&
+            isCurrentStreamingMessage &&
+            shouldShowThinking(message);
 
           return (
             <div
@@ -428,7 +454,8 @@ export default function AgentChatSession({
                   {messageText(message)}
                 </p>
               ) : (
-                message.parts.map((part, index) => {
+                <>
+                  {message.parts.map((part, index) => {
                   if (part.type === "text") {
                     return (
                       <AgentMarkdown
@@ -461,8 +488,18 @@ export default function AgentChatSession({
                       />
                     );
                   }
-                  return null;
-                })
+                    return null;
+                  })}
+                  {showThinking && (
+                    <p
+                      data-testid="agent-thinking"
+                      aria-live="polite"
+                      className="mt-2 text-xs text-text-tertiary"
+                    >
+                      Thinking…
+                    </p>
+                  )}
+                </>
               )}
             </div>
           );
