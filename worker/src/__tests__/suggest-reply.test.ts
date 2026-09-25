@@ -268,7 +268,7 @@ describe("suggested reply consumer", () => {
     warn.mockRestore();
   });
 
-  it("creates no row when the screen call errors", async () => {
+  it("surfaces screen call errors for queue retry without creating a row", async () => {
     const { emailId } = await seed("screen-error-email");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const model = new MockLanguageModelV4({
@@ -277,12 +277,14 @@ describe("suggested reply consumer", () => {
       },
     });
 
-    await runSuggestedReply(
-      getDb(),
-      env as unknown as CloudflareBindings,
-      emailId,
-      model,
-    );
+    await expect(
+      runSuggestedReply(
+        getDb(),
+        env as unknown as CloudflareBindings,
+        emailId,
+        model,
+      ),
+    ).rejects.toThrow("screen failed");
 
     expect(
       await getDb()
@@ -294,7 +296,7 @@ describe("suggested reply consumer", () => {
     warn.mockRestore();
   });
 
-  it("acks generation errors without creating a row", async () => {
+  it("surfaces generation errors for queue retry without creating a row", async () => {
     const { emailId } = await seed("generation-error-email");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     let call = 0;
@@ -320,7 +322,7 @@ describe("suggested reply consumer", () => {
         emailId,
         model,
       ),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("generation failed");
 
     expect(
       await getDb()

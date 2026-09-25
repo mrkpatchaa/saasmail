@@ -16,7 +16,7 @@ import { selectModel, type AgentModelEnv } from "./provider";
 
 const BODY_LIMIT = 4000;
 const SCREEN_TIMEOUT_MS = 15_000;
-const GENERATION_TIMEOUT_MS = 30_000;
+const GENERATION_TIMEOUT_MS = 60_000;
 const SCREEN_OUTPUT_TOKENS = 256;
 const REPLY_OUTPUT_TOKENS = 4096;
 
@@ -145,8 +145,8 @@ async function screenMessage(
     }
     return true;
   } catch (error) {
-    console.warn("[suggested-reply] injection screen failed; skipping:", error);
-    return false;
+    console.warn("[suggested-reply] injection screen failed:", error);
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -355,8 +355,8 @@ export async function runSuggestedReply(
       return;
     }
   } catch (error) {
-    console.warn("[suggested-reply] generation failed; skipping:", error);
-    return;
+    console.warn("[suggested-reply] generation failed:", error);
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
