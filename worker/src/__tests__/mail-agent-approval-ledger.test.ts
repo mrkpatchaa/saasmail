@@ -1,3 +1,4 @@
+/// <reference types="@cloudflare/vitest-pool-workers" />
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";

@@ -108,7 +108,10 @@ describe("useAgentChat approval continuation", () => {
           <div data-testid="tool-state">{tool?.state ?? ""}</div>
           <div data-testid="answer">{textOf(assistant)}</div>
           <div data-testid="assistant-count">
-            {chat.messages.filter((message) => message.role === "assistant").length}
+            {
+              chat.messages.filter((message) => message.role === "assistant")
+                .length
+            }
           </div>
           {chat.error && <button type="button">Retry</button>}
         </div>

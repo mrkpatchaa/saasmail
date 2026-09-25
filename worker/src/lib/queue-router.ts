@@ -111,8 +111,7 @@ export async function handleQueueBatch(
 
   const db = createDb(env);
   const sender = createEmailSender(env);
-  const suggestedReplyRunner =
-    overrides.runSuggestedReply ?? runSuggestedReply;
+  const suggestedReplyRunner = overrides.runSuggestedReply ?? runSuggestedReply;
 
   for (const msg of batch.messages) {
     const kind = classifyQueueMessage(msg.body);
