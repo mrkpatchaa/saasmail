@@ -398,6 +398,7 @@ function expireInvalidApprovedResponses(messages: UIMessage[]): {
       changed = true;
       return {
         ...part,
+        state: "output-denied",
         approval: {
           ...approval,
           approved: false,
@@ -437,6 +438,7 @@ function persistableExpiredMessages(
       changed = true;
       return {
         ...part,
+        state: "output-denied",
         approval: {
           ...approval,
           approved: false,
@@ -639,6 +641,12 @@ export async function runMailAgentChat({
   }
 
   if (prepared.hasCurrentExpiredApproval) {
+    // @cloudflare/ai-chat 0.12.0 continuation _reply() clones the last
+    // assistant from this.messages before consuming the response, then persists
+    // that clone even when the stream ends in an error. persistMessages() above
+    // updates the DO transcript first; making the repair terminal
+    // (output-denied) also means agents@0.24.0 reconcileMessages() overlays the
+    // server denial onto any stale client approval-responded snapshot.
     return createUIMessageStreamResponse({
       stream: createUIMessageStream({
         execute: ({ writer }) => {
