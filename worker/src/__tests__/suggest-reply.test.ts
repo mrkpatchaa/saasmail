@@ -90,6 +90,30 @@ describe("suggested reply post-processing", () => {
     });
   });
 
+
+  it("keeps legitimate bracketed labels but flags actual placeholders", () => {
+    expect(
+      postProcessSuggestedReply(
+        "Please send this to [Team] and keep [Role] in the copied template.",
+      ),
+    ).toEqual({
+      bodyText:
+        "Please send this to [Team] and keep [Role] in the copied template.",
+      hasPlaceholder: false,
+    });
+    expect(postProcessSuggestedReply("Hello [Your Name]").hasPlaceholder).toBe(
+      true,
+    );
+    expect(postProcessSuggestedReply("Hello [Customer Name]").hasPlaceholder).toBe(
+      true,
+    );
+    expect(postProcessSuggestedReply("Use [insert account number]").hasPlaceholder).toBe(
+      true,
+    );
+    expect(postProcessSuggestedReply("Hello [NAME]").hasPlaceholder).toBe(true);
+    expect(postProcessSuggestedReply("Hello [X]").hasPlaceholder).toBe(true);
+  });
+
   it("flags placeholders that remain inside substantive copy", () => {
     expect(
       postProcessSuggestedReply(
