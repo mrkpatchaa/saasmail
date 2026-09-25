@@ -105,7 +105,9 @@ test.describe.serial("native agent panel", () => {
       .toBe(true);
 
     await page.evaluate(() => window.scrollTo(0, 200));
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    await expect
+      .poll(() => page.evaluate(() => window.scrollY))
+      .toBeGreaterThan(0);
     await expect(page.locator("nav").first()).toHaveClass(/shadow-2xl/);
   });
 
