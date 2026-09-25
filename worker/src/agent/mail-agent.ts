@@ -341,6 +341,7 @@ async function restoreApprovalMetadata(
 function expireInvalidApprovedResponses(messages: UIMessage[]): {
   messages: UIMessage[];
   expiredApprovalIds: Set<string>;
+  currentExpiredApprovalIds: Set<string>;
 } {
   let lastUserIndex = -1;
   for (let index = 0; index < messages.length; index += 1) {
@@ -348,6 +349,7 @@ function expireInvalidApprovedResponses(messages: UIMessage[]): {
   }
 
   const expiredApprovalIds = new Set<string>();
+  const currentExpiredApprovalIds = new Set<string>();
   const nextMessages = messages.map((message, messageIndex) => {
     if (message.role !== "assistant") return message;
 
@@ -372,6 +374,7 @@ function expireInvalidApprovedResponses(messages: UIMessage[]): {
       if (!historical && signature) return part;
 
       expiredApprovalIds.add(approvalId);
+      if (!historical) currentExpiredApprovalIds.add(approvalId);
       changed = true;
       return {
         ...part,
@@ -386,7 +389,11 @@ function expireInvalidApprovedResponses(messages: UIMessage[]): {
     return changed ? { ...message, parts } : message;
   });
 
-  return { messages: nextMessages, expiredApprovalIds };
+  return {
+    messages: nextMessages,
+    expiredApprovalIds,
+    currentExpiredApprovalIds,
+  };
 }
 
 function persistableExpiredMessages(
@@ -428,6 +435,7 @@ export async function prepareApprovalMessages(
   messages: UIMessage[];
   persistedRepair: UIMessage[] | null;
   settledApprovalIds: string[];
+  hasCurrentExpiredApproval: boolean;
 }> {
   const restored = await restoreApprovalMetadata(messages, approvalLedger);
   const expired = expireInvalidApprovedResponses(restored);
@@ -441,6 +449,7 @@ export async function prepareApprovalMessages(
         ? persistableExpiredMessages(messages, expired.expiredApprovalIds)
         : null,
     settledApprovalIds: [...settled],
+    hasCurrentExpiredApproval: expired.currentExpiredApprovalIds.size > 0,
   };
 }
 
@@ -609,7 +618,7 @@ export async function runMailAgentChat({
     await approvalLedger.remove(prepared.settledApprovalIds);
   }
 
-  if (prepared.persistedRepair) {
+  if (prepared.hasCurrentExpiredApproval) {
     return createUIMessageStreamResponse({
       stream: createUIMessageStream({
         execute: ({ writer }) => {
@@ -640,6 +649,13 @@ export async function runMailAgentChat({
 
   return result.toUIMessageStreamResponse({
     originalMessages: prepared.messages,
+    onFinish: async ({ messages: finalMessages }) => {
+      if (!approvalLedger) return;
+      const settledApprovalIds = terminalApprovalIds(finalMessages);
+      if (settledApprovalIds.length > 0) {
+        await approvalLedger.remove(settledApprovalIds);
+      }
+    },
     onError: (error) => {
       if (InvalidToolApprovalSignatureError.isInstance(error)) {
         return AGENT_APPROVAL_EXPIRED_MESSAGE;
