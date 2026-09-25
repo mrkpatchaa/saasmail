@@ -166,6 +166,30 @@ describe("AgentChatSession approvals", () => {
     expect(screen.queryByText("Denied")).toBeNull();
   });
 
+  it("shows the persisted reason for an output-denied expired approval", async () => {
+    vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
+      new Error("not found"),
+    );
+    renderWithParts([
+      {
+        type: "tool-link_customer",
+        toolCallId: "approval-call-output-denied",
+        state: "output-denied",
+        input: { personId: "person-1", otherPersonId: "person-2" },
+        approval: {
+          id: "approval-id-output-denied",
+          approved: false,
+          reason: "This approval expired. Ask the agent again.",
+        },
+      },
+    ]);
+
+    expect(
+      screen.getByText("This approval expired. Ask the agent again."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Denied")).toBeNull();
+  });
+
   it("falls back to tool args and shows the recorded decision", async () => {
     vi.mocked(api.fetchAgentApprovalSummary).mockRejectedValue(
       new Error("not found"),
