@@ -277,6 +277,26 @@ function terminalApprovalIds(messages: UIMessage[]): string[] {
   return [...ids];
 }
 
+function terminalToolCallIds(messages: UIMessage[]): string[] {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (!isToolUIPart(part)) continue;
+      const state = (part as { state?: string }).state;
+      if (
+        state !== "output-available" &&
+        state !== "output-error" &&
+        state !== "output-denied"
+      ) {
+        continue;
+      }
+      const toolCallId = (part as { toolCallId?: string }).toolCallId;
+      if (typeof toolCallId === "string") ids.add(toolCallId);
+    }
+  }
+  return [...ids];
+}
+
 async function restoreApprovalMetadata(
   messages: UIMessage[],
   approvalLedger?: AgentApprovalLedger,
@@ -654,6 +674,10 @@ export async function runMailAgentChat({
       const settledApprovalIds = terminalApprovalIds(finalMessages);
       if (settledApprovalIds.length > 0) {
         await approvalLedger.remove(settledApprovalIds);
+      }
+      const settledToolCallIds = terminalToolCallIds(finalMessages);
+      if (settledToolCallIds.length > 0) {
+        await approvalLedger.removeByToolCallIds(settledToolCallIds);
       }
     },
     onError: (error) => {
