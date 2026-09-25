@@ -254,6 +254,16 @@ against the current tool input before execution. The server never re-signs a
 client-supplied transcript. Terminal tool results delete their ledger rows, and
 recording a new approval also prunes rows older than seven days.
 
+Expired approvals are persisted as terminal `output-denied` parts before the
+continuation response is returned. In `@cloudflare/ai-chat` 0.12.0, a
+continuation clones the last assistant message from the DO's current
+`this.messages` and persists that clone after the stream, including the error
+path. Because the repair write is awaited first, that clone already contains the
+terminal denial. In addition, `agents` 0.24.0 `reconcileMessages()` overlays
+server terminal states, including `output-denied`, onto stale client
+`approval-responded` snapshots, so a delayed client cannot restore an
+approved state.
+
 Execution happens only after a valid approval and re-reads the user's current
 role and inbox permissions, so access revoked while the card is waiting is
 enforced. Approval continuations preserve the original assistant message when
