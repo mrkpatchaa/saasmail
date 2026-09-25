@@ -228,11 +228,17 @@ function ToolBadge({
               </button>
             </div>
           )}
-          {!needsApproval && approvalDecision !== null && (
-            <p className="font-medium text-text-secondary">
-              {approvalDecision ? "Approved" : (approvalReason ?? "Denied")}
-            </p>
-          )}
+          {!needsApproval &&
+            (approvalDecision !== null ||
+              (state === "output-denied" && approvalReason !== null)) && (
+              <p className="font-medium text-text-secondary">
+                {state === "output-denied" && approvalReason
+                  ? approvalReason
+                  : approvalDecision
+                    ? "Approved"
+                    : (approvalReason ?? "Denied")}
+              </p>
+            )}
         </div>
       )}
 
