@@ -77,7 +77,7 @@ export default function DashboardLayout() {
     <WebMcpBridgeProvider navigate={navigate} openCompose={openCompose}>
       <AgentContextProvider>
         {webmcpEnabled && <WebMcpTools />}
-        <div className="relative flex min-h-screen flex-col bg-background pt-16">
+        <div className="relative flex h-screen min-h-0 flex-col overflow-hidden bg-background pt-16">
           {/* Faded gradient backdrop. Animates by default; falls back to a
             static version on low-spec devices or when the user prefers
             reduced motion. */}
@@ -96,10 +96,10 @@ export default function DashboardLayout() {
             onAgentToggle={() => setAgentOpen((open) => !open)}
           />
 
-          <div className="relative z-10 flex min-h-0 flex-1">
-            <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative z-10 flex min-h-0 flex-1 overflow-hidden">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               <Breadcrumbs />
-              <main className="flex min-h-0 flex-1 flex-col">
+              <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
                 <Outlet context={{ onCompose: openCompose }} />
               </main>
               <Footer />
