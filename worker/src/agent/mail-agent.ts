@@ -32,6 +32,29 @@ const AGENT_APPROVAL_INFO = "saasmail/agent-tool-approval/v1";
 const AGENT_APPROVAL_EXPIRED_MESSAGE =
   "This approval expired. Ask the agent again.";
 
+const AGENT_APPROVAL_LEDGER_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+export type AgentApprovalLedgerEntry = {
+  approvalId: string;
+  toolCallId: string;
+  toolName: string;
+  signature: string;
+  isAutomatic?: boolean;
+  requestReason?: string;
+  hasInputSchemaInput: boolean;
+  inputSchemaInput?: unknown;
+  createdAt: number;
+};
+
+export interface AgentApprovalLedger {
+  record(entries: AgentApprovalLedgerEntry[]): Promise<void>;
+  lookup(approvalIds: string[]): Promise<AgentApprovalLedgerEntry[]>;
+  remove(approvalIds: string[]): Promise<void>;
+  removeByToolCallIds(toolCallIds: string[]): Promise<void>;
+}
+
+type PersistAgentMessages = (messages: UIMessage[]) => Promise<void>;
+
 export type MailAgentEnv = AgentModelEnv & {
   BETTER_AUTH_SECRET?: string;
   AGENT_APPROVAL_SECRET?: string;
