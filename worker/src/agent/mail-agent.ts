@@ -510,6 +510,7 @@ export async function streamMailAgentTurn({
   instructions,
   abortSignal,
   toolApprovalSecret,
+  approvalLedger,
 }: {
   model: LanguageModel;
   messages: UIMessage[];
@@ -517,17 +518,31 @@ export async function streamMailAgentTurn({
   instructions: string;
   abortSignal?: AbortSignal;
   toolApprovalSecret?: string | Uint8Array;
+  approvalLedger?: AgentApprovalLedger;
 }) {
-  const modelMessages = expireHistoricalApprovedResponses(messages);
-
   return streamText({
     model,
-    messages: await convertToModelMessages(modelMessages),
+    messages: await convertToModelMessages(messages),
     instructions,
     tools,
     abortSignal,
     experimental_toolApprovalSecret: toolApprovalSecret,
     stopWhen: isStepCount(8),
+    onStepFinish: async ({ content }) => {
+      if (!approvalLedger) return;
+
+      const entries = content
+        .map(approvalLedgerEntryFromStepPart)
+        .filter((entry): entry is AgentApprovalLedgerEntry => entry !== null);
+      if (entries.length > 0) {
+        await approvalLedger.record(entries);
+      }
+
+      const settledToolCallIds = terminalToolCallIdsFromStep(content);
+      if (settledToolCallIds.length > 0) {
+        await approvalLedger.removeByToolCallIds(settledToolCallIds);
+      }
+    },
     repairToolCall: async ({ toolCall, error }) => {
       if (!NoSuchToolError.isInstance(error)) return null;
 
@@ -552,6 +567,8 @@ export async function runMailAgentChat({
   body,
   abortSignal,
   modelOverride,
+  approvalLedger,
+  persistMessages,
 }: {
   db: DrizzleD1Database<any>;
   env: MailAgentEnv;
@@ -560,6 +577,8 @@ export async function runMailAgentChat({
   body?: Record<string, unknown>;
   abortSignal?: AbortSignal;
   modelOverride?: LanguageModel;
+  approvalLedger?: AgentApprovalLedger;
+  persistMessages?: PersistAgentMessages;
 }): Promise<Response> {
   const user = await resolveMailAgentUser(db, instanceName);
   if (!user) {
@@ -578,23 +597,32 @@ export async function runMailAgentChat({
     model = selected.model;
   }
 
+  const prepared = await prepareApprovalMessages(messages, approvalLedger);
+  if (prepared.persistedRepair && persistMessages) {
+    await persistMessages(prepared.persistedRepair);
+  }
+  if (approvalLedger && prepared.settledApprovalIds.length > 0) {
+    await approvalLedger.remove(prepared.settledApprovalIds);
+  }
+
   const toolApprovalSecret = await resolveAgentApprovalSecret(env);
   const result = await streamMailAgentTurn({
     model,
-    messages,
+    messages: prepared.messages,
     tools: createAgentTools({
       db,
       env: env as CloudflareBindings,
       user,
-      gatedCallsAlready: countCompletedApprovalActions(messages),
+      gatedCallsAlready: countCompletedApprovalActions(prepared.messages),
     }),
     instructions: await buildMailAgentInstructions({ db, user, body }),
     abortSignal,
     toolApprovalSecret,
+    approvalLedger,
   });
 
   return result.toUIMessageStreamResponse({
-    originalMessages: messages,
+    originalMessages: prepared.messages,
     onError: (error) => {
       if (InvalidToolApprovalSignatureError.isInstance(error)) {
         return AGENT_APPROVAL_EXPIRED_MESSAGE;
@@ -605,12 +633,158 @@ export async function runMailAgentChat({
   });
 }
 
+type AgentApprovalLedgerRow = {
+  approval_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  signature: string;
+  is_automatic: number | null;
+  request_reason: string | null;
+  has_input_schema_input: number;
+  input_schema_input_json: string | null;
+  created_at: number;
+};
+
 export class MailAgent extends AIChatAgent<CloudflareBindings> {
+  private ensureApprovalLedger(): void {
+    this.sql`
+      CREATE TABLE IF NOT EXISTS agent_approval_ledger (
+        approval_id TEXT PRIMARY KEY,
+        tool_call_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        is_automatic INTEGER,
+        request_reason TEXT,
+        has_input_schema_input INTEGER NOT NULL,
+        input_schema_input_json TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `;
+    this.sql`
+      CREATE INDEX IF NOT EXISTS agent_approval_ledger_created_at_idx
+      ON agent_approval_ledger(created_at)
+    `;
+    this.sql`
+      CREATE INDEX IF NOT EXISTS agent_approval_ledger_tool_call_idx
+      ON agent_approval_ledger(tool_call_id)
+    `;
+  }
+
+  private approvalLedger(): AgentApprovalLedger {
+    this.ensureApprovalLedger();
+
+    return {
+      record: async (entries) => {
+        const cutoff =
+          Math.floor(Date.now() / 1000) - AGENT_APPROVAL_LEDGER_TTL_SECONDS;
+        this.sql`
+          DELETE FROM agent_approval_ledger
+          WHERE created_at < ${cutoff}
+        `;
+
+        for (const entry of entries) {
+          const inputSchemaInputJson = entry.hasInputSchemaInput
+            ? JSON.stringify({ value: entry.inputSchemaInput })
+            : null;
+          this.sql`
+            INSERT OR IGNORE INTO agent_approval_ledger (
+              approval_id,
+              tool_call_id,
+              tool_name,
+              signature,
+              is_automatic,
+              request_reason,
+              has_input_schema_input,
+              input_schema_input_json,
+              created_at
+            ) VALUES (
+              ${entry.approvalId},
+              ${entry.toolCallId},
+              ${entry.toolName},
+              ${entry.signature},
+              ${entry.isAutomatic == null ? null : entry.isAutomatic ? 1 : 0},
+              ${entry.requestReason ?? null},
+              ${entry.hasInputSchemaInput ? 1 : 0},
+              ${inputSchemaInputJson},
+              ${entry.createdAt}
+            )
+          `;
+        }
+      },
+      lookup: async (approvalIds) => {
+        const entries: AgentApprovalLedgerEntry[] = [];
+        for (const approvalId of new Set(approvalIds)) {
+          const [row] = this.sql<AgentApprovalLedgerRow>`
+            SELECT
+              approval_id,
+              tool_call_id,
+              tool_name,
+              signature,
+              is_automatic,
+              request_reason,
+              has_input_schema_input,
+              input_schema_input_json,
+              created_at
+            FROM agent_approval_ledger
+            WHERE approval_id = ${approvalId}
+            LIMIT 1
+          `;
+          if (!row) continue;
+
+          let inputSchemaInput: unknown;
+          if (row.has_input_schema_input === 1 && row.input_schema_input_json) {
+            try {
+              inputSchemaInput = record(
+                JSON.parse(row.input_schema_input_json),
+              )?.value;
+            } catch {
+              inputSchemaInput = undefined;
+            }
+          }
+
+          entries.push({
+            approvalId: row.approval_id,
+            toolCallId: row.tool_call_id,
+            toolName: row.tool_name,
+            signature: row.signature,
+            ...(row.is_automatic == null
+              ? {}
+              : { isAutomatic: row.is_automatic === 1 }),
+            ...(row.request_reason == null
+              ? {}
+              : { requestReason: row.request_reason }),
+            hasInputSchemaInput: row.has_input_schema_input === 1,
+            ...(row.has_input_schema_input === 1 ? { inputSchemaInput } : {}),
+            createdAt: row.created_at,
+          });
+        }
+        return entries;
+      },
+      remove: async (approvalIds) => {
+        for (const approvalId of new Set(approvalIds)) {
+          this.sql`
+            DELETE FROM agent_approval_ledger
+            WHERE approval_id = ${approvalId}
+          `;
+        }
+      },
+      removeByToolCallIds: async (toolCallIds) => {
+        for (const toolCallId of new Set(toolCallIds)) {
+          this.sql`
+            DELETE FROM agent_approval_ledger
+            WHERE tool_call_id = ${toolCallId}
+          `;
+        }
+      },
+    };
+  }
+
   async onChatMessage(
     _onFinish: unknown,
     options?: OnChatMessageOptions,
   ): Promise<Response> {
     const db = createDb(this.env);
+    const approvalLedger = this.approvalLedger();
     return runMailAgentChat({
       db,
       env: this.env as MailAgentEnv,
@@ -618,6 +792,8 @@ export class MailAgent extends AIChatAgent<CloudflareBindings> {
       messages: this.messages,
       body: options?.body,
       abortSignal: options?.abortSignal,
+      approvalLedger,
+      persistMessages: (messages) => this.persistMessages(messages),
     });
   }
 }
