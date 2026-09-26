@@ -15,10 +15,6 @@ import {
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import type { OutboxSendResult } from "../lib/outbox";
 import {
-  findOrCreatePersonId,
-  outboundConversationId,
-} from "../lib/sent-bookkeeping";
-import {
   buildSubmissionMessage,
   parseContentJson,
   sendSubmission,
@@ -50,6 +46,7 @@ import {
   publicSubmissionId,
   publicThreadId,
 } from "./public-ids";
+import { buildJmapSentRow } from "./sent-row";
 import { currentJmapState, parseJmapState } from "./state";
 import {
   checkContentRecipients,
@@ -345,39 +342,18 @@ async function recordAcceptedSubmission(
 ): Promise<void> {
   const { message, result } = input;
   const now = Math.floor(Date.now() / 1000);
-  const personId = await findOrCreatePersonId(db, message.to, now);
-  const conversationId = await outboundConversationId(
-    db,
-    message.fromAddress,
-    message.to,
-    message.cc.map((cc) => cc.email),
-  );
-  const inReplyTo = parseContentJson<string[] | null>(
-    input.content.inReplyToJson,
-    null,
-  );
+  // The one Sent-row writer for JMAP sends; recovery writes the same row.
+  const sentRow = await buildJmapSentRow(db, {
+    sentEmailId: input.sentEmailId,
+    content: input.content,
+    message,
+    status: result.outcome,
+    resendId: result.send.result?.id ?? null,
+    now,
+  });
+  const personId = sentRow.personId!;
   const statements = [
-    db.insert(sentEmails).values({
-      id: input.sentEmailId,
-      personId,
-      fromAddress: message.fromAddress,
-      toAddress: message.to,
-      subject: message.subject,
-      bodyHtml: message.html || null,
-      bodyText: message.text ?? null,
-      inReplyTo:
-        inReplyTo && inReplyTo.length > 0
-          ? `<${inReplyTo[0].replace(/^<|>$/g, "")}>`
-          : null,
-      messageId: message.headers["Message-ID"],
-      resendId: result.send.result?.id ?? null,
-      status: result.outcome,
-      cc: message.cc.length > 0 ? JSON.stringify(message.cc) : null,
-      conversationId,
-      jmapContentId: input.content.id,
-      sentAt: now,
-      createdAt: now,
-    }),
+    db.insert(sentEmails).values(sentRow),
     db
       .update(jmapSubmissions)
       .set({ attemptState: "accepted" })
