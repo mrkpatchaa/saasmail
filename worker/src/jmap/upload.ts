@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { asc, eq, inArray, lt } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { jmapBlobs } from "../db/jmap-blobs.schema";
@@ -141,4 +141,41 @@ export async function storeUpload(
     },
     tooLargeLimit: null,
   };
+}
+
+/** Uploads live this long. Drafts copy the bytes they keep (PR 4). */
+export const UPLOAD_TTL_SECONDS = 24 * 60 * 60;
+const UPLOAD_REAP_LIMIT = 500;
+/** D1 binds at most 100 parameters per statement. */
+const D1_ID_CHUNK = 90;
+
+/**
+ * Hourly: delete uploads older than the TTL. R2 objects first, then rows
+ * (spec §10.3), so a crash in between leaves rows the next run retries,
+ * never untracked objects. Bounded per run; the backlog drains hourly.
+ */
+export async function reapExpiredUploads(
+  db: Db,
+  env: CloudflareBindings,
+  now: number,
+  ttlSeconds = UPLOAD_TTL_SECONDS,
+): Promise<number> {
+  const expired = await db
+    .select({ id: jmapBlobs.id, r2Key: jmapBlobs.r2Key })
+    .from(jmapBlobs)
+    .where(lt(jmapBlobs.createdAt, now - ttlSeconds))
+    .orderBy(asc(jmapBlobs.createdAt))
+    .limit(UPLOAD_REAP_LIMIT);
+  if (expired.length === 0) return 0;
+
+  await env.R2.delete(expired.map((row) => row.r2Key));
+  for (let start = 0; start < expired.length; start += D1_ID_CHUNK) {
+    await db.delete(jmapBlobs).where(
+      inArray(
+        jmapBlobs.id,
+        expired.slice(start, start + D1_ID_CHUNK).map((row) => row.id),
+      ),
+    );
+  }
+  return expired.length;
 }

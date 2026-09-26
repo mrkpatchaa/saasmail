@@ -15,10 +15,13 @@ import { validateJmapUploadOrigin } from "../jmap/http";
 import {
   parseDeclaredLength,
   readCappedBody,
+  reapExpiredUploads,
   storeUpload,
   uploadMediaType,
   uploadTooLargeProblem,
+  UPLOAD_TTL_SECONDS,
 } from "../jmap/upload";
+import worker from "../index";
 import { acct, expectAllJmapIdsValid } from "./jmap-ids";
 
 describe("jmap_blobs table", () => {
@@ -346,5 +349,73 @@ describe("POST /jmap/upload/{accountId}/", () => {
       validateJmapUploadOrigin(request(env.BASE_URL), bindings, "session"),
     ).toBeNull();
     expect(validateJmapUploadOrigin(request(), bindings, "apiKey")).toBeNull();
+  });
+});
+
+describe("upload reaper", () => {
+  beforeAll(async () => {
+    await applyMigrations();
+  });
+  beforeEach(async () => {
+    await cleanDb();
+    await clearUploadObjects();
+  });
+
+  async function seed(id: string, createdAt: number) {
+    const r2Key = `jmap-uploads/aaa-uploader/${id}`;
+    await getDb().insert(jmapBlobs).values({
+      id,
+      userId: "aaa-uploader",
+      type: "text/plain",
+      size: 1,
+      r2Key,
+      createdAt,
+    });
+    await env.R2.put(r2Key, new Uint8Array([1]));
+  }
+
+  it("deletes uploads older than 24 hours, object first, and keeps younger ones", async () => {
+    await createTestUser({ id: "aaa-uploader", email: "uploader@example.com" });
+    const now = 1_000_000;
+    await seed("old", now - UPLOAD_TTL_SECONDS - 1);
+    await seed("young", now - 60);
+
+    expect(await reapExpiredUploads(getDb(), env, now)).toBe(1);
+
+    const left = await getDb().select().from(jmapBlobs);
+    expect(left.map((row) => row.id)).toEqual(["young"]);
+    expect(await uploadObjects("aaa-uploader")).toEqual([
+      "jmap-uploads/aaa-uploader/young",
+    ]);
+  });
+
+  it("reaps more rows than one D1 statement can bind", async () => {
+    await createTestUser({ id: "aaa-uploader", email: "uploader@example.com" });
+    for (let index = 0; index < 120; index += 1) {
+      await seed(`old-${index}`, 1);
+    }
+    expect(await reapExpiredUploads(getDb(), env, 1_000_000)).toBe(120);
+    expect(await getDb().select().from(jmapBlobs)).toHaveLength(0);
+  });
+
+  it("runs in the hourly cron", async () => {
+    await createTestUser({ id: "aaa-uploader", email: "uploader@example.com" });
+    await seed(
+      "cron-old",
+      Math.floor(Date.now() / 1000) - UPLOAD_TTL_SECONDS - 60,
+    );
+    const waits: Promise<unknown>[] = [];
+    await worker.scheduled!(
+      { cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledEvent,
+      env,
+      {
+        waitUntil: (promise: Promise<unknown>) => {
+          waits.push(promise);
+        },
+      } as ExecutionContext,
+    );
+    await Promise.all(waits);
+    expect(await getDb().select().from(jmapBlobs)).toHaveLength(0);
+    expect(await uploadObjects("aaa-uploader")).toEqual([]);
   });
 });
