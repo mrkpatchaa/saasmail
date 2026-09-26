@@ -1,7 +1,9 @@
-import { sql, type SQL } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import type { jmapMessageContent } from "../db/jmap-message-content.schema";
+import { jmapDrafts } from "../db/jmap-drafts.schema";
+import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { htmlToText } from "../lib/html-to-text";
+import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
 import {
   publicBodyPartBlobId,
   publicRawBlobId,
@@ -410,4 +412,30 @@ export async function collectUnreferencedContent(
     if (await deleteContentIfUnreferenced(db, env, row.id)) removed += 1;
   }
   return removed;
+}
+
+/**
+ * Content the caller may read: their own draft on it, in an allowed inbox.
+ * PR 5 adds content read through a visible Sent row.
+ */
+export async function findReadableContent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  userId: string,
+  contentId: string,
+): Promise<JmapContentRow | null> {
+  const rows = await db
+    .select({ content: jmapMessageContent, inbox: jmapDrafts.inbox })
+    .from(jmapDrafts)
+    .innerJoin(
+      jmapMessageContent,
+      eq(jmapMessageContent.id, jmapDrafts.contentId),
+    )
+    .where(
+      and(eq(jmapDrafts.userId, userId), eq(jmapDrafts.contentId, contentId)),
+    )
+    .limit(1);
+  const row = rows[0];
+  return row && isInboxAllowed(allowed, row.inbox) ? row.content : null;
 }

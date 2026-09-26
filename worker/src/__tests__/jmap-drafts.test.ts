@@ -12,6 +12,7 @@ import {
 } from "./helpers";
 import { emails } from "../db/emails.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
+import { jmapBlobs } from "../db/jmap-blobs.schema";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { mailboxes } from "../db/mailboxes.schema";
@@ -936,6 +937,209 @@ describe("JMAP drafts", () => {
       expect(res.methodResponses[1][1].queryState).not.toBe(
         before.methodResponses[0][1].queryState,
       );
+    });
+  });
+
+  describe("blobs, changes and isolation", () => {
+    const download = (apiKey: string, userId: string, blobId: string) =>
+      authFetch(`/jmap/download/${acct(userId)}/${blobId}/blob.bin`, {
+        apiKey,
+      });
+
+    it("downloads the raw message with exactly size octets and the draft's parts", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const blobId = await upload(apiKey, userId, "hello");
+      const created = await createDraft(apiKey, userId, {
+        attachments: [{ blobId, name: "a.txt" }],
+      });
+
+      const rawResponse = await download(apiKey, userId, created.blobId);
+      expect(rawResponse.status).toBe(200);
+      const rawBytes = new Uint8Array(await rawResponse.arrayBuffer());
+      expect(rawBytes.byteLength).toBe(created.size);
+      const rawText = new TextDecoder().decode(rawBytes);
+      expect(rawText).toContain("Subject: Hello\r\n");
+      expect(rawText).toContain('filename="a.txt"');
+
+      const text = await download(
+        apiKey,
+        userId,
+        publicBodyPartBlobId(created.id, "1"),
+      );
+      expect(await text.text()).toBe("Hi there");
+      const attachment = await download(
+        apiKey,
+        userId,
+        publicBodyPartBlobId(created.id, "2"),
+      );
+      expect(await attachment.text()).toBe("hello");
+      expect(
+        (await download(apiKey, userId, publicBodyPartBlobId(created.id, "9")))
+          .status,
+      ).toBe(404);
+    });
+
+    it("downloads text and html body parts of received mail", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await createTestEmail({
+        id: "body",
+        recipient: MINE,
+        messageId: "body@example.com",
+        bodyText: "Plain",
+      });
+      expect(
+        await (
+          await download(
+            apiKey,
+            userId,
+            publicBodyPartBlobId(rid("body"), "text"),
+          )
+        ).text(),
+      ).toBe("Plain");
+      expect(
+        await (
+          await download(
+            apiKey,
+            userId,
+            publicBodyPartBlobId(rid("body"), "html"),
+          )
+        ).text(),
+      ).toBe("<p>Hello</p>");
+      expect(
+        (await download(apiKey, userId, publicBodyPartBlobId(rid("body"), "1")))
+          .status,
+      ).toBe(404);
+    });
+
+    it("keeps a draft's attachment after its upload is reaped", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const blobId = await upload(apiKey, userId, "keep me");
+      const created = await createDraft(apiKey, userId, {
+        attachments: [{ blobId }],
+      });
+      // What the upload reaper does: the row and its R2 object go.
+      const uploadId = blobId.slice(1);
+      await getDb().delete(jmapBlobs).where(eq(jmapBlobs.id, uploadId));
+      await env.R2.delete(`jmap-uploads/${userId}/${uploadId}`);
+
+      const attachment = await download(
+        apiKey,
+        userId,
+        publicBodyPartBlobId(created.id, "2"),
+      );
+      expect(await attachment.text()).toBe("keep me");
+      expect((await download(apiKey, userId, created.blobId)).status).toBe(200);
+    });
+
+    it("reports draft create, update and destroy through Email/changes and Mailbox/changes", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const stateOf = async () =>
+        (
+          await jmapJson(apiKey, [
+            ["Email/get", { accountId: acct(userId), ids: [] }, "g"],
+          ])
+        ).methodResponses[0][1].state as string;
+      const changesSince = async (sinceState: string) =>
+        (
+          await jmapJson(apiKey, [
+            ["Email/changes", { accountId: acct(userId), sinceState }, "e"],
+            ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m"],
+          ])
+        ).methodResponses;
+
+      const start = await stateOf();
+      const created = await createDraft(apiKey, userId);
+      let [email, mailbox] = await changesSince(start);
+      expect(email[1]).toMatchObject({
+        created: [created.id],
+        updated: [],
+        destroyed: [],
+      });
+      expect(mailbox[1].updated).toContain(sys(MINE, "drafts"));
+
+      const afterCreate = await stateOf();
+      await jmapJson(apiKey, [
+        [
+          "Email/set",
+          {
+            accountId: acct(userId),
+            update: { [created.id]: { "keywords/$seen": true } },
+          },
+          "s",
+        ],
+      ]);
+      [email] = await changesSince(afterCreate);
+      expect(email[1]).toMatchObject({
+        created: [],
+        updated: [created.id],
+        destroyed: [],
+      });
+
+      const afterUpdate = await stateOf();
+      await jmapJson(apiKey, [
+        ["Email/set", { accountId: acct(userId), destroy: [created.id] }, "s"],
+      ]);
+      [email] = await changesSince(afterUpdate);
+      expect(email[1]).toMatchObject({
+        created: [],
+        updated: [],
+        destroyed: [created.id],
+      });
+    });
+
+    it("never shows one member's draft to another member of the same inbox", async () => {
+      const author = await member("draftmember-a", "author@example.com");
+      const other = await member("draftmember-b", "other@example.com");
+      const otherState = (
+        await jmapJson(other.apiKey, [
+          ["Email/get", { accountId: acct(other.userId), ids: [] }, "g"],
+        ])
+      ).methodResponses[0][1].state;
+      const created = await createDraft(author.apiKey, author.userId, {
+        to: [{ email: "nobody@example.com" }],
+      });
+
+      const res = await jmapJson(other.apiKey, [
+        [
+          "Email/get",
+          { accountId: acct(other.userId), ids: [created.id] },
+          "g",
+        ],
+        ["Email/query", { accountId: acct(other.userId) }, "q"],
+        [
+          "Thread/get",
+          { accountId: acct(other.userId), ids: [created.threadId] },
+          "t",
+        ],
+        [
+          "Email/changes",
+          { accountId: acct(other.userId), sinceState: otherState },
+          "c",
+        ],
+        [
+          "Mailbox/get",
+          { accountId: acct(other.userId), ids: [sys(MINE, "drafts")] },
+          "m",
+        ],
+      ]);
+      expect(res.methodResponses[0][1].notFound).toEqual([created.id]);
+      expect(res.methodResponses[1][1].ids).not.toContain(created.id);
+      expect(res.methodResponses[2][1].notFound).toEqual([created.threadId]);
+      expect(res.methodResponses[3][1].created).not.toContain(created.id);
+      expect(res.methodResponses[4][1].list[0].totalEmails).toBe(0);
+      expect(
+        (await download(other.apiKey, other.userId, created.blobId)).status,
+      ).toBe(404);
+      expect(
+        (
+          await download(
+            other.apiKey,
+            other.userId,
+            publicBodyPartBlobId(created.id, "1"),
+          )
+        ).status,
+      ).toBe(404);
     });
   });
 });
