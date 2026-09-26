@@ -1,10 +1,17 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
-import { applyMigrations, cleanDb, createTestUser, getDb } from "./helpers";
+import {
+  applyMigrations,
+  authFetch,
+  cleanDb,
+  createTestUser,
+  getDb,
+} from "./helpers";
 import { users } from "../db/auth.schema";
 import { jmapBlobs } from "../db/jmap-blobs.schema";
 import { JMAP_ID_PATTERN, parseUploadBlobId } from "../jmap/public-ids";
+import { validateJmapUploadOrigin } from "../jmap/http";
 import {
   parseDeclaredLength,
   readCappedBody,
@@ -12,6 +19,7 @@ import {
   uploadMediaType,
   uploadTooLargeProblem,
 } from "../jmap/upload";
+import { acct, expectAllJmapIdsValid } from "./jmap-ids";
 
 describe("jmap_blobs table", () => {
   beforeAll(async () => {
@@ -224,5 +232,119 @@ describe("storeUpload", () => {
       limit: "maxSizeUpload",
       maxSize: 8,
     });
+  });
+});
+
+async function upload(
+  apiKey: string | undefined,
+  accountId: string,
+  bytes: BodyInit,
+  type = "text/plain",
+  trailingSlash = true,
+) {
+  return authFetch(`/jmap/upload/${accountId}${trailingSlash ? "/" : ""}`, {
+    method: "POST",
+    apiKey,
+    headers: { "Content-Type": type },
+    body: bytes,
+  });
+}
+
+describe("POST /jmap/upload/{accountId}/", () => {
+  beforeAll(async () => {
+    await applyMigrations();
+  });
+  beforeEach(async () => {
+    await cleanDb();
+    await clearUploadObjects();
+  });
+
+  it("uploads and returns the RFC 8620 §6.1 object", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "aaa-uploader",
+      email: "uploader@example.com",
+    });
+    const response = await upload(
+      apiKey,
+      acct(userId),
+      new TextEncoder().encode("hello"),
+    );
+    expect(response.status).toBe(201);
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(body).toEqual({
+      accountId: acct(userId),
+      blobId: expect.stringMatching(/^U/),
+      type: "text/plain",
+      size: 5,
+    });
+    expectAllJmapIdsValid(body);
+  });
+
+  it("accepts the upload URL without the trailing slash too", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "aaa-uploader",
+      email: "uploader@example.com",
+    });
+    const response = await upload(
+      apiKey,
+      acct(userId),
+      new TextEncoder().encode("x"),
+      "text/plain",
+      false,
+    );
+    expect(response.status).toBe(201);
+  });
+
+  it("accepts a zero-byte upload", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "aaa-uploader",
+      email: "uploader@example.com",
+    });
+    const response = await upload(apiKey, acct(userId), new Uint8Array(0));
+    expect(response.status).toBe(201);
+    const created = (await response.json()) as { size: number };
+    expect(created.size).toBe(0);
+    // Downloading it back empty is pinned in Task 5 (jmap-blobs.test.ts).
+  });
+
+  it("answers 401 without auth and 403 for another account", async () => {
+    const { userId } = await createTestUser({
+      id: "aaa-uploader",
+      email: "uploader@example.com",
+    });
+    const other = await createTestUser({
+      id: "bbb-reader",
+      email: "reader@example.com",
+    });
+    expect(
+      (await upload(undefined, acct(userId), new Uint8Array(1))).status,
+    ).toBe(401);
+    const wrong = await upload(other.apiKey, acct(userId), new Uint8Array(1));
+    expect(wrong.status).toBe(403);
+    expect(await getDb().select().from(jmapBlobs)).toHaveLength(0);
+  });
+
+  it("requires a trusted Origin for session-cookie uploads only", () => {
+    const request = (origin?: string) =>
+      new Request("http://localhost/jmap/upload/a/", {
+        method: "POST",
+        headers: origin ? { Origin: origin } : {},
+        body: "x",
+      });
+    const bindings = env as unknown as CloudflareBindings;
+    expect(
+      validateJmapUploadOrigin(request(), bindings, "session")?.status,
+    ).toBe(403);
+    expect(
+      validateJmapUploadOrigin(
+        request("https://evil.example"),
+        bindings,
+        "session",
+      )?.status,
+    ).toBe(403);
+    expect(
+      validateJmapUploadOrigin(request(env.BASE_URL), bindings, "session"),
+    ).toBeNull();
+    expect(validateJmapUploadOrigin(request(), bindings, "apiKey")).toBeNull();
   });
 });

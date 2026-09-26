@@ -1,4 +1,5 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { createEmailSender } from "../lib/email-sender";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
   queryMessages,
@@ -137,13 +138,17 @@ export async function makeSession(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
   user: any,
+  env: CloudflareBindings,
 ): Promise<Record<string, unknown>> {
   const accountId = publicAccountId(user.id);
+  // One limit for uploads and for an Email's attachments: whatever the
+  // configured provider accepts as attachments (spec §2).
+  const maxUpload = createEmailSender(env).maxAttachmentBytes();
   return {
     capabilities: {
       [CORE_CAPABILITY]: {
-        maxSizeUpload: 0,
-        maxConcurrentUpload: 0,
+        maxSizeUpload: maxUpload,
+        maxConcurrentUpload: 4,
         maxSizeRequest: MAX_SIZE_REQUEST,
         maxConcurrentRequests: 4,
         maxCallsInRequest: MAX_CALLS_IN_REQUEST,
@@ -163,7 +168,7 @@ export async function makeSession(
             maxMailboxesPerEmail: null,
             maxMailboxDepth: null,
             maxSizeMailboxName: 255,
-            maxSizeAttachmentsPerEmail: 0,
+            maxSizeAttachmentsPerEmail: maxUpload,
             emailQuerySortOptions: ["receivedAt"],
             mayCreateTopLevelMailbox: false,
           },
@@ -178,7 +183,7 @@ export async function makeSession(
     username: user.email ?? user.id,
     apiUrl: "/jmap/api",
     downloadUrl: "/jmap/download/{accountId}/{blobId}/{name}?type={type}",
-    uploadUrl: "",
+    uploadUrl: "/jmap/upload/{accountId}/",
     eventSourceUrl: "",
     state: await jmapState(db, allowed, user.id),
   };
