@@ -1,4 +1,36 @@
-import type { ContentAddress, ContentMultipart } from "./content";
+import { eq, sql } from "drizzle-orm";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { nanoid } from "nanoid";
+import { jmapDrafts } from "../db/jmap-drafts.schema";
+import { jmapMessageContent } from "../db/jmap-message-content.schema";
+import { people } from "../db/people.schema";
+import { senderIdentities } from "../db/sender-identities.schema";
+import { computeConversationId, externalsOnly } from "../lib/conversation-id";
+import { inboxScopeSql, type AllowedInboxes } from "../lib/inbox-permissions";
+import { readBlobBytes, resolveReadableBlob, type ResolvedBlob } from "./blobs";
+import {
+  contentLeaves,
+  contentPreview,
+  deriveBodyLists,
+  toCrlf,
+  utf8Bytes,
+  type ContentAddress,
+  type ContentMultipart,
+  type ContentPart,
+} from "./content";
+import { jmapThreadKey, loadJmapEmailObjectsByIds } from "./emails";
+import { systemMailboxId } from "./ids";
+import { listUsableIdentities } from "./mailboxes";
+import {
+  publicDraftEmailId,
+  publicEmailId,
+  publicRawBlobId,
+  publicThreadId,
+} from "./public-ids";
+import { buildRawMessage } from "./raw-message";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Db = DrizzleD1Database<any>;
 
 export type SetError = {
   type: string;
@@ -661,5 +693,334 @@ export function parseEmailCreate(
     sentAt,
     receivedAt,
     body,
+  };
+}
+
+/** Domains of our sender identities (same rule as send-email.ts fetchInternalDomains). */
+async function internalDomains(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ email: senderIdentities.email })
+    .from(senderIdentities);
+  return [
+    ...new Set(
+      rows
+        .map((row) =>
+          row.email.slice(row.email.lastIndexOf("@") + 1).toLowerCase(),
+        )
+        .filter(Boolean),
+    ),
+  ];
+}
+
+async function threadKeyForMessageId(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  messageId: string,
+): Promise<string | null> {
+  const forms = [messageId, `<${messageId}>`];
+  const rows = await db.all<{ kind: "received" | "sent"; id: string }>(sql`
+    SELECT 'received' AS kind, e.id AS id FROM emails e
+     WHERE e.message_id IN ${forms} ${inboxScopeSql(allowed, sql`e.recipient`)}
+    UNION ALL
+    SELECT 'sent' AS kind, se.id AS id FROM sent_emails se
+     WHERE se.message_id IN ${forms} ${inboxScopeSql(allowed, sql`se.from_address`)}
+    LIMIT 1
+  `);
+  const row = rows[0];
+  if (!row) return null;
+  const publicId = publicEmailId({ kind: row.kind, id: row.id });
+  const loaded = await loadJmapEmailObjectsByIds(db, allowed, userId, [
+    publicId,
+  ]);
+  const message = loaded.get(publicId);
+  return message ? jmapThreadKey(message) : null;
+}
+
+/**
+ * Master plan Decision 9. A reply joins the visible message it answers; any
+ * other draft gets the key its Sent row will naturally get, so sending it
+ * doesn't split the thread; failing that, a thread of its own.
+ */
+export async function draftThreadKey(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  input: {
+    inbox: string;
+    draftId: string;
+    to: ContentAddress[];
+    cc: ContentAddress[];
+    inReplyTo: string[] | null;
+    references: string[] | null;
+  },
+): Promise<string> {
+  const candidates = [
+    ...(input.inReplyTo ?? []),
+    ...[...(input.references ?? [])].reverse(),
+  ].slice(0, 20);
+  for (const messageId of candidates) {
+    const key = await threadKeyForMessageId(db, allowed, userId, messageId);
+    if (key) return key;
+  }
+
+  const externals = externalsOnly(
+    [...input.to, ...input.cc].map((address) => address.email.toLowerCase()),
+    await internalDomains(db),
+  );
+  const conversationId = await computeConversationId(input.inbox, externals);
+  if (conversationId) return conversationId;
+
+  if (input.to.length === 1) {
+    const [person] = await db
+      .select({ id: people.id })
+      .from(people)
+      .where(eq(people.email, input.to[0].email.toLowerCase()))
+      .limit(1);
+    if (person) return `p:${person.id}`;
+  }
+  return `draft:${input.draftId}`;
+}
+
+export type DraftCreateContext = {
+  db: Db;
+  env: CloudflareBindings;
+  allowed: AllowedInboxes;
+  userId: string;
+  /** maxSizeAttachmentsPerEmail. */
+  maxAttachmentBytes: number;
+  /** Unix seconds. */
+  now: number;
+};
+
+export type CreatedDraft = {
+  id: string;
+  blobId: string;
+  threadId: string;
+  size: number;
+};
+
+function rfc3339Utc(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * Email/set create for one draft (spec §3.1). Returns a Rejection for a
+ * per-object SetError. Throws, after removing everything it wrote, when an
+ * R2 write fails; the caller reports that object as failed.
+ */
+export async function createDraftEmail(
+  ctx: DraftCreateContext,
+  input: unknown,
+): Promise<CreatedDraft | Rejection> {
+  const parsed = parseEmailCreate(input);
+  if (parsed instanceof Rejection) return parsed;
+
+  const identities = await listUsableIdentities(ctx.db, ctx.allowed);
+  const fromEmail = parsed.from.email.toLowerCase();
+  const identity = identities.find(
+    (row) => row.email.toLowerCase() === fromEmail,
+  );
+  if (!identity) return reject("from");
+  const inbox = identity.email.toLowerCase();
+  if (parsed.mailboxId !== systemMailboxId(inbox, "drafts")) {
+    return reject("mailboxIds");
+  }
+
+  // Resolve every blob now, reporting all missing ids at once (spec §3.1).
+  const blobLeaves = inputLeaves(parsed.body).filter(isBlobInput);
+  const resolved = new Map<string, { blob: ResolvedBlob; bytes: Uint8Array }>();
+  const notFound: string[] = [];
+  for (const leaf of blobLeaves) {
+    if (resolved.has(leaf.blobId) || notFound.includes(leaf.blobId)) continue;
+    const blob = await resolveReadableBlob(
+      ctx.db,
+      ctx.allowed,
+      ctx.userId,
+      leaf.blobId,
+    );
+    const bytes = blob ? await readBlobBytes(ctx.env, blob) : null;
+    if (!blob || !bytes) {
+      notFound.push(leaf.blobId);
+      continue;
+    }
+    resolved.set(leaf.blobId, { blob, bytes });
+  }
+  if (notFound.length > 0) {
+    return new Rejection({ type: "blobNotFound", notFound });
+  }
+  let attachmentBytes = 0;
+  for (const leaf of blobLeaves) {
+    attachmentBytes += resolved.get(leaf.blobId)!.bytes.byteLength;
+  }
+  if (attachmentBytes > ctx.maxAttachmentBytes) {
+    return new Rejection({
+      type: "tooLarge",
+      description: `Attachments exceed maxSizeAttachmentsPerEmail (${ctx.maxAttachmentBytes} octets)`,
+    });
+  }
+
+  const draftId = nanoid();
+  const contentId = nanoid();
+  const prefix = `jmap-content/${ctx.userId}/${contentId}`;
+  const bodyValues: Record<string, string> = {};
+  const leafBytes = new Map<string, Uint8Array>();
+  let counter = 0;
+  const freeze = (part: BodyInput): ContentPart => {
+    if (isInputMultipart(part)) {
+      const multipart: ContentMultipart = {
+        partId: null,
+        type: part.type,
+        subParts: part.subParts.map(freeze),
+      };
+      return multipart;
+    }
+    counter += 1;
+    const partId = String(counter);
+    if (isTextInput(part)) {
+      bodyValues[partId] = part.value;
+      return {
+        partId,
+        type: part.type,
+        charset: "utf-8",
+        name: part.name,
+        disposition: part.disposition,
+        cid: part.cid,
+        size: utf8Bytes(toCrlf(part.value)).byteLength,
+        r2Key: null,
+      };
+    }
+    const blobPart = part as BodyInputBlob;
+    const { blob, bytes } = resolved.get(blobPart.blobId)!;
+    leafBytes.set(partId, bytes);
+    return {
+      partId,
+      type: (blobPart.type ?? blob.type).toLowerCase(),
+      charset: null,
+      name: blobPart.name ?? blob.name,
+      disposition: blobPart.disposition,
+      cid: blobPart.cid,
+      size: bytes.byteLength,
+      r2Key: `${prefix}/${partId}`,
+    };
+  };
+  const root = freeze(parsed.body);
+  const lists = deriveBodyLists(root);
+
+  const threadKey = await draftThreadKey(ctx.db, ctx.allowed, ctx.userId, {
+    inbox,
+    draftId,
+    to: parsed.to,
+    cc: parsed.cc,
+    inReplyTo: parsed.inReplyTo,
+    references: parsed.references,
+  });
+  const messageId =
+    parsed.messageId ??
+    `${nanoid()}@${inbox.slice(inbox.lastIndexOf("@") + 1)}`;
+  const sentAt = parsed.sentAt ?? rfc3339Utc(ctx.now);
+  const receivedAt = parsed.receivedAt ?? ctx.now;
+  const raw = buildRawMessage(
+    {
+      contentId,
+      from: parsed.from,
+      to: parsed.to,
+      cc: parsed.cc,
+      replyTo: parsed.replyTo,
+      subject: parsed.subject,
+      messageId,
+      inReplyTo: parsed.inReplyTo,
+      references: parsed.references,
+      sentAt,
+      root,
+      bodyValues,
+    },
+    leafBytes,
+  );
+  const rawKey = `${prefix}.eml`;
+
+  // Master plan Decision 6: content row, then R2 objects, then the draft row.
+  await ctx.db.insert(jmapMessageContent).values({
+    id: contentId,
+    createdBy: ctx.userId,
+    inbox,
+    fromJson: JSON.stringify([parsed.from]),
+    toJson: JSON.stringify(parsed.to),
+    ccJson: JSON.stringify(parsed.cc),
+    bccJson: JSON.stringify(parsed.bcc),
+    replyToJson: parsed.replyTo ? JSON.stringify(parsed.replyTo) : null,
+    subject: parsed.subject,
+    messageId,
+    inReplyToJson: parsed.inReplyTo ? JSON.stringify(parsed.inReplyTo) : null,
+    referencesJson: parsed.references
+      ? JSON.stringify(parsed.references)
+      : null,
+    sentAt,
+    partsJson: JSON.stringify(root),
+    textBodyJson: JSON.stringify(lists.textBody),
+    htmlBodyJson: JSON.stringify(lists.htmlBody),
+    attachmentsJson: JSON.stringify(lists.attachments),
+    bodyValuesJson: JSON.stringify(bodyValues),
+    preview: contentPreview(root, bodyValues, lists),
+    threadKey,
+    rawR2Key: rawKey,
+    size: raw.byteLength,
+    createdAt: ctx.now,
+  });
+
+  const objects: { key: string; bytes: Uint8Array; type: string }[] = [
+    ...contentLeaves(root)
+      .filter((leaf) => leaf.r2Key !== null)
+      .map((leaf) => ({
+        key: leaf.r2Key!,
+        bytes: leafBytes.get(leaf.partId)!,
+        type: leaf.type,
+      })),
+    { key: rawKey, bytes: raw, type: "message/rfc822" },
+  ];
+  const puts = await Promise.allSettled(
+    objects.map((object) =>
+      ctx.env.R2.put(object.key, object.bytes, {
+        httpMetadata: { contentType: object.type },
+      }),
+    ),
+  );
+  const failed = puts.find(
+    (put): put is PromiseRejectedResult => put.status === "rejected",
+  );
+  if (failed) {
+    try {
+      await ctx.env.R2.delete(objects.map((object) => object.key));
+      await ctx.db
+        .delete(jmapMessageContent)
+        .where(eq(jmapMessageContent.id, contentId));
+    } catch (cleanupError) {
+      // Content GC removes whatever is left (R2 first, then the row).
+      console.error(
+        `[jmap] cleanup of content ${contentId} failed:`,
+        cleanupError,
+      );
+    }
+    throw failed.reason;
+  }
+
+  await ctx.db.insert(jmapDrafts).values({
+    id: draftId,
+    userId: ctx.userId,
+    contentId,
+    inbox,
+    receivedAt,
+    mailboxRole: "drafts",
+    seen: parsed.seen ? 1 : 0,
+    flagged: parsed.flagged ? 1 : 0,
+    createdAt: ctx.now,
+    updatedAt: ctx.now,
+  });
+
+  return {
+    id: publicDraftEmailId(draftId),
+    blobId: publicRawBlobId(contentId),
+    threadId: publicThreadId(threadKey),
+    size: raw.byteLength,
   };
 }

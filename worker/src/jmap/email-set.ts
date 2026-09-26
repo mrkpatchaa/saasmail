@@ -1,4 +1,5 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { createEmailSender } from "../lib/email-sender";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
   InvalidMessageStateError,
@@ -9,6 +10,8 @@ import {
 } from "../lib/messages/state";
 import type { UnifiedMessage } from "../lib/messages/types";
 import { MAX_OBJECTS_IN_SET } from "./constants";
+import type { CreatedIds } from "./creation-refs";
+import { createDraftEmail, Rejection, type SetError } from "./email-create";
 import {
   jmapKeywords,
   jmapMailboxIds,
@@ -16,12 +19,8 @@ import {
   type JmapMethodError,
 } from "./emails";
 import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
+import type { JmapMethodContext } from "./methods";
 import { currentJmapState, parseJmapState } from "./state";
-
-type SetError = {
-  type: string;
-  properties?: string[];
-};
 
 type PatchResult =
   | {
@@ -255,11 +254,18 @@ export async function emailSet(
   userId: string,
   accountId: string,
   args: Record<string, unknown>,
+  ctx: JmapMethodContext,
 ): Promise<Record<string, unknown> | JmapMethodError> {
   const parsed = validateSetArguments(args);
   if ("type" in parsed) return parsed;
   const { create, update, destroy } = parsed;
 
+  if (Object.keys(create).length > MAX_OBJECTS_IN_SET) {
+    return {
+      type: "requestTooLarge",
+      description: `create exceeds maxObjectsInSet (${MAX_OBJECTS_IN_SET})`,
+    };
+  }
   if (Object.keys(update).length > MAX_OBJECTS_IN_SET) {
     return {
       type: "requestTooLarge",
@@ -280,10 +286,36 @@ export async function emailSet(
     }
   }
 
+  const now = Math.floor(Date.now() / 1000);
+  const created: Record<string, unknown> = {};
   const notCreated: Record<string, SetError> = {};
-  for (const id of Object.keys(create)) {
-    notCreated[id] = { type: "forbidden" };
+  // Creation ids usable later in this call (RFC 8620 §5.3), on top of earlier
+  // calls' ones.
+  const refs: CreatedIds = new Map(ctx.createdIds);
+  if (Object.keys(create).length > 0) {
+    const maxAttachmentBytes = createEmailSender(ctx.env).maxAttachmentBytes();
+    for (const [creationId, value] of Object.entries(create)) {
+      try {
+        const result = await createDraftEmail(
+          { db, env: ctx.env, allowed, userId, maxAttachmentBytes, now },
+          value,
+        );
+        if (result instanceof Rejection) {
+          notCreated[creationId] = result.error;
+          continue;
+        }
+        created[creationId] = result;
+        refs.set(creationId, result.id);
+      } catch (error) {
+        console.error(`[jmap] Email/set create ${creationId} failed:`, error);
+        notCreated[creationId] = {
+          type: "serverFail",
+          description: "The draft could not be stored",
+        };
+      }
+    }
   }
+
   const notDestroyed: Record<string, SetError> = {};
   for (const id of destroy) {
     notDestroyed[id] = { type: "forbidden" };
@@ -388,7 +420,7 @@ export async function emailSet(
     accountId,
     oldState,
     newState,
-    created: null,
+    created: nonEmptyOrNull(created),
     updated: nonEmptyOrNull(updated),
     destroyed: null,
     notCreated: nonEmptyOrNull(notCreated),

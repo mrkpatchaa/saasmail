@@ -317,7 +317,7 @@ describe("JMAP Email/set", () => {
     ]);
     expect(result.methodResponses[0][0]).toBe("Email/set");
     expect(result.methodResponses[0][1].notCreated).toEqual({
-      draft1: { type: "forbidden" },
+      draft1: { type: "invalidProperties", properties: ["mailboxIds"] },
     });
     expect(result.methodResponses[0][1].notDestroyed).toEqual({
       [id]: { type: "forbidden" },

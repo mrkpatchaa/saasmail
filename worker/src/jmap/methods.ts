@@ -505,6 +505,7 @@ export async function executeMethod(
       user.id,
       publicAccountId(user.id),
       args,
+      ctx,
     );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
