@@ -636,9 +636,106 @@ describe("EmailSubmission/set create", () => {
         env: failingEnv,
       },
     );
-    expect(responses[0]).toEqual(["error", { type: "serverFail" }, "s"]);
+    expect(responses[0][0]).toBe("EmailSubmission/set");
+    expect(
+      (responses[0][1] as { notCreated: Record<string, { type: string }> })
+        .notCreated.s1.type,
+    ).toBe("serverFail");
     expect(calls).toHaveLength(0);
     await expectNothingStaged(draft.id, "staging.pdf");
+  });
+
+  it("sends a text-only draft as text with its Reply-To, and refuses two Reply-To addresses", async () => {
+    const { sender, calls } = recordingSender();
+    const textOnly = await createDraft(userId, sender, {
+      bodyValues: { t: { value: "Line one\nwrite to <help@example.com>" } },
+      htmlBody: undefined,
+      replyTo: [{ name: "Tickets", email: "tickets@example.com" }],
+    });
+    const [sent] = await runJmap(
+      userId,
+      [submitCall(userId, textOnly.id)],
+      sender,
+    );
+    expect(
+      (sent[1] as { created: Record<string, unknown> }).created.s1,
+    ).toBeTruthy();
+    expect(calls).toHaveLength(1);
+    expect(calls[0].html).toBe("");
+    expect(calls[0].text).toBe("Line one\nwrite to <help@example.com>");
+    expect(calls[0].headers?.["Reply-To"]).toBe("tickets@example.com");
+
+    const twoReplyTo = await createDraft(userId, sender, {
+      replyTo: [{ email: "a@example.com" }, { email: "b@example.com" }],
+    });
+    const [refused] = await runJmap(
+      userId,
+      [submitCall(userId, twoReplyTo.id)],
+      sender,
+    );
+    expect(
+      (refused[1] as { notCreated: Record<string, unknown> }).notCreated.s1,
+    ).toMatchObject({ type: "invalidEmail", properties: ["replyTo"] });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a failing create still reports the creates already sent in the same call", async () => {
+    const blob = await uploadBlob(
+      userId,
+      apiKey,
+      new Uint8Array([9]),
+      "application/pdf",
+    );
+    const { sender, calls } = recordingSender();
+    const plain = await createDraft(userId, sender);
+    const withFile = await createDraft(userId, sender, {
+      attachments: [{ blobId: blob, type: "application/pdf", name: "b.pdf" }],
+    });
+    const r2 = new Proxy(env.R2, {
+      get(target, prop) {
+        if (prop === "put") {
+          return async (key: string, ...rest: unknown[]) => {
+            if (key.startsWith("attachments/sent/")) throw new Error("r2 down");
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            return (target as any).put(key, ...rest);
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const failingEnv = new Proxy(env, {
+      get(target, prop) {
+        return prop === "R2" ? r2 : Reflect.get(target, prop);
+      },
+    }) as CloudflareBindings;
+
+    const responses = await runJmap(
+      userId,
+      [
+        [
+          "EmailSubmission/set",
+          {
+            accountId: acct(userId),
+            create: {
+              a: { identityId: idn(MINE), emailId: plain.id },
+              b: { identityId: idn(MINE), emailId: withFile.id },
+            },
+          },
+          "s",
+        ],
+      ],
+      sender,
+      { env: failingEnv },
+    );
+    expect(responses[0][0]).toBe("EmailSubmission/set");
+    const result = responses[0][1] as {
+      created: Record<string, { id: string }>;
+      notCreated: Record<string, { type: string }>;
+    };
+    expect(result.created.a.id).toMatch(/^E/);
+    expect(result.notCreated.b.type).toBe("serverFail");
+    expect(calls).toHaveLength(1);
   });
 
   it("keeps the staged attachments when D1 fails after the outbox row exists", async () => {
@@ -662,7 +759,10 @@ describe("EmailSubmission/set create", () => {
     } finally {
       await env.DB.prepare("DROP TRIGGER outbox_update_fails").run();
     }
-    expect(responses[0]).toEqual(["error", { type: "serverFail" }, "s"]);
+    expect(
+      (responses[0][1] as { notCreated: Record<string, { type: string }> })
+        .notCreated.s1.type,
+    ).toBe("serverFail");
     const [outbox] = await getDb().select().from(outboxEmails);
     expect(outbox.status).toBe("pending");
     expect(

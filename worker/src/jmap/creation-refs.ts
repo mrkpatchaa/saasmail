@@ -31,27 +31,36 @@ function resolveIdList(value: unknown, createdIds: CreatedIds): unknown {
  * arguments every method shares: `ids`, `destroy` and the keys of `update`.
  * Unknown references stay as they are, so the method reports them like any
  * unknown id. Property values inside create/update, and references to
- * creates earlier in the same call, are each /set's job.
+ * creates earlier in the same call, are each /set's job: a creation id this
+ * call's `create` reuses is left alone, because its creates run first (RFC
+ * 8620 §5.3) and "#id" then means the new object.
  */
 export function resolveCallCreationRefs(
   args: Record<string, unknown>,
   createdIds: CreatedIds,
 ): Record<string, unknown> {
   if (createdIds.size === 0) return args;
+  const create =
+    args.create && typeof args.create === "object" ? args.create : {};
+  const earlier: CreatedIds = new Map(
+    [...createdIds].filter(
+      ([creationId]) =>
+        !Object.prototype.hasOwnProperty.call(create, creationId),
+    ),
+  );
   const resolved: Record<string, unknown> = { ...args };
-  if ("ids" in args) resolved.ids = resolveIdList(args.ids, createdIds);
+  if ("ids" in args) resolved.ids = resolveIdList(args.ids, earlier);
   if ("destroy" in args) {
-    resolved.destroy = resolveIdList(args.destroy, createdIds);
+    resolved.destroy = resolveIdList(args.destroy, earlier);
   }
   const update = args.update;
   if (update && typeof update === "object" && !Array.isArray(update)) {
-    const rewritten: Record<string, unknown> = {};
-    for (const [key, patch] of Object.entries(
-      update as Record<string, unknown>,
-    )) {
-      rewritten[resolveCreationRef(key, createdIds) ?? key] = patch;
-    }
-    resolved.update = rewritten;
+    resolved.update = Object.fromEntries(
+      Object.entries(update as Record<string, unknown>).map(([key, patch]) => [
+        resolveCreationRef(key, earlier) ?? key,
+        patch,
+      ]),
+    );
   }
   return resolved;
 }

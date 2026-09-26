@@ -831,35 +831,42 @@ export async function createDraftEmail(
 
   // Resolve every blob now, reporting all missing ids at once (spec §3.1).
   const blobLeaves = inputLeaves(parsed.body).filter(isBlobInput);
-  const resolved = new Map<string, { blob: ResolvedBlob; bytes: Uint8Array }>();
+  const blobs = new Map<string, ResolvedBlob>();
   const notFound: string[] = [];
   for (const leaf of blobLeaves) {
-    if (resolved.has(leaf.blobId) || notFound.includes(leaf.blobId)) continue;
+    if (blobs.has(leaf.blobId) || notFound.includes(leaf.blobId)) continue;
     const blob = await resolveReadableBlob(
       ctx.db,
       ctx.allowed,
       ctx.userId,
       leaf.blobId,
     );
-    const bytes = blob ? await readBlobBytes(ctx.env, blob) : null;
-    if (!blob || !bytes) {
-      notFound.push(leaf.blobId);
-      continue;
-    }
-    resolved.set(leaf.blobId, { blob, bytes });
+    if (blob) blobs.set(leaf.blobId, blob);
+    else notFound.push(leaf.blobId);
   }
   if (notFound.length > 0) {
     return new Rejection({ type: "blobNotFound", notFound });
   }
+  // The size check uses each blob's recorded size, so an oversized create is
+  // refused before any of its bytes are held in memory.
   let attachmentBytes = 0;
   for (const leaf of blobLeaves) {
-    attachmentBytes += resolved.get(leaf.blobId)!.bytes.byteLength;
+    attachmentBytes += blobs.get(leaf.blobId)!.size;
   }
   if (attachmentBytes > ctx.maxAttachmentBytes) {
     return new Rejection({
       type: "tooLarge",
       description: `Attachments exceed maxSizeAttachmentsPerEmail (${ctx.maxAttachmentBytes} octets)`,
     });
+  }
+  const resolved = new Map<string, { blob: ResolvedBlob; bytes: Uint8Array }>();
+  for (const [blobId, blob] of blobs) {
+    const bytes = await readBlobBytes(ctx.env, blob);
+    if (bytes) resolved.set(blobId, { blob, bytes });
+    else notFound.push(blobId);
+  }
+  if (notFound.length > 0) {
+    return new Rejection({ type: "blobNotFound", notFound });
   }
 
   const draftId = nanoid();

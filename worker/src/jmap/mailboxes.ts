@@ -190,7 +190,8 @@ async function mailboxCounts(
     };
   }
   const unreadMessages = messages ? { ...messages, seen: false } : null;
-  const unreadDrafts = drafts ? { ...drafts, seen: false } : null;
+  // RFC 8621 §2: unread means neither $seen nor $draft, so no draft is unread.
+  const unreadDrafts: DraftFilter | null = null;
   const count = async (
     query: MessageQuery | null,
     filter: DraftFilter | null,

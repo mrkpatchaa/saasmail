@@ -118,10 +118,14 @@ Rules, each reported per submission as a SetError (nothing is sent when one fail
 | `envelope.mailFrom` isn't the identity's address                                | `forbiddenMailFrom`                                     |
 | `envelope.rcptTo` isn't exactly the To and Cc addresses                         | `invalidEmail`                                          |
 | SMTP parameters in the envelope                                                 | `invalidProperties` on `envelope`                       |
+| More than one Reply-To (it goes out as one bare address)                        | `invalidEmail`, `properties: ["replyTo"]`               |
+| A text part that is neither the text nor the HTML body (upload it as a blob)    | `invalidEmail`, `properties: ["bodyStructure"]`         |
 | A stored attachment can't be read                                               | `invalidEmail` on `attachments`                         |
 | The stored message exceeds the whole-message limit                              | `tooLarge` with `maxSize`                               |
 | The draft is already being sent                                                 | `forbiddenToSend`: "This message is already being sent" |
 | The provider refused the message permanently                                    | `forbiddenToSend` with the provider's reason            |
+
+The message carries the draft's From name, To and Cc display names, subject, `Message-ID`, `In-Reply-To`, `References`, `Reply-To` and every stored part, inline or attached (inline parts keep their `cid`). The text body is the draft's `text/plain` body parts and the HTML body its `text/html` ones, so a text-only draft goes out without an HTML part and an HTML-only draft without a text part. If one create in a call fails unexpectedly, it gets `serverFail` and the call still reports the others.
 
 A submission is accepted when the provider accepted the message, or when the provider failed temporarily and the outbox owns the retries. Accepted submissions have `undoStatus: "final"` (sent messages can't be recalled), `deliveryStatus: null` and `sendAt`. The submission's `emailId` stays the draft's `D…` id even after that Email is destroyed or filed into Sent. A permanently refused message creates no Sent Email and leaves no stored attachments behind; the draft is left as it was. A draft whose send is still in flight is locked: a second `EmailSubmission/set` for it is `forbiddenToSend` until the send settles, after which the draft can be submitted again, updated or destroyed.
 

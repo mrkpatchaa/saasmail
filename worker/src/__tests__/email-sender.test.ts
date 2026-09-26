@@ -839,6 +839,47 @@ describe("inline attachments and exact headers", () => {
     ]);
   });
 
+  it("Postmark and Resend send a text-only message without an HTML body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ErrorCode: 0, MessageID: "pm-1" }), {
+        status: 200,
+      }),
+    );
+    const postmark = new PostmarkSender(
+      "pm_test",
+      fetchMock as unknown as typeof fetch,
+    );
+    await postmark.send({
+      from: "a@b.com",
+      to: "c@d.com",
+      subject: "s",
+      html: "",
+      text: "plain",
+    });
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    );
+    expect(body.HtmlBody).toBeUndefined();
+    expect(body.TextBody).toBe("plain");
+
+    const resend = new ResendSender("re_test");
+    const send = vi
+      .fn()
+      .mockResolvedValue({ data: { id: "rs-1" }, error: null });
+    (
+      resend as unknown as { client: { emails: { send: typeof send } } }
+    ).client.emails.send = send;
+    await resend.send({
+      from: "a@b.com",
+      to: "c@d.com",
+      subject: "s",
+      html: "",
+      text: "plain",
+    });
+    expect("html" in send.mock.calls[0][0]).toBe(false);
+    expect(send.mock.calls[0][0].text).toBe("plain");
+  });
+
   it("Bavimail: escaped text when html is empty, and is_inline for inline parts", async () => {
     const fetchMock = vi
       .fn()
