@@ -21,6 +21,7 @@ import { collectUnreferencedContent } from "../jmap/content";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
 import { createDraftEmail, Rejection } from "../jmap/email-create";
 import { publicBodyPartBlobId } from "../jmap/public-ids";
+import worker from "../index";
 import { computeConversationId } from "../lib/conversation-id";
 import {
   acct,
@@ -688,6 +689,44 @@ describe("JMAP drafts", () => {
         await env.R2.get(
           `jmap-content/${userId}/${orphan.blobId.slice(1)}.eml`,
         ),
+      ).toBeNull();
+    });
+
+    // The GC is destructive (it deletes R2 objects and rows), so pin the cron
+    // wiring directly rather than relying on another reaper's cron test to
+    // happen to traverse the same chain.
+    it("reaps unreferenced content from the hourly cron", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const orphan = await createDraft(apiKey, userId);
+      // The draft's own id is its public D… id; the content row has a separate
+      // id, which is what the X… blob id wraps.
+      const draftId = orphan.id.slice(1);
+      const contentId = orphan.blobId.slice(1);
+      await getDb().delete(jmapDrafts).where(eq(jmapDrafts.id, draftId));
+      const now = Math.floor(Date.now() / 1000);
+      await getDb()
+        .update(jmapMessageContent)
+        .set({ createdAt: now - 7200 })
+        .where(eq(jmapMessageContent.id, contentId));
+      expect(
+        await env.R2.get(`jmap-content/${userId}/${contentId}.eml`),
+      ).not.toBeNull();
+
+      const waits: Promise<unknown>[] = [];
+      await worker.scheduled!(
+        { cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledEvent,
+        env,
+        {
+          waitUntil: (p: Promise<unknown>) => {
+            waits.push(p);
+          },
+        } as ExecutionContext,
+      );
+      await Promise.all(waits);
+
+      expect(await getDb().select().from(jmapMessageContent)).toEqual([]);
+      expect(
+        await env.R2.get(`jmap-content/${userId}/${contentId}.eml`),
       ).toBeNull();
     });
   });
