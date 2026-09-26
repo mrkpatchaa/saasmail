@@ -198,7 +198,11 @@ describe("scheduled cron", () => {
     await worker.scheduled!(
       { cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledEvent,
       env,
-      { waitUntil: (p: Promise<unknown>) => waits.push(p) } as ExecutionContext,
+      {
+        waitUntil: (p: Promise<unknown>) => {
+          waits.push(p);
+        },
+      } as ExecutionContext,
     );
     await Promise.all(waits);
     expect(await rowsFor("se-cron")).toHaveLength(0);
