@@ -13,12 +13,22 @@ import {
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
+import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
+import { collectUnreferencedContent } from "../jmap/content";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
 import { createDraftEmail, Rejection } from "../jmap/email-create";
 import { publicBodyPartBlobId } from "../jmap/public-ids";
 import { computeConversationId } from "../lib/conversation-id";
-import { acct, drf, expectAllJmapIdsValid, rid, sys, thread } from "./jmap-ids";
+import {
+  acct,
+  drf,
+  expectAllJmapIdsValid,
+  mbx,
+  rid,
+  sys,
+  thread,
+} from "./jmap-ids";
 
 const MINE = "drafts@saasmail.test";
 
@@ -480,6 +490,203 @@ describe("JMAP drafts", () => {
         "d!!",
         drf("x"),
       ]);
+    });
+  });
+
+  describe("update and destroy", () => {
+    async function setEmail(
+      apiKey: string,
+      userId: string,
+      args: Record<string, unknown>,
+    ) {
+      const res = await jmapJson(apiKey, [
+        ["Email/set", { accountId: acct(userId), ...args }, "s"],
+      ]);
+      return res.methodResponses[0];
+    }
+
+    it("flags a draft and moves it to Trash and back", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const created = await createDraft(apiKey, userId);
+      let response = await setEmail(apiKey, userId, {
+        update: {
+          [created.id]: {
+            "keywords/$flagged": true,
+            mailboxIds: { [sys(MINE, "trash")]: true },
+          },
+        },
+      });
+      expect(response[1].updated).toEqual({ [created.id]: null });
+      let [row] = await getDb().select().from(jmapDrafts);
+      expect(row).toMatchObject({ flagged: 1, mailboxRole: "trash" });
+
+      response = await setEmail(apiKey, userId, {
+        update: {
+          [created.id]: {
+            [`mailboxIds/${sys(MINE, "trash")}`]: null,
+            [`mailboxIds/${sys(MINE, "drafts")}`]: true,
+          },
+        },
+      });
+      expect(response[1].updated).toEqual({ [created.id]: null });
+      [row] = await getDb().select().from(jmapDrafts);
+      expect(row.mailboxRole).toBe("drafts");
+    });
+
+    it("rejects every update that breaks the draft rules, changing nothing", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await getDb().insert(mailboxes).values({
+        id: "draft-folder",
+        inbox: MINE,
+        name: "Folder",
+        role: null,
+        parentId: null,
+        sortOrder: 0,
+        createdBy: userId,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      const created = await createDraft(apiKey, userId);
+      const cases: [Record<string, unknown>, string][] = [
+        [
+          {
+            mailboxIds: {
+              [sys(MINE, "drafts")]: true,
+              [mbx("draft-folder")]: true,
+            },
+          },
+          "mailboxIds",
+        ],
+        [{ mailboxIds: { [sys(MINE, "inbox")]: true } }, "mailboxIds"],
+        [{ mailboxIds: { [sys(MINE, "sent")]: true } }, "mailboxIds"],
+        [{ mailboxIds: {} }, "mailboxIds"],
+        [{ "keywords/$draft": null }, "keywords"],
+        [{ "keywords/$answered": true }, "keywords"],
+      ];
+      for (const [patch, property] of cases) {
+        const response = await setEmail(apiKey, userId, {
+          update: { [created.id]: patch },
+        });
+        expect(response[1].notUpdated[created.id]).toEqual({
+          type: "invalidProperties",
+          properties: [property],
+        });
+      }
+      const [row] = await getDb().select().from(jmapDrafts);
+      expect(row).toMatchObject({ mailboxRole: "drafts", seen: 0, flagged: 0 });
+    });
+
+    it("destroys a draft with its content row and R2 objects", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const blobId = await upload(apiKey, userId, "hello");
+      const created = await createDraft(apiKey, userId, {
+        attachments: [{ blobId }],
+      });
+      const response = await setEmail(apiKey, userId, {
+        destroy: [created.id],
+      });
+      expect(response[1].destroyed).toEqual([created.id]);
+      expect(await getDb().select().from(jmapDrafts)).toEqual([]);
+      expect(await getDb().select().from(jmapMessageContent)).toEqual([]);
+      const listed = await env.R2.list({ prefix: `jmap-content/${userId}/` });
+      expect(listed.objects).toEqual([]);
+      const get = await jmapJson(apiKey, [
+        ["Email/get", { accountId: acct(userId), ids: [created.id] }, "g"],
+      ]);
+      expect(get.methodResponses[0][1].notFound).toEqual([created.id]);
+    });
+
+    it("keeps received-mail destroy forbidden and reports unknown drafts as notFound", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await createTestEmail({
+        id: "kept",
+        recipient: MINE,
+        messageId: "kept@example.com",
+      });
+      const response = await setEmail(apiKey, userId, {
+        destroy: [rid("kept"), "Dnope"],
+      });
+      expect(response[1].notDestroyed).toEqual({
+        [rid("kept")]: { type: "forbidden" },
+        Dnope: { type: "notFound" },
+      });
+    });
+
+    it("resolves creation references within the call and from earlier calls", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const res = await jmapJson(apiKey, [
+        [
+          "Email/set",
+          {
+            accountId: acct(userId),
+            create: { c1: draft() },
+            update: { "#c1": { "keywords/$flagged": true } },
+          },
+          "a",
+        ],
+        [
+          "Email/get",
+          {
+            accountId: acct(userId),
+            ids: ["#c1"],
+            properties: ["keywords"],
+          },
+          "b",
+        ],
+        ["Email/set", { accountId: acct(userId), destroy: ["#c1"] }, "c"],
+      ]);
+      const id = res.methodResponses[0][1].created.c1.id;
+      expect(res.methodResponses[0][1].updated).toEqual({ [id]: null });
+      expect(res.methodResponses[1][1].list[0].keywords).toEqual({
+        $draft: true,
+        $flagged: true,
+      });
+      expect(res.methodResponses[2][1].destroyed).toEqual([id]);
+    });
+
+    it("fails the whole call on an ifInState mismatch", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const response = await setEmail(apiKey, userId, {
+        ifInState: "j2-0-0-0000000000000000",
+        create: { c1: draft() },
+      });
+      expect(response).toEqual(["error", { type: "stateMismatch" }, "s"]);
+      expect(await getDb().select().from(jmapDrafts)).toEqual([]);
+    });
+
+    it("collects only old, unreferenced content (R2 first, then the row)", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const kept = await createDraft(apiKey, userId);
+      const orphan = await createDraft(apiKey, userId);
+      const young = await createDraft(apiKey, userId);
+      const now = Math.floor(Date.now() / 1000);
+      // Make two drafts' content unreferenced: orphan's is old, young's is new.
+      await getDb()
+        .delete(jmapDrafts)
+        .where(eq(jmapDrafts.id, orphan.id.slice(1)));
+      await getDb()
+        .delete(jmapDrafts)
+        .where(eq(jmapDrafts.id, young.id.slice(1)));
+      for (const created of [kept, orphan]) {
+        await getDb()
+          .update(jmapMessageContent)
+          .set({ createdAt: now - 7200 })
+          .where(eq(jmapMessageContent.id, created.blobId.slice(1)));
+      }
+
+      expect(await collectUnreferencedContent(getDb(), env, now)).toBe(1);
+      const remaining = (await getDb().select().from(jmapMessageContent))
+        .map((row) => row.id)
+        .sort();
+      expect(remaining).toEqual(
+        [kept.blobId.slice(1), young.blobId.slice(1)].sort(),
+      );
+      expect(
+        await env.R2.get(
+          `jmap-content/${userId}/${orphan.blobId.slice(1)}.eml`,
+        ),
+      ).toBeNull();
     });
   });
 });

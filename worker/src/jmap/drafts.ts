@@ -7,7 +7,11 @@ import {
   isInboxAllowed,
   type AllowedInboxes,
 } from "../lib/inbox-permissions";
-import { contentEmailObject, type JmapContentRow } from "./content";
+import {
+  contentEmailObject,
+  deleteContentIfUnreferenced,
+  type JmapContentRow,
+} from "./content";
 import { systemMailboxId } from "./ids";
 import { publicDraftEmailId } from "./public-ids";
 
@@ -100,4 +104,49 @@ export function draftEmailObject(
     },
     args,
   );
+}
+
+export async function updateDraftState(
+  db: Db,
+  draft: JmapDraftRow,
+  next: { mailboxRole: "drafts" | "trash"; seen: boolean; flagged: boolean },
+  now: number,
+): Promise<void> {
+  const seen = next.seen ? 1 : 0;
+  const flagged = next.flagged ? 1 : 0;
+  if (
+    next.mailboxRole === draft.mailboxRole &&
+    seen === draft.seen &&
+    flagged === draft.flagged
+  ) {
+    return;
+  }
+  await db
+    .update(jmapDrafts)
+    .set({ mailboxRole: next.mailboxRole, seen, flagged, updatedAt: now })
+    .where(
+      and(eq(jmapDrafts.id, draft.id), eq(jmapDrafts.userId, draft.userId)),
+    );
+}
+
+/** Delete the draft row, then its content if nothing else references it. */
+export async function destroyDraft(
+  db: Db,
+  env: CloudflareBindings,
+  draft: JmapDraftRow,
+): Promise<void> {
+  await db
+    .delete(jmapDrafts)
+    .where(
+      and(eq(jmapDrafts.id, draft.id), eq(jmapDrafts.userId, draft.userId)),
+    );
+  try {
+    await deleteContentIfUnreferenced(db, env, draft.contentId);
+  } catch (error) {
+    // The draft is gone either way; content GC retries the cleanup.
+    console.error(
+      `[jmap] content cleanup for draft ${draft.id} failed:`,
+      error,
+    );
+  }
 }

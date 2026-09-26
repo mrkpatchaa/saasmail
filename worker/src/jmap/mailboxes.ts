@@ -27,6 +27,13 @@ export type MailboxDescriptor =
 
 export type IdentityRow = typeof senderIdentities.$inferSelect;
 
+/** Strict mode is off, so narrow the descriptor union explicitly. */
+export function isSystemDescriptor(
+  descriptor: MailboxDescriptor,
+): descriptor is Extract<MailboxDescriptor, { kind: "system" }> {
+  return descriptor.kind === "system";
+}
+
 const ROLE_NAMES: Record<SystemMailboxRole, string> = {
   inbox: "Inbox",
   drafts: "Drafts",

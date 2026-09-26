@@ -1,3 +1,5 @@
+import { sql, type SQL } from "drizzle-orm";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { htmlToText } from "../lib/html-to-text";
 import {
@@ -344,4 +346,68 @@ export function contentEmailObject(
     headers: null,
   };
   return selectEmailProperties(full, args.properties);
+}
+
+export const CONTENT_GC_GRACE_SECONDS = 3600;
+const CONTENT_GC_LIMIT = 200;
+
+/**
+ * Content is referenced while something shows it. PR 5 adds
+ * sent_emails.jmap_content_id and claimed jmap_submissions.content_id here —
+ * keep every reference in this one predicate.
+ */
+function contentReferencedSql(contentId: SQL): SQL {
+  return sql`EXISTS (SELECT 1 FROM jmap_drafts d WHERE d.content_id = ${contentId})`;
+}
+
+function contentObjectKeys(rawR2Key: string, partsJson: string): string[] {
+  const leaves = contentLeaves(JSON.parse(partsJson) as ContentPart);
+  return [
+    rawR2Key,
+    ...leaves
+      .map((leaf) => leaf.r2Key)
+      .filter((key): key is string => key !== null),
+  ];
+}
+
+/** Delete one content row if nothing references it: R2 objects first, then the row (spec §10.3). */
+export async function deleteContentIfUnreferenced(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: DrizzleD1Database<any>,
+  env: CloudflareBindings,
+  contentId: string,
+): Promise<boolean> {
+  const rows = await db.all<{ raw_r2_key: string; parts_json: string }>(sql`
+    SELECT c.raw_r2_key, c.parts_json FROM jmap_message_content c
+     WHERE c.id = ${contentId} AND NOT ${contentReferencedSql(sql`c.id`)}
+  `);
+  const row = rows[0];
+  if (!row) return false;
+  await env.R2.delete(contentObjectKeys(row.raw_r2_key, row.parts_json));
+  await db.run(sql`
+    DELETE FROM jmap_message_content
+     WHERE id = ${contentId} AND NOT ${contentReferencedSql(sql`jmap_message_content.id`)}
+  `);
+  return true;
+}
+
+/** Cron: unreferenced content older than the grace period (never an in-progress create). */
+export async function collectUnreferencedContent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: DrizzleD1Database<any>,
+  env: CloudflareBindings,
+  now: number,
+  graceSeconds = CONTENT_GC_GRACE_SECONDS,
+): Promise<number> {
+  const rows = await db.all<{ id: string }>(sql`
+    SELECT c.id AS id FROM jmap_message_content c
+     WHERE c.created_at < ${now - graceSeconds}
+       AND NOT ${contentReferencedSql(sql`c.id`)}
+     LIMIT ${CONTENT_GC_LIMIT}
+  `);
+  let removed = 0;
+  for (const row of rows) {
+    if (await deleteContentIfUnreferenced(db, env, row.id)) removed += 1;
+  }
+  return removed;
 }
