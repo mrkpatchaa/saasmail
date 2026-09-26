@@ -1,4 +1,6 @@
--- Custom SQL migration file, put your code below! --
+-- Draft change tracking. Written into a `--custom` migration because SQLite
+-- triggers cannot be expressed in the Drizzle schema DSL.
+--
 -- Draft Emails are user-scoped: only the author sees them, so their change rows
 -- carry user_id (Email/changes' personal arm) and the draft's inbox (inbox
 -- scope). Changes to submit bookkeeping columns added later write nothing:
