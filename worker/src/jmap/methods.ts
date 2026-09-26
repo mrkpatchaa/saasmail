@@ -1,5 +1,5 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { createEmailSender } from "../lib/email-sender";
+import { createEmailSender, type EmailSender } from "../lib/email-sender";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
   queryMessages,
@@ -13,6 +13,7 @@ import {
   MAX_OBJECTS_IN_GET,
   MAX_OBJECTS_IN_SET,
   MAX_SIZE_REQUEST,
+  SUBMISSION_CAPABILITY,
 } from "./constants";
 import type { CreatedIds } from "./creation-refs";
 import {
@@ -46,6 +47,8 @@ export type JmapMethodContext = {
   env: CloudflareBindings;
   /** Creation id -> server id for this request (RFC 8620 §3.3). */
   createdIds: CreatedIds;
+  /** Test seam: the provider EmailSubmission sends through. Defaults to createEmailSender(env). */
+  sender?: EmailSender;
 };
 
 function methodError(
@@ -167,6 +170,7 @@ export async function makeSession(
         collationAlgorithms: ["i;ascii-casemap"],
       },
       [MAIL_CAPABILITY]: {},
+      [SUBMISSION_CAPABILITY]: {},
     },
     accounts: {
       [accountId]: {
@@ -182,6 +186,11 @@ export async function makeSession(
             emailQuerySortOptions: ["receivedAt"],
             mayCreateTopLevelMailbox: false,
           },
+          [SUBMISSION_CAPABILITY]: {
+            // No delayed send: a submission goes out during the request.
+            maxDelayedSend: 0,
+            submissionExtensions: {},
+          },
         },
       },
     },
@@ -189,6 +198,7 @@ export async function makeSession(
     // accountCapabilities. Core is session-level and is not listed there.
     primaryAccounts: {
       [MAIL_CAPABILITY]: accountId,
+      [SUBMISSION_CAPABILITY]: accountId,
     },
     username: user.email ?? user.id,
     apiUrl: "/jmap/api",
