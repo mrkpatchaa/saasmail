@@ -20,6 +20,7 @@ import type { CreatedIds } from "./creation-refs";
 import {
   emailGet,
   emailQuery,
+  jmapMessageId,
   jmapThreadKey,
   type JmapMethodError,
 } from "./emails";
@@ -347,7 +348,7 @@ async function threadGet(
     const naturalKeys = await queryMessageThreadKeys(
       db,
       allowed,
-      { viewer: { userId }, ignoreSnooze: true },
+      { viewer: { userId }, ignoreSnooze: true, withJmap: true },
       MAX_OBJECTS_IN_GET + 1,
     );
     const draftKeys = await listDraftThreadKeys(
@@ -413,7 +414,7 @@ async function threadGet(
     }
 
     for (const message of page.messages) {
-      const id = publicEmailId(message.ref);
+      const id = jmapMessageId(message);
       seen.add(id);
       const key = jmapThreadKey(message);
       const current = grouped.get(key) ?? [];
@@ -466,7 +467,7 @@ async function threadGet(
       );
     }
     for (const message of page.messages) {
-      const id = publicEmailId(message.ref);
+      const id = jmapMessageId(message);
       if (seen.has(id)) continue;
       seen.add(id);
       const key = jmapThreadKey(message);
