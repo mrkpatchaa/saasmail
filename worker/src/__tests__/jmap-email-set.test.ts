@@ -332,6 +332,22 @@ describe("JMAP Email/set", () => {
     response = await emailSet(apiKey, userId, tooMany);
     expect(response[0]).toBe("error");
     expect(response[1].type).toBe("requestTooLarge");
+
+    // RFC 8620: maxObjectsInSet covers destroy as well.
+    const tooManyDestroys = await jmapJson(apiKey, [
+      [
+        "Email/set",
+        {
+          accountId: acct(userId),
+          destroy: Array.from({ length: 257 }, (_, index) =>
+            rid(`too-many-${index}`),
+          ),
+        },
+        "d",
+      ],
+    ]);
+    expect(tooManyDestroys.methodResponses[0][0]).toBe("error");
+    expect(tooManyDestroys.methodResponses[0][1].type).toBe("requestTooLarge");
   });
 
   it("keeps states stable across time and accepts ifInState by seq and fingerprint", async () => {

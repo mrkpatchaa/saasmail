@@ -412,6 +412,12 @@ export async function emailSet(
       description: `update exceeds maxObjectsInSet (${MAX_OBJECTS_IN_SET})`,
     };
   }
+  if (destroy.length > MAX_OBJECTS_IN_SET) {
+    return {
+      type: "requestTooLarge",
+      description: `destroy exceeds maxObjectsInSet (${MAX_OBJECTS_IN_SET})`,
+    };
+  }
 
   const currentState = await currentJmapState(db, allowed, userId);
   const oldState = currentState.state;
