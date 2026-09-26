@@ -679,6 +679,32 @@ describe("EmailSubmission/set create", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("reports a create the provider accepted even when its bookkeeping fails", async () => {
+    const { sender, calls } = recordingSender();
+    const draft = await createDraft(userId, sender);
+    await env.DB.prepare(
+      `CREATE TRIGGER sent_insert_fails BEFORE INSERT ON sent_emails
+       BEGIN SELECT RAISE(ABORT, 'd1 down'); END`,
+    ).run();
+    let responses: unknown[][];
+    try {
+      responses = await runJmap(userId, [submitCall(userId, draft.id)], sender);
+    } finally {
+      await env.DB.prepare("DROP TRIGGER sent_insert_fails").run();
+    }
+    expect(calls).toHaveLength(1);
+    expect(responses[0][0]).toBe("EmailSubmission/set");
+    expect(
+      (responses[0][1] as { created: Record<string, { id: string }> }).created
+        .s1.id,
+    ).toMatch(/^E/);
+    // Recovery finishes it: the held outbox row is the evidence, and the
+    // draft stays locked so nothing resends it meanwhile.
+    const [outbox] = await getDb().select().from(outboxEmails);
+    expect(outbox.status).toBe("bookkeeping_pending");
+    expect((await draftRow(draft.id)).submitState).toBe("submitting");
+  });
+
   it("still answers with the submission when its on-success step fails", async () => {
     const { sender, calls } = recordingSender();
     const draft = await createDraft(userId, sender);

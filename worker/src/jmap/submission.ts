@@ -388,7 +388,14 @@ async function recordAcceptedSubmission(
   ];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await db.batch(statements as any);
-  await cancelSequencesForPerson(db, personId);
+  try {
+    await cancelSequencesForPerson(db, personId);
+  } catch (error) {
+    console.error(
+      `[jmap] cancelling sequences after submission ${input.submissionId} failed:`,
+      error,
+    );
+  }
 }
 
 async function createSubmission(
@@ -629,14 +636,27 @@ async function createSubmission(
   }
 
   if (result.outcome === "sent" || result.outcome === "retrying") {
-    await recordAcceptedSubmission(db, {
-      submissionId,
-      sentEmailId,
-      draftId: draft.id,
-      content,
-      message,
-      result,
-    });
+    // The provider has the message: from here on the create is reported as
+    // created whatever happens, or the client would send it again. If the
+    // bookkeeping fails, the claimed intention and the held outbox row stay
+    // (the draft stays locked) and the hourly recovery records the send.
+    let recorded = true;
+    try {
+      await recordAcceptedSubmission(db, {
+        submissionId,
+        sentEmailId,
+        draftId: draft.id,
+        content,
+        message,
+        result,
+      });
+    } catch (error) {
+      recorded = false;
+      console.error(
+        `[jmap] recording accepted submission ${submissionId} failed; recovery will record it:`,
+        error,
+      );
+    }
     return {
       created: {
         id: publicSubmissionId(submissionId),
@@ -645,7 +665,7 @@ async function createSubmission(
         undoStatus: "final",
       },
       error: null,
-      acceptedId: submissionId,
+      acceptedId: recorded ? submissionId : undefined,
     };
   }
 
@@ -747,6 +767,13 @@ export async function emailSubmissionSet(
     ]),
   );
 
+  // Read before any create sends: nothing that can fail runs between the
+  // first provider call and the response.
+  const known = await knownSubmissionIds(db, userId, [
+    ...Object.keys(update),
+    ...destroy,
+  ]);
+
   const created: Record<string, Record<string, unknown>> = {};
   const notCreated: Record<string, SubmissionSetError> = {};
   /** Internal ids of submissions accepted in this call; Task 5 runs their steps. */
@@ -787,10 +814,6 @@ export async function emailSubmissionSet(
     }
   }
 
-  const known = await knownSubmissionIds(db, userId, [
-    ...Object.keys(update),
-    ...destroy,
-  ]);
   const readOnly = (id: string): SubmissionSetError =>
     known.has(id)
       ? {
@@ -849,7 +872,13 @@ export async function emailSubmissionSet(
       }
     }
   }
-  // The step wrote change rows, so the new state is read after it.
-  response.newState = (await currentJmapState(db, allowed, userId)).state;
+  // The step wrote change rows, so the new state is read after it. A failed
+  // read keeps the old state rather than failing a call that already sent:
+  // the client then just sees these changes again through /changes.
+  try {
+    response.newState = (await currentJmapState(db, allowed, userId)).state;
+  } catch (error) {
+    console.error("[jmap] reading the state after a submission failed:", error);
+  }
   return { response, followUps };
 }
