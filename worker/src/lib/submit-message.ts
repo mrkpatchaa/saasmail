@@ -50,23 +50,57 @@ export function contentLeaves(
   return leaves;
 }
 
-/** The content's attachment leaves (with their content-owned R2 copies), in order. */
+/**
+ * The part ids each body is sent from. RFC 8621's textBody/htmlBody are
+ * display lists: a lone text/plain part is in htmlBody too, a lone text/html
+ * part in textBody, and inline images sit in both. The sent text is only the
+ * text/plain values of textBody, the sent HTML only the text/html values of
+ * htmlBody.
+ */
+function bodyPartIds(
+  content: JmapContentRow,
+  leaves: Map<string, ContentLeaf>,
+): { text: string[]; html: string[] } {
+  const ofType = (listJson: string, type: string) =>
+    parseContentJson<string[]>(listJson, []).filter((partId) => {
+      const leaf = leaves.get(partId);
+      return leaf?.type === type && leaf.r2Key === null;
+    });
+  return {
+    text: ofType(content.textBodyJson, "text/plain"),
+    html: ofType(content.htmlBodyJson, "text/html"),
+  };
+}
+
+/**
+ * Every stored (blob) leaf of the content, in tree order: each goes out as an
+ * attachment, inline or not. Following `attachments` instead would drop an
+ * inline image RFC 8621 lists as a body part.
+ */
 export function submissionAttachmentLeaves(
   content: JmapContentRow,
 ): ContentLeaf[] {
+  return [...contentLeaves(content).values()].filter(
+    (leaf) => leaf.r2Key !== null,
+  );
+}
+
+/** Text leaves that are neither sent body: there is no way to send them. */
+export function submissionUnsendableLeaves(
+  content: JmapContentRow,
+): ContentLeaf[] {
   const leaves = contentLeaves(content);
-  return parseContentJson<string[]>(content.attachmentsJson, [])
-    .map((partId) => leaves.get(partId))
-    .filter(
-      (leaf): leaf is ContentLeaf => leaf !== undefined && leaf.r2Key !== null,
-    );
+  const bodies = bodyPartIds(content, leaves);
+  const sent = new Set([...bodies.text, ...bodies.html]);
+  return [...leaves.values()].filter(
+    (leaf) => leaf.r2Key === null && !sent.has(leaf.partId),
+  );
 }
 
 function bodyValue(
-  partIdsJson: string,
+  partIds: string[],
   values: Record<string, string>,
 ): string | null {
-  const partIds = parseContentJson<string[]>(partIdsJson, []);
   const parts = partIds
     .map((partId) => values[partId])
     .filter((value): value is string => typeof value === "string");
@@ -118,7 +152,8 @@ export function formatRfc5322Date(value: string): string {
 /**
  * The exact message for a draft's content: From (name + email), one To and the
  * Cc with display names, the subject as stored (no "Re:" rewrite), bodies,
- * Message-ID, In-Reply-To, References, Date and the given attachments.
+ * Message-ID, In-Reply-To, References, Reply-To, Date and the given
+ * attachments.
  *
  * The From display name is the content's own `from[0].name`; the identity's
  * display name is only a fallback, because the draft's raw blob and its Sent
@@ -159,6 +194,14 @@ export function buildSubmissionMessage(
   if (references && references.length > 0) {
     headers.References = references.map(bracketed).join(" ");
   }
+  // One bare address, as the web composer sends it: every provider takes
+  // Reply-To as a single mailbox. Submission refuses more than one.
+  const replyTo = parseContentJson<ContentAddress[] | null>(
+    content.replyToJson,
+    null,
+  )?.[0];
+  if (replyTo) headers["Reply-To"] = replyTo.email.trim().toLowerCase();
+  const bodies = bodyPartIds(content, contentLeaves(content));
 
   return {
     fromAddress,
@@ -174,8 +217,8 @@ export function buildSubmissionMessage(
       }),
     ),
     subject: content.subject,
-    html: bodyValue(content.htmlBodyJson, values) ?? "",
-    text: bodyValue(content.textBodyJson, values) ?? undefined,
+    html: bodyValue(bodies.html, values) ?? "",
+    text: bodyValue(bodies.text, values) ?? undefined,
     headers,
     attachments,
   };

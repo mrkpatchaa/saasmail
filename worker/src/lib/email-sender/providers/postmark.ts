@@ -32,8 +32,11 @@ export class PostmarkSender implements EmailSender {
         From: params.from,
         To: params.to,
         Subject: params.subject,
-        HtmlBody: params.html,
       };
+      // A text-only message (a JMAP draft) has no HTML body to send.
+      if (params.html) {
+        payload.HtmlBody = params.html;
+      }
       if (params.text) {
         payload.TextBody = params.text;
       }

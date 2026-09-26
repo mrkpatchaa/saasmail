@@ -17,7 +17,8 @@ export class ResendSender implements EmailSender {
       to: params.to,
       ...(params.cc && params.cc.length > 0 ? { cc: params.cc } : {}),
       subject: params.subject,
-      html: params.html,
+      // A text-only message (a JMAP draft) has no HTML body to send.
+      ...(params.html ? { html: params.html } : {}),
       text: params.text,
       // Resend stamps Date itself; overriding it isn't documented.
       headers: withoutHeader(params.headers, "Date"),

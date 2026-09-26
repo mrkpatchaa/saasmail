@@ -23,6 +23,7 @@ import {
   parseContentJson,
   sendSubmission,
   submissionAttachmentLeaves,
+  submissionUnsendableLeaves,
   type SubmissionMessage,
 } from "../lib/submit-message";
 import { MAX_OBJECTS_IN_SET } from "./constants";
@@ -447,13 +448,32 @@ async function createSubmission(
   );
   if (envelope.error) return rejected(envelope.error);
 
-  // Step 6: attachments still resolve, and the message fits the provider.
+  // Step 6: everything in the Email can be sent, its attachments still
+  // resolve, and the message fits the provider.
+  const replyTo = parseContentJson<ContentAddress[] | null>(
+    content.replyToJson,
+    null,
+  );
+  if (replyTo && replyTo.length > 1) {
+    return rejected({
+      type: "invalidEmail",
+      properties: ["replyTo"],
+      description: "Only one Reply-To address can be sent",
+    });
+  }
+  if (submissionUnsendableLeaves(content).length > 0) {
+    return rejected({
+      type: "invalidEmail",
+      properties: ["bodyStructure"],
+      description:
+        "A text part that is neither the text nor the HTML body must be an uploaded blob",
+    });
+  }
   const leaves = submissionAttachmentLeaves(content);
-  const listed = parseContentJson<string[]>(content.attachmentsJson, []).length;
   const heads = await Promise.all(
     leaves.map((leaf) => ctx.env.R2.head(leaf.r2Key!)),
   );
-  if (leaves.length !== listed || heads.some((head) => head === null)) {
+  if (heads.some((head) => head === null)) {
     return rejected({
       type: "invalidEmail",
       properties: ["attachments"],
@@ -697,15 +717,32 @@ export async function emailSubmissionSet(
   const created: Record<string, Record<string, unknown>> = {};
   const notCreated: Record<string, SubmissionSetError> = {};
   for (const [creationId, input] of Object.entries(create)) {
-    const outcome = await createSubmission(
-      db,
-      allowed,
-      userId,
-      input,
-      ctx,
-      sender,
-      identities,
-    );
+    // One create failing must not hide the others: a create already sent in
+    // this call is reported, so the client doesn't resend it. A failed create
+    // leaves its draft locked whenever a send may have happened (the claim is
+    // only released when nothing was sent).
+    let outcome: CreateOutcome;
+    try {
+      outcome = await createSubmission(
+        db,
+        allowed,
+        userId,
+        input,
+        ctx,
+        sender,
+        identities,
+      );
+    } catch (error) {
+      console.error(
+        `[jmap] EmailSubmission/set create ${creationId} failed:`,
+        error,
+      );
+      notCreated[creationId] = {
+        type: "serverFail",
+        description: "The submission could not be completed",
+      };
+      continue;
+    }
     if (outcome.error) notCreated[creationId] = outcome.error;
     else created[creationId] = outcome.created!;
   }
