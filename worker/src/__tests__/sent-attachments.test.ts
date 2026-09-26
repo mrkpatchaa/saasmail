@@ -1,0 +1,183 @@
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
+import { env } from "cloudflare:workers";
+import { eq } from "drizzle-orm";
+import { applyMigrations, cleanDb, getDb } from "./helpers";
+import { attachments } from "../db/attachments.schema";
+import { sentEmails } from "../db/sent-emails.schema";
+import { outboxEmails } from "../db/outbox-emails.schema";
+import {
+  discardSentAttachments,
+  reapOrphanSentAttachments,
+  stageSentAttachments,
+} from "../lib/sent-attachments";
+import type { ParsedFile } from "../lib/multipart-send";
+
+function file(name: string, text = "hello"): ParsedFile {
+  const bytes = new TextEncoder().encode(text);
+  return {
+    filename: name,
+    contentType: "text/plain",
+    bytes,
+    size: bytes.byteLength,
+  };
+}
+
+async function rowsFor(emailId: string) {
+  return getDb()
+    .select()
+    .from(attachments)
+    .where(eq(attachments.emailId, emailId));
+}
+
+async function objectsUnder(prefix: string) {
+  const listed = await env.R2.list({ prefix });
+  return listed.objects.map((o) => o.key);
+}
+
+/** env whose R2 binding fails `method` on its `failOnCall`-th call. */
+function envWithFailingR2(
+  method: "put" | "delete",
+  failOnCall = 1,
+): CloudflareBindings {
+  let calls = 0;
+  const r2 = new Proxy(env.R2, {
+    get(target, prop) {
+      if (prop === method) {
+        return async (...args: unknown[]) => {
+          calls += 1;
+          if (calls === failOnCall) throw new Error("r2 down");
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          return (target as any)[method](...args);
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return new Proxy(env, {
+    get(target, prop) {
+      return prop === "R2" ? r2 : Reflect.get(target, prop);
+    },
+  }) as CloudflareBindings;
+}
+
+describe("sent attachment lifecycle", () => {
+  beforeAll(async () => {
+    await applyMigrations();
+  });
+  beforeEach(async () => {
+    await cleanDb();
+  });
+
+  it("stages D1 rows and R2 objects under the sent email id", async () => {
+    const ids = await stageSentAttachments(
+      getDb(),
+      env,
+      "se-stage",
+      [file("a.txt", "alpha")],
+      100,
+    );
+    const rows = await rowsFor("se-stage");
+    expect(rows.map((r) => r.id)).toEqual(ids);
+    expect(rows[0].kind).toBe("sent");
+    expect(rows[0].r2Key.startsWith("attachments/sent/se-stage/")).toBe(true);
+    const object = await env.R2.get(rows[0].r2Key);
+    expect(await object!.text()).toBe("alpha");
+  });
+
+  it("stages nothing for an empty file list", async () => {
+    expect(
+      await stageSentAttachments(getDb(), env, "se-none", [], 100),
+    ).toEqual([]);
+    expect(await rowsFor("se-none")).toHaveLength(0);
+  });
+
+  it("leaves neither rows nor objects when an R2 write fails", async () => {
+    await expect(
+      stageSentAttachments(
+        getDb(),
+        envWithFailingR2("put", 2),
+        "se-putfail",
+        [file("a.txt"), file("b.txt")],
+        100,
+      ),
+    ).rejects.toThrow("r2 down");
+    expect(await rowsFor("se-putfail")).toHaveLength(0);
+    expect(await objectsUnder("attachments/sent/se-putfail/")).toEqual([]);
+  });
+
+  it("discards objects and rows", async () => {
+    await stageSentAttachments(
+      getDb(),
+      env,
+      "se-discard",
+      [file("a.txt")],
+      100,
+    );
+    await discardSentAttachments(getDb(), env, "se-discard");
+    expect(await rowsFor("se-discard")).toHaveLength(0);
+    expect(await objectsUnder("attachments/sent/se-discard/")).toEqual([]);
+  });
+
+  it("deletes the R2 object before the D1 row (row survives an R2 failure)", async () => {
+    await stageSentAttachments(getDb(), env, "se-order", [file("a.txt")], 100);
+    await expect(
+      discardSentAttachments(getDb(), envWithFailingR2("delete"), "se-order"),
+    ).rejects.toThrow("r2 down");
+    // Still tracked, so the reaper can retry the R2 delete later.
+    expect(await rowsFor("se-order")).toHaveLength(1);
+  });
+
+  it("reaps only old sent attachments with no sent_emails and no outbox row", async () => {
+    const now = 100_000;
+    const db = getDb();
+    const old = now - 7200;
+    await stageSentAttachments(db, env, "se-orphan", [file("o.txt")], old);
+    await stageSentAttachments(db, env, "se-young", [file("y.txt")], now - 60);
+    await stageSentAttachments(db, env, "se-has-sent", [file("s.txt")], old);
+    await stageSentAttachments(db, env, "se-has-outbox", [file("b.txt")], old);
+    await db.insert(sentEmails).values({
+      id: "se-has-sent",
+      fromAddress: "me@saasmail.test",
+      toAddress: "to@example.com",
+      subject: "Hi",
+      status: "sent",
+      sentAt: old,
+      createdAt: old,
+    });
+    await db.insert(outboxEmails).values({
+      id: "ob-live",
+      sentEmailId: "se-has-outbox",
+      fromAddress: "me@saasmail.test",
+      toAddress: "to@example.com",
+      subject: "Hi",
+      transactional: 1,
+      status: "pending",
+      attempts: 1,
+      nextRetryAt: now,
+      createdAt: old,
+      updatedAt: old,
+    });
+    await db.insert(attachments).values({
+      id: "inbound-old",
+      emailId: "no-such-email",
+      kind: "inbound",
+      filename: "in.txt",
+      contentType: "text/plain",
+      size: 1,
+      r2Key: "attachments/inbound/in.txt",
+      contentId: null,
+      createdAt: old,
+    });
+
+    const reaped = await reapOrphanSentAttachments(db, env, now);
+
+    expect(reaped).toBe(1);
+    expect(await rowsFor("se-orphan")).toHaveLength(0);
+    expect(await objectsUnder("attachments/sent/se-orphan/")).toEqual([]);
+    expect(await rowsFor("se-young")).toHaveLength(1);
+    expect(await rowsFor("se-has-sent")).toHaveLength(1);
+    expect(await rowsFor("se-has-outbox")).toHaveLength(1);
+    expect(await rowsFor("no-such-email")).toHaveLength(1);
+  });
+});
