@@ -55,6 +55,32 @@ describe("creation-id helpers", () => {
     expect(args.ids[0]).toBe("#c1");
   });
 
+  it("leaves a reference to a creation id this same call reuses for the /set", () => {
+    // RFC 8620 §5.3: creates run first, so "#c1" in this call's update or
+    // destroy means this call's c1, not the c1 an earlier call created.
+    const ids: CreatedIds = new Map([
+      ["c1", "X1"],
+      ["c2", "X2"],
+    ]);
+    const args = {
+      create: { c1: {} },
+      update: { "#c1": { "keywords/$flagged": true }, "#c2": {} },
+      destroy: ["#c1", "#c2"],
+    };
+    expect(resolveCallCreationRefs(args, ids)).toEqual({
+      create: { c1: {} },
+      update: { "#c1": { "keywords/$flagged": true }, X2: {} },
+      destroy: ["#c1", "X2"],
+    });
+  });
+
+  it("keeps an update key named __proto__ as an ordinary entry", () => {
+    const ids: CreatedIds = new Map([["c1", "X1"]]);
+    const update = JSON.parse('{"__proto__": {"keywords/$seen": true}}');
+    const resolved = resolveCallCreationRefs({ update }, ids);
+    expect(Object.keys(resolved.update as object)).toEqual(["__proto__"]);
+  });
+
   it("records created ids, the latest creation winning", () => {
     const ids: CreatedIds = new Map();
     recordCreated(
