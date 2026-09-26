@@ -26,6 +26,7 @@ import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { draftThreadMembers, listDraftThreadKeys } from "./drafts";
 import { emailChanges, mailboxChanges } from "./changes";
 import { emailSet } from "./email-set";
+import { emailSubmissionSet } from "./submission";
 import {
   parseThreadId,
   publicAccountId,
@@ -548,6 +549,17 @@ export async function executeMethod(
       args,
       ctx,
     );
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
+  }
+
+  if (name === "EmailSubmission/set") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result = await emailSubmissionSet(db, allowed, user, args, ctx);
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
       return methodError(error.type, error.description, error.properties);
