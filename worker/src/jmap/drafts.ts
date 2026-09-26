@@ -179,7 +179,7 @@ export function draftWhereSql(
     ${
       textPattern === null
         ? sql``
-        : sql`AND (c.subject LIKE ${textPattern} ESCAPE '\\' OR c.body_values_json LIKE ${textPattern} ESCAPE '\\')`
+        : sql`AND (c.subject LIKE ${textPattern} ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(c.body_values_json) bv WHERE bv.value LIKE ${textPattern} ESCAPE '\\'))`
     }
     ${
       filter.from === undefined

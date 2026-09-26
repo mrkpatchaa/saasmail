@@ -268,6 +268,40 @@ describe("JMAP drafts", () => {
       expect((result as Rejection).error.type).toBe("tooLarge");
     });
 
+    it("refuses oversized attachments before reading any of their bytes", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const blobId = await upload(apiKey, userId, "four");
+      const r2 = new Proxy(env.R2, {
+        get(target, prop) {
+          if (prop === "get") {
+            return async () => {
+              throw new Error("attachment bytes read before the size check");
+            };
+          }
+          const value = Reflect.get(target, prop);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const noReads = new Proxy(env, {
+        get(target, prop) {
+          return prop === "R2" ? r2 : Reflect.get(target, prop);
+        },
+      }) as CloudflareBindings;
+      const result = await createDraftEmail(
+        {
+          db: getDb(),
+          env: noReads,
+          allowed: { isAdmin: true },
+          userId,
+          maxAttachmentBytes: 3,
+          now: Math.floor(Date.now() / 1000),
+        },
+        draft({ attachments: [{ blobId }, { blobId }] }),
+      );
+      expect(result).toBeInstanceOf(Rejection);
+      expect((result as Rejection).error.type).toBe("tooLarge");
+    });
+
     it("leaves neither rows nor R2 objects when an R2 write fails", async () => {
       const { userId, apiKey } = await createTestUser({ id: "drafter" });
       const blobId = await upload(apiKey, userId, "hello");
@@ -732,6 +766,36 @@ describe("JMAP drafts", () => {
   });
 
   describe("query, threads and mailboxes", () => {
+    it("keeps the JMAP state under D1's 100 bound parameters for a member with 8 inboxes", async () => {
+      const auth = await createTestUser({
+        id: "manyinboxes",
+        role: "member",
+        email: "many@example.com",
+      });
+      const now = Math.floor(Date.now() / 1000);
+      await getDb()
+        .insert(inboxPermissions)
+        .values(
+          [
+            MINE,
+            ...Array.from({ length: 7 }, (_, i) => `box${i}@example.com`),
+          ].map((email) => ({
+            userId: auth.userId,
+            email,
+            createdAt: now,
+            createdBy: null,
+          })),
+        );
+      const session = await authFetch("/.well-known/jmap", {
+        apiKey: auth.apiKey,
+      });
+      expect(session.status).toBe(200);
+      const res = await jmapJson(auth.apiKey, [
+        ["Mailbox/query", { accountId: acct(auth.userId) }, "q"],
+      ]);
+      expect(res.methodResponses[0][0]).toBe("Mailbox/query");
+    });
+
     const BASE = 1_790_000_000;
     const iso = (seconds: number) =>
       new Date(seconds * 1000).toISOString().replace(".000Z", "Z");
@@ -816,6 +880,7 @@ describe("JMAP drafts", () => {
       const flagged = await createDraft(apiKey, userId, {
         keywords: { $draft: true, $flagged: true },
         receivedAt: iso(BASE + 300),
+        bodyValues: { t: { value: 'Say "yes"' } },
       });
 
       expect(
@@ -834,6 +899,17 @@ describe("JMAP drafts", () => {
       expect(
         (await query(apiKey, userId, { filter: { text: "Quarterly" } })).ids,
       ).toEqual([plan.id]);
+      // Body text matches the text itself, not its JSON storage: a part id key
+      // is not text, and a quote matches unescaped.
+      expect(
+        (await query(apiKey, userId, { filter: { text: "Hi there" } })).ids,
+      ).toEqual([plan.id]);
+      expect(
+        (await query(apiKey, userId, { filter: { text: '"1"' } })).ids,
+      ).toEqual([]);
+      expect(
+        (await query(apiKey, userId, { filter: { text: 'Say "yes"' } })).ids,
+      ).toEqual([flagged.id]);
       expect(
         (await query(apiKey, userId, { filter: { from: "drafts@" } })).ids,
       ).toEqual([flagged.id, plan.id]);
@@ -954,11 +1030,13 @@ describe("JMAP drafts", () => {
         ["Mailbox/query", { accountId: acct(userId) }, "q"],
       ]);
       const [drafts, trash] = res.methodResponses[0][1].list;
+      // RFC 8621 §2: an Email counts as unread only with neither $seen nor
+      // $draft, so the unseen draft is not unread.
       expect(drafts).toMatchObject({
         totalEmails: 1,
-        unreadEmails: 1,
+        unreadEmails: 0,
         totalThreads: 1,
-        unreadThreads: 1,
+        unreadThreads: 0,
         myRights: {
           mayAddItems: true,
           mayRemoveItems: true,
