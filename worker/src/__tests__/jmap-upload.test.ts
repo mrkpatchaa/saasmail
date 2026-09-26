@@ -12,6 +12,7 @@ import { users } from "../db/auth.schema";
 import { jmapBlobs } from "../db/jmap-blobs.schema";
 import { JMAP_ID_PATTERN, parseUploadBlobId } from "../jmap/public-ids";
 import { validateJmapUploadOrigin } from "../jmap/http";
+import { createEmailSender } from "../lib/email-sender";
 import {
   parseDeclaredLength,
   readCappedBody,
@@ -349,6 +350,54 @@ describe("POST /jmap/upload/{accountId}/", () => {
       validateJmapUploadOrigin(request(env.BASE_URL), bindings, "session"),
     ).toBeNull();
     expect(validateJmapUploadOrigin(request(), bindings, "apiKey")).toBeNull();
+  });
+
+  // The route -> 413 wiring is the only thing a client actually sees, so pin
+  // it over HTTP rather than trusting storeUpload's unit coverage alone.
+  // Review Focus #1: an over-limit body must leave no row and no object, and
+  // a lying/absent Content-Length must still be caught by the read counter.
+  it("answers 413 over the limit and stores nothing, however the length is declared", async () => {
+    const { userId, apiKey } = await createTestUser({
+      id: "aaa-uploader",
+      email: "uploader@example.com",
+    });
+    const limit = createEmailSender(env).maxAttachmentBytes();
+    const over = new Uint8Array(limit + 1);
+
+    // (a) An honest Content-Length: refused before the body is read.
+    const declared = await authFetch(`/jmap/upload/${acct(userId)}/`, {
+      method: "POST",
+      apiKey,
+      headers: { "Content-Type": "text/plain" },
+      body: over,
+    });
+    expect(declared.status).toBe(413);
+    expect(await declared.json()).toMatchObject({
+      status: 413,
+      limit: "maxSizeUpload",
+      maxSize: limit,
+    });
+
+    // (b) A stream that lies: chunked, so no Content-Length reaches us and only
+    // the counter inside the read loop can refuse it. `duplex` is required for a
+    // streaming request body but is missing from the Workers RequestInit type.
+    const lying = await authFetch(`/jmap/upload/${acct(userId)}/`, {
+      method: "POST",
+      apiKey,
+      headers: { "Content-Type": "text/plain" },
+      duplex: "half",
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(limit));
+          controller.enqueue(new Uint8Array(1));
+          controller.close();
+        },
+      }) as unknown as BodyInit,
+    } as unknown as RequestInit & { apiKey: string });
+    expect(lying.status).toBe(413);
+
+    expect(await getDb().select().from(jmapBlobs)).toHaveLength(0);
+    expect(await uploadObjects(userId)).toEqual([]);
   });
 });
 
