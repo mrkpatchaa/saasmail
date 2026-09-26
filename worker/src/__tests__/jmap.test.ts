@@ -744,6 +744,47 @@ describe("JMAP", () => {
     expect(res.methodResponses[1][1].notFound).toEqual(["T", "nope"]);
   });
 
+  it("echoes the public account id from every method", async () => {
+    // A user id that is itself a valid JMAP id, so only the value (not the
+    // character set) can tell the internal and public account ids apart.
+    const { userId, apiKey } = await createTestUser({ id: "jmap-echo-user" });
+    const since = (name: string) => ({
+      resultOf: "g",
+      name,
+      path: "/state",
+    });
+    const res = await jmapJson(apiKey, [
+      ["Email/get", { accountId: acct(userId), ids: [] }, "g"],
+      ["Mailbox/get", { accountId: acct(userId), ids: [] }, "mg"],
+      ["Email/query", { accountId: acct(userId) }, "q"],
+      ["Email/set", { accountId: acct(userId), update: {} }, "s"],
+      [
+        "Email/changes",
+        { accountId: acct(userId), "#sinceState": since("Email/get") },
+        "c",
+      ],
+      [
+        "Mailbox/changes",
+        {
+          accountId: acct(userId),
+          "#sinceState": {
+            resultOf: "mg",
+            name: "Mailbox/get",
+            path: "/state",
+          },
+        },
+        "mc",
+      ],
+      ["Mailbox/query", { accountId: acct(userId) }, "mq"],
+      ["Thread/get", { accountId: acct(userId), ids: [] }, "t"],
+      ["Identity/get", { accountId: acct(userId) }, "i"],
+    ]);
+    for (const [name, result] of res.methodResponses) {
+      expect(name).not.toBe("error");
+      expect(result.accountId).toBe(acct(userId));
+    }
+  });
+
   it("returns invalidResultReference and cannotCalculateChanges per call", async () => {
     const { userId, apiKey } = await createTestUser({ id: "jmap-user" });
     const methodCalls: unknown[] = [

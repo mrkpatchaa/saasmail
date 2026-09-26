@@ -485,7 +485,13 @@ export async function executeMethod(
   if (name === "Email/set") {
     const account = accountError(args.accountId, user.id);
     if (account) return account;
-    const result = await emailSet(db, allowed, user.id, user.id, args);
+    const result = await emailSet(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+    );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
       return methodError(error.type, error.description, error.properties);
@@ -498,8 +504,20 @@ export async function executeMethod(
     if (account) return account;
     const result =
       name === "Email/changes"
-        ? await emailChanges(db, allowed, user.id, user.id, args)
-        : await mailboxChanges(db, allowed, user.id, user.id, args);
+        ? await emailChanges(
+            db,
+            allowed,
+            user.id,
+            publicAccountId(user.id),
+            args,
+          )
+        : await mailboxChanges(
+            db,
+            allowed,
+            user.id,
+            publicAccountId(user.id),
+            args,
+          );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
       return methodError(error.type, error.description, error.properties);
@@ -521,7 +539,13 @@ export async function executeMethod(
   if (name === "Email/get") {
     const account = accountError(args.accountId, user.id);
     if (account) return account;
-    const result = await emailGet(db, allowed, user.id, user.id, args);
+    const result = await emailGet(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+    );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
       return methodError(error.type, error.description, error.properties);
@@ -531,7 +555,13 @@ export async function executeMethod(
   if (name === "Email/query") {
     const account = accountError(args.accountId, user.id);
     if (account) return account;
-    const result = await emailQuery(db, allowed, user.id, user.id, args);
+    const result = await emailQuery(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+    );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
       return methodError(error.type, error.description, error.properties);
