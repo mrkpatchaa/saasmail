@@ -16,8 +16,9 @@ import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
 import { createDraftEmail, Rejection } from "../jmap/email-create";
+import { publicBodyPartBlobId } from "../jmap/public-ids";
 import { computeConversationId } from "../lib/conversation-id";
-import { acct, expectAllJmapIdsValid, rid, sys, thread } from "./jmap-ids";
+import { acct, drf, expectAllJmapIdsValid, rid, sys, thread } from "./jmap-ids";
 
 const MINE = "drafts@saasmail.test";
 
@@ -313,6 +314,172 @@ describe("JMAP drafts", () => {
         to: [{ email: "nobody@example.com" }],
       });
       expect(alone.threadId).toBe(`Td${alone.id.slice(1)}`);
+    });
+  });
+
+  describe("get", () => {
+    it("returns a draft's immutable properties and server-set values", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const created = await createDraft(apiKey, userId);
+      const res = await jmapJson(apiKey, [
+        [
+          "Email/get",
+          {
+            accountId: acct(userId),
+            ids: [created.id],
+            fetchAllBodyValues: true,
+          },
+          "g",
+        ],
+      ]);
+      expectAllJmapIdsValid(res);
+      const email = res.methodResponses[0][1].list[0];
+      expect(email).toMatchObject({
+        id: created.id,
+        blobId: created.blobId,
+        threadId: created.threadId,
+        size: created.size,
+        mailboxIds: { [sys(MINE, "drafts")]: true },
+        keywords: { $draft: true },
+        from: [{ name: "Drafts Inbox", email: MINE }],
+        to: [{ name: "Alice", email: "alice@example.com" }],
+        cc: null,
+        subject: "Hello",
+        hasAttachment: false,
+        preview: "Hi there",
+        textBody: [
+          {
+            partId: "1",
+            type: "text/plain",
+            size: 8,
+            blobId: publicBodyPartBlobId(created.id, "1"),
+          },
+        ],
+        bodyValues: {
+          "1": {
+            value: "Hi there",
+            isEncodingProblem: false,
+            isTruncated: false,
+          },
+        },
+      });
+      expect(email.messageId).toEqual([
+        expect.stringMatching(/^[A-Za-z0-9_-]+@saasmail\.test$/),
+      ]);
+      expect(email.sentAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+      expect(email.receivedAt).toMatch(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/,
+      );
+    });
+
+    it("keeps client-set messageId, sentAt and receivedAt", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const created = await createDraft(apiKey, userId, {
+        messageId: ["client-id@example.com"],
+        sentAt: "2026-09-26T12:00:00+02:00",
+        receivedAt: "2026-09-20T08:00:00Z",
+      });
+      const res = await jmapJson(apiKey, [
+        [
+          "Email/get",
+          {
+            accountId: acct(userId),
+            ids: [created.id],
+            properties: ["messageId", "sentAt", "receivedAt"],
+          },
+          "g",
+        ],
+      ]);
+      expect(res.methodResponses[0][1].list[0]).toEqual({
+        id: created.id,
+        messageId: ["client-id@example.com"],
+        sentAt: "2026-09-26T12:00:00+02:00",
+        receivedAt: "2026-09-20T08:00:00Z",
+      });
+    });
+
+    it("projects text, html and an attachment into structure and lists", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const blobId = await upload(apiKey, userId, "hello");
+      const created = await createDraft(apiKey, userId, {
+        htmlBody: [{ partId: "h", type: "text/html" }],
+        bodyValues: { t: { value: "Hi" }, h: { value: "<p>Hi</p>" } },
+        attachments: [{ blobId, type: "text/plain", name: "a.txt" }],
+      });
+      const res = await jmapJson(apiKey, [
+        ["Email/get", { accountId: acct(userId), ids: [created.id] }, "g"],
+      ]);
+      const email = res.methodResponses[0][1].list[0];
+      expect(email.bodyStructure.type).toBe("multipart/mixed");
+      expect(email.bodyStructure.subParts[0].type).toBe(
+        "multipart/alternative",
+      );
+      expect(email.textBody.map((part: any) => part.partId)).toEqual(["1"]);
+      expect(email.htmlBody.map((part: any) => part.partId)).toEqual(["2"]);
+      expect(email.attachments).toEqual([
+        {
+          partId: "3",
+          blobId: publicBodyPartBlobId(created.id, "3"),
+          size: 5,
+          name: "a.txt",
+          type: "text/plain",
+          charset: null,
+          disposition: "attachment",
+          cid: null,
+          language: null,
+          location: null,
+        },
+      ]);
+      expect(email.hasAttachment).toBe(true);
+    });
+
+    it("truncates body values to maxBodyValueBytes on a character boundary", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const created = await createDraft(apiKey, userId, {
+        bodyValues: { t: { value: "héllo" } },
+      });
+      const res = await jmapJson(apiKey, [
+        [
+          "Email/get",
+          {
+            accountId: acct(userId),
+            ids: [created.id],
+            fetchTextBodyValues: true,
+            maxBodyValueBytes: 2,
+          },
+          "g",
+        ],
+      ]);
+      // "h" (1 octet) + "é" (2 octets) would be 3 > 2, so only "h" survives.
+      expect(res.methodResponses[0][1].list[0].bodyValues["1"]).toEqual({
+        value: "h",
+        isEncodingProblem: false,
+        isTruncated: true,
+      });
+    });
+
+    it("lists drafts with ids: null and reports malformed or unknown draft ids as notFound", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const created = await createDraft(apiKey, userId);
+      const res = await jmapJson(apiKey, [
+        [
+          "Email/get",
+          { accountId: acct(userId), ids: null, properties: ["id"] },
+          "all",
+        ],
+        [
+          "Email/get",
+          { accountId: acct(userId), ids: ["D", "Dnope", "d!!", drf("x")] },
+          "bad",
+        ],
+      ]);
+      expect(res.methodResponses[0][1].list).toEqual([{ id: created.id }]);
+      expect(res.methodResponses[1][1].notFound).toEqual([
+        "D",
+        "Dnope",
+        "d!!",
+        drf("x"),
+      ]);
     });
   });
 });

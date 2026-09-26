@@ -1,5 +1,10 @@
 import type { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { htmlToText } from "../lib/html-to-text";
+import {
+  publicBodyPartBlobId,
+  publicRawBlobId,
+  publicThreadId,
+} from "./public-ids";
 
 export type ContentAddress = { name: string | null; email: string };
 
@@ -182,4 +187,161 @@ export function contentPreview(
       ? htmlToText(bodyValues[html.partId])
       : "";
   return source.replace(/\s+/g, " ").trim().slice(0, 256);
+}
+
+/** RFC 8621 §4.4 `properties`: null selects every supported property. */
+export function selectEmailProperties(
+  full: Record<string, unknown>,
+  properties: unknown,
+): Record<string, unknown> | null {
+  if (properties === undefined || properties === null) return full;
+  if (
+    !Array.isArray(properties) ||
+    !properties.every((property) => typeof property === "string")
+  ) {
+    return null;
+  }
+  const selected: Record<string, unknown> = { id: full.id };
+  for (const property of properties as string[]) {
+    selected[property] = property in full ? full[property] : null;
+  }
+  return selected;
+}
+
+function utcSeconds(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function truncateUtf8(
+  value: string,
+  maxBytes: number,
+): { value: string; isTruncated: boolean } {
+  if (maxBytes <= 0) return { value, isTruncated: false };
+  const bytes = utf8Bytes(value);
+  if (bytes.byteLength <= maxBytes) return { value, isTruncated: false };
+  let end = maxBytes;
+  // Never cut inside a UTF-8 sequence: back up over continuation bytes.
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return {
+    value: new TextDecoder().decode(bytes.subarray(0, end)),
+    isTruncated: true,
+  };
+}
+
+function addresses(json: string | null): ContentAddress[] | null {
+  if (json === null) return null;
+  const list = JSON.parse(json) as ContentAddress[];
+  return list.length > 0 ? list : null;
+}
+
+/** Immutable RFC 8621 Email properties of a content row, for any Email backed by it. */
+export function contentEmailObject(
+  content: JmapContentRow,
+  view: {
+    id: string;
+    mailboxIds: Record<string, true>;
+    keywords: Record<string, true>;
+    receivedAt: number;
+  },
+  args: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const root = JSON.parse(content.partsJson) as ContentPart;
+  const leaves = new Map(
+    contentLeaves(root).map((leaf) => [leaf.partId, leaf]),
+  );
+  const values = JSON.parse(content.bodyValuesJson) as Record<string, string>;
+  const textIds = JSON.parse(content.textBodyJson) as string[];
+  const htmlIds = JSON.parse(content.htmlBodyJson) as string[];
+  const attachmentIds = JSON.parse(content.attachmentsJson) as string[];
+
+  const partObject = (part: ContentPart): Record<string, unknown> => {
+    if (isMultipart(part)) {
+      const subParts = part.subParts.map(partObject);
+      return {
+        partId: null,
+        blobId: null,
+        size: subParts.reduce((sum, sub) => sum + (sub.size as number), 0),
+        name: null,
+        type: part.type,
+        charset: null,
+        disposition: null,
+        cid: null,
+        language: null,
+        location: null,
+        subParts,
+      };
+    }
+    const leaf = part as ContentLeaf;
+    return {
+      partId: leaf.partId,
+      blobId: publicBodyPartBlobId(view.id, leaf.partId),
+      size: leaf.size,
+      name: leaf.name,
+      type: leaf.type,
+      charset: leaf.charset,
+      disposition: leaf.disposition,
+      cid: leaf.cid,
+      language: null,
+      location: null,
+    };
+  };
+  const leafObject = (partId: string) => partObject(leaves.get(partId)!);
+
+  const wanted = new Set<string>();
+  if (args.fetchTextBodyValues === true)
+    textIds.forEach((id) => wanted.add(id));
+  if (args.fetchHTMLBodyValues === true)
+    htmlIds.forEach((id) => wanted.add(id));
+  if (args.fetchAllBodyValues === true) {
+    for (const leaf of leaves.values()) {
+      if (leaf.type.startsWith("text/")) wanted.add(leaf.partId);
+    }
+  }
+  const maxBytes =
+    typeof args.maxBodyValueBytes === "number" && args.maxBodyValueBytes > 0
+      ? args.maxBodyValueBytes
+      : 0;
+  const bodyValues: Record<string, unknown> = {};
+  for (const partId of wanted) {
+    const value = values[partId];
+    if (value === undefined) continue;
+    const truncated = truncateUtf8(value, maxBytes);
+    bodyValues[partId] = {
+      value: truncated.value,
+      isEncodingProblem: false,
+      isTruncated: truncated.isTruncated,
+    };
+  }
+
+  const full: Record<string, unknown> = {
+    id: view.id,
+    blobId: publicRawBlobId(content.id),
+    threadId: publicThreadId(content.threadKey),
+    mailboxIds: view.mailboxIds,
+    keywords: view.keywords,
+    size: content.size,
+    receivedAt: utcSeconds(view.receivedAt),
+    messageId: [content.messageId],
+    inReplyTo: content.inReplyToJson ? JSON.parse(content.inReplyToJson) : null,
+    references: content.referencesJson
+      ? JSON.parse(content.referencesJson)
+      : null,
+    sender: null,
+    from: JSON.parse(content.fromJson),
+    to: addresses(content.toJson),
+    cc: addresses(content.ccJson),
+    bcc: addresses(content.bccJson),
+    replyTo: addresses(content.replyToJson),
+    subject: content.subject,
+    sentAt: content.sentAt,
+    hasAttachment: attachmentIds.length > 0,
+    preview: content.preview,
+    bodyValues,
+    textBody: textIds.map(leafObject),
+    htmlBody: htmlIds.map(leafObject),
+    attachments: attachmentIds.map(leafObject),
+    bodyStructure: partObject(root),
+    headers: null,
+  };
+  return selectEmailProperties(full, args.properties);
 }

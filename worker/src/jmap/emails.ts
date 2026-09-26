@@ -14,11 +14,15 @@ import {
   type UnifiedMessage,
 } from "../lib/messages/types";
 import { customMailboxId, systemMailboxId } from "./ids";
+import { selectEmailProperties } from "./content";
+import { draftEmailObject, listDrafts, loadDraftsByIds } from "./drafts";
 import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
 import {
+  parseAnyEmailId,
   parseEmailId,
   publicAttachmentBlobId,
   publicBodyPartBlobId,
+  publicDraftEmailId,
   publicEmailId,
   publicThreadId,
 } from "./public-ids";
@@ -255,25 +259,6 @@ function messageIds(value: string | null): string[] | null {
   return ids.length > 0 ? ids : null;
 }
 
-function supportedProperties(
-  full: Record<string, unknown>,
-  properties: unknown,
-): Record<string, unknown> | null {
-  if (properties === undefined || properties === null) return full;
-  if (
-    !Array.isArray(properties) ||
-    !properties.every((property) => typeof property === "string")
-  ) {
-    return null;
-  }
-
-  const selected: Record<string, unknown> = { id: full.id };
-  for (const property of properties as string[]) {
-    selected[property] = property in full ? full[property] : null;
-  }
-  return selected;
-}
-
 export function toJmapEmail(
   message: UnifiedMessage,
   args: Record<string, unknown>,
@@ -321,7 +306,7 @@ export function toJmapEmail(
     bodyStructure: null,
     headers: null,
   };
-  return supportedProperties(full, args.properties);
+  return selectEmailProperties(full, args.properties);
 }
 
 async function queryEmailObjects(
@@ -397,54 +382,81 @@ export async function emailGet(
 
   const state = (await currentJmapState(db, allowed, userId)).state;
   let requestedIds: string[];
-  let messages: UnifiedMessage[];
+  const builders = new Map<string, () => Record<string, unknown> | null>();
 
   if (ids === undefined || ids === null) {
-    const count = await countMessages(db, allowed, { ignoreSnooze: true });
-    if (count > MAX_OBJECTS_IN_GET) {
+    const drafts = await listDrafts(
+      db,
+      allowed,
+      userId,
+      MAX_OBJECTS_IN_GET + 1,
+    );
+    const messageCount = await countMessages(db, allowed, {
+      ignoreSnooze: true,
+    });
+    if (messageCount + drafts.length > MAX_OBJECTS_IN_GET) {
       return {
         type: "requestTooLarge",
         description: `Email/get without ids exceeds maxObjectsInGet (${MAX_OBJECTS_IN_GET})`,
       };
     }
-    messages =
-      count === 0
+    const messages =
+      messageCount === 0
         ? []
         : await queryEmailObjects(db, allowed, userId, {
             limit: MAX_OBJECTS_IN_GET,
           });
-    requestedIds = messages.map((message) => publicEmailId(message.ref));
+    requestedIds = [];
+    for (const message of messages) {
+      const id = publicEmailId(message.ref);
+      requestedIds.push(id);
+      builders.set(id, () => toJmapEmail(message, args));
+    }
+    for (const item of drafts) {
+      const id = publicDraftEmailId(item.draft.id);
+      requestedIds.push(id);
+      builders.set(id, () => draftEmailObject(item, args));
+    }
   } else {
     requestedIds = ids as string[];
-    messages = [
-      ...(
-        await loadJmapEmailObjectsByIds(db, allowed, userId, requestedIds)
-      ).values(),
-    ];
+    const messages = await loadJmapEmailObjectsByIds(
+      db,
+      allowed,
+      userId,
+      requestedIds,
+    );
+    for (const [id, message] of messages) {
+      builders.set(id, () => toJmapEmail(message, args));
+    }
+    const draftIds: string[] = [];
+    for (const id of requestedIds) {
+      const ref = parseAnyEmailId(id);
+      if (ref && ref.kind === "draft") draftIds.push(ref.id);
+    }
+    const drafts = await loadDraftsByIds(db, allowed, userId, draftIds);
+    for (const item of drafts.values()) {
+      // Keyed by the canonical public id: a non-canonical spelling stays
+      // notFound.
+      builders.set(publicDraftEmailId(item.draft.id), () =>
+        draftEmailObject(item, args),
+      );
+    }
   }
 
-  const byId = new Map(
-    messages.map((message) => [publicEmailId(message.ref), message]),
-  );
   const list: Record<string, unknown>[] = [];
   const notFound: string[] = [];
   for (const id of requestedIds) {
-    const message = byId.get(id);
-    if (!message) {
+    const build = builders.get(id);
+    if (!build) {
       notFound.push(id);
       continue;
     }
-    const email = toJmapEmail(message, args);
+    const email = build();
     if (!email) return { type: "invalidArguments", properties: ["properties"] };
     list.push(email);
   }
 
-  return {
-    accountId,
-    state,
-    list,
-    notFound,
-  };
+  return { accountId, state, list, notFound };
 }
 
 function parseAfter(value: unknown): number | null | undefined {
