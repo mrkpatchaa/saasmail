@@ -110,17 +110,18 @@ describe("JMAP outbox ownership", () => {
     expect(row.fromHeader).toBe(`Hello Team <${INBOX}>`);
   });
 
-  it("leaves the on-success step pending and the draft locked after a send", async () => {
+  it("applies the on-success step and unlocks the draft after a send", async () => {
     const { authorId } = await seedAccount();
     const { sender } = recordingSender(OK);
     await jmapCall(authorId, submitCalls()(authorId), { sender });
     const [submission] = await getDb().select().from(jmapSubmissions);
     expect(submission.attemptState).toBe("accepted");
-    expect(submission.onSuccessState).toBe("pending");
-    // A kept draft stays locked until the on-success step unlocks it (Task 5).
+    // The step ran inside the same request, so the intention is settled and the
+    // kept draft is unlocked again.
+    expect(submission.onSuccessState).toBe("applied");
     const [draft] = await getDb().select().from(jmapDrafts);
-    expect(draft.submitState).toBe("submitting");
-    expect(draft.submitAttemptId).toBe(submission.id);
+    expect(draft.submitState).toBeNull();
+    expect(draft.submitAttemptId).toBeNull();
   });
 
   it("queues the draft when the send is retried by the outbox", async () => {

@@ -29,6 +29,7 @@ import { draftThreadMembers, listDraftThreadKeys } from "./drafts";
 import { emailChanges, mailboxChanges, submissionChanges } from "./changes";
 import { emailSet } from "./email-set";
 import { emailSubmissionSet } from "./submission";
+import { isMethodError } from "./on-success";
 import { emailSubmissionGet, emailSubmissionQuery } from "./submission-read";
 import {
   listContentThreadKeys,
@@ -47,7 +48,16 @@ import { currentJmapState, jmapState } from "./state";
 const MAX_EMAILS_IN_THREAD_GET = 1024;
 
 export type MethodResult =
-  | { ok: true; name: string; result: Record<string, unknown> }
+  | {
+      ok: true;
+      name: string;
+      result: Record<string, unknown>;
+      /**
+       * Responses the method owes the caller under the SAME call id, after its
+       * own (RFC 8621 §7.5's implicit Email/set).
+       */
+      followUps?: { name: string; result: Record<string, unknown> }[];
+    }
   | { ok: false; error: Record<string, unknown> };
 
 /** Per-request state every method can use. */
@@ -708,12 +718,17 @@ export async function executeMethod(
   if (name === "EmailSubmission/set") {
     const account = accountError(args.accountId, user.id);
     if (account) return account;
-    const result = await emailSubmissionSet(db, allowed, user, args, ctx);
-    const error = result as JmapMethodError;
-    if (typeof error.type === "string") {
+    const outcome = await emailSubmissionSet(db, allowed, user, args, ctx);
+    if (isMethodError(outcome)) {
+      const error = outcome as JmapMethodError;
       return methodError(error.type, error.description, error.properties);
     }
-    return { ok: true, name, result };
+    return {
+      ok: true,
+      name,
+      result: outcome.response,
+      followUps: outcome.followUps,
+    };
   }
 
   if (name === "Email/changes" || name === "Mailbox/changes") {

@@ -34,9 +34,11 @@ import type { JmapMethodError } from "./emails";
 import { listUsableIdentities, type IdentityRow } from "./mailboxes";
 import type { JmapMethodContext } from "./methods";
 import {
+  applyOnSuccessStep,
   isMethodError,
   onSuccessForCreation,
   parseOnSuccessArgs,
+  wantsImplicitEmailSet,
   type ParsedOnSuccess,
 } from "./on-success";
 import {
@@ -698,7 +700,13 @@ export async function emailSubmissionSet(
   user: any,
   args: Record<string, unknown>,
   ctx: JmapMethodContext,
-): Promise<Record<string, unknown> | JmapMethodError> {
+): Promise<
+  | {
+      response: Record<string, unknown>;
+      followUps: { name: string; result: Record<string, unknown> }[];
+    }
+  | JmapMethodError
+> {
   const userId: string = user.id;
   // RFC 8621 §7.5. Malformed arguments fail the whole call; a well-formed one
   // is stored on each accepted create's intention (see claimAndRecordIntention).
@@ -777,10 +785,10 @@ export async function emailSubmissionSet(
   const notDestroyed: Record<string, SubmissionSetError> = {};
   for (const id of destroy) notDestroyed[id] = readOnly(id);
 
-  return {
+  const response: Record<string, unknown> = {
     accountId: publicAccountId(userId),
     oldState: current.state,
-    newState: (await currentJmapState(db, allowed, userId)).state,
+    newState: current.state,
     created: nonEmptyOrNull(created),
     updated: null,
     destroyed: null,
@@ -788,4 +796,24 @@ export async function emailSubmissionSet(
     notUpdated: nonEmptyOrNull(notUpdated),
     notDestroyed: nonEmptyOrNull(notDestroyed),
   };
+
+  // Spec §3.4 step 4: once per call, after every create has run, the on-success
+  // step files each accepted draft into Sent (the alias), flags or destroys it,
+  // and otherwise reveals the Sent row. Each submission's step is idempotent
+  // through its own `applied` marker.
+  const followUps: { name: string; result: Record<string, unknown> }[] = [];
+  if (acceptedIds.length > 0) {
+    const implicit = await applyOnSuccessStep({
+      db,
+      allowed,
+      user,
+      ctx,
+      submissionIds: acceptedIds,
+      emitResponse: wantsImplicitEmailSet(onSuccess),
+    });
+    if (implicit) followUps.push(implicit);
+  }
+  // The step wrote change rows, so the new state is read after it.
+  response.newState = (await currentJmapState(db, allowed, userId)).state;
+  return { response, followUps };
 }

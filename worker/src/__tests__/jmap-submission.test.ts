@@ -728,10 +728,12 @@ describe("EmailSubmission/set create", () => {
     expect(reply.threadId).toBe(original.threadId);
   });
 
-  it("refuses on-success arguments until PR 6 and treats update/destroy as read-only", async () => {
+  it("runs the on-success step and treats update/destroy as read-only", async () => {
     const { sender } = recordingSender();
     const draft = await createDraft(userId, sender);
-    const [refused] = await runJmap(
+    // PR 6 supports the on-success arguments: a destroy now takes the draft away
+    // in the implicit Email/set that follows this response.
+    const destroyed = await runJmap(
       userId,
       [
         [
@@ -746,13 +748,14 @@ describe("EmailSubmission/set create", () => {
       ],
       sender,
     );
-    expect(refused[0]).toBe("error");
-    expect(refused[1]).toMatchObject({
-      type: "invalidArguments",
-      properties: ["onSuccessDestroyEmail"],
-    });
+    expect(destroyed[0][0]).toBe("EmailSubmission/set");
+    expect(submissionResult(destroyed).created.s1.id).toMatch(/^E/);
+    // RFC 8621 §7.5: the implicit Email/set answers under the same call id.
+    expect(destroyed[1][0]).toBe("Email/set");
+    expect(destroyed[1][1].destroyed).toEqual([draft.id]);
 
-    const sent = await runJmap(userId, [submitCall(userId, draft.id)], sender);
+    const kept = await createDraft(userId, sender);
+    const sent = await runJmap(userId, [submitCall(userId, kept.id)], sender);
     const id = submissionResult(sent).created.s1.id as string;
     const [changed] = await runJmap(
       userId,
