@@ -207,6 +207,18 @@ export function bytesEqual(left, right) {
   return true;
 }
 
+/**
+ * Is a downloaded text body part the body value it came from? RFC 8621 body
+ * values are LF text; the stored part is the CRLF form of the same text, which
+ * is what a `P…` download returns.
+ */
+export function bodyValueMatches(downloaded, value) {
+  if (typeof value !== "string") return false;
+  return (
+    new TextDecoder().decode(downloaded) === value.replace(/\r?\n/g, "\r\n")
+  );
+}
+
 function mapStrings(value, transform) {
   if (typeof value === "string") return transform(value);
   if (Array.isArray(value)) {
@@ -801,10 +813,13 @@ async function stepDraft(ctx, env, blobs) {
     `${step}: the text P part downloads`,
     textPart.blobId.startsWith(`P${email.id}_`) &&
       textDownload.status === 200 &&
-      new TextDecoder().decode(textDownload.bytes) ===
+      textPart.size === textDownload.bytes.byteLength &&
+      bodyValueMatches(
+        textDownload.bytes,
         email.bodyValues[textPart.partId]?.value,
-    textPart.blobId,
-    `HTTP ${textDownload.status} for ${textPart.blobId}`,
+      ),
+    `${textPart.blobId}, ${textDownload.bytes.byteLength} bytes`,
+    `HTTP ${textDownload.status} for ${textPart.blobId}, ${textDownload.bytes.byteLength} bytes, size ${textPart.size}`,
   );
   for (const [part, expected] of [
     [inline, PNG_BYTES],

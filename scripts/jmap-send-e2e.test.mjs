@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bodyValueMatches,
   bytesEqual,
   collectJmapIds,
   expandUriTemplate,
@@ -209,6 +210,17 @@ describe("jmap-send-e2e comparisons", () => {
         },
       ),
     ).toEqual(["subject"]);
+  });
+
+  it("compares a downloaded text part with its body value", () => {
+    // RFC 8621 body values are LF text; the stored part is the CRLF form.
+    expect(
+      bodyValueMatches(new TextEncoder().encode("a\r\nb\r\n"), "a\nb\n"),
+    ).toBe(true);
+    expect(bodyValueMatches(new TextEncoder().encode("a\r\nb"), "a\nb\n")).toBe(
+      false,
+    );
+    expect(bodyValueMatches(new TextEncoder().encode("x"), "y")).toBe(false);
   });
 
   it("compares bytes", () => {
