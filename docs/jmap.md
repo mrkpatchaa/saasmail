@@ -165,7 +165,7 @@ Download with the Session's `downloadUrl` template. Blob ids you can download:
 | `X…`    | the raw RFC 5322 message of a JMAP-created draft or of a message sent from one | the draft's author; once sent, anyone who can read the Sent Email |
 | `P…`    | one body part (`P<emailId>_<partId>`, or `_text` / `_html` for other mail)     | anyone who can read that Email                                    |
 
-The response sets `Content-Type` from the `type` parameter, uses `name` as the filename, and always sends `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. A blob you can't read returns `404`, as does another account's id.
+The response sets `Content-Type` from the `type` parameter, uses `name` as the filename, and always sends `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`. A blob you can't read returns `404`, as does another account's id. A `P…` part holds that part's stored bytes, so a text part downloads in its CRLF form while the `bodyValues` entry for the same part is the LF text RFC 8621 defines.
 
 ## State and changes
 
