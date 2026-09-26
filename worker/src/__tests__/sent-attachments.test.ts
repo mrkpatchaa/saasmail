@@ -11,6 +11,7 @@ import {
   stageSentAttachments,
 } from "../lib/sent-attachments";
 import type { ParsedFile } from "../lib/multipart-send";
+import worker from "../index";
 
 function file(name: string, text = "hello"): ParsedFile {
   const bytes = new TextEncoder().encode(text);
@@ -179,5 +180,28 @@ describe("sent attachment lifecycle", () => {
     expect(await rowsFor("se-has-sent")).toHaveLength(1);
     expect(await rowsFor("se-has-outbox")).toHaveLength(1);
     expect(await rowsFor("no-such-email")).toHaveLength(1);
+  });
+});
+
+describe("scheduled cron", () => {
+  beforeAll(async () => {
+    await applyMigrations();
+  });
+  beforeEach(async () => {
+    await cleanDb();
+  });
+
+  it("reaps orphan sent attachments", async () => {
+    const old = Math.floor(Date.now() / 1000) - 7200;
+    await stageSentAttachments(getDb(), env, "se-cron", [file("c.txt")], old);
+    const waits: Promise<unknown>[] = [];
+    await worker.scheduled!(
+      { cron: "0 * * * *", scheduledTime: Date.now() } as ScheduledEvent,
+      env,
+      { waitUntil: (p: Promise<unknown>) => waits.push(p) } as ExecutionContext,
+    );
+    await Promise.all(waits);
+    expect(await rowsFor("se-cron")).toHaveLength(0);
+    expect(await objectsUnder("attachments/sent/se-cron/")).toEqual([]);
   });
 });
