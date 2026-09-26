@@ -124,16 +124,31 @@ export function formatRfc5322Date(value: string): string {
  * display name is only a fallback, because the draft's raw blob and its Sent
  * projection both show the content.
  */
+/**
+ * The exact `From` header a submission sends with (spec §10.1). Split out so the
+ * intention can freeze it before the staged attachments exist, while
+ * `buildSubmissionMessage` stays the single place the rule is written.
+ */
+export function submissionFromHeader(
+  content: JmapContentRow,
+  identity: { email: string; displayName: string | null },
+): string {
+  const fromAddress = identity.email.trim().toLowerCase();
+  const fromName =
+    parseContentJson<ContentAddress[]>(content.fromJson, [])[0]?.name ??
+    identity.displayName ??
+    null;
+  return fromName
+    ? `${encodeDisplayName(fromName)} <${fromAddress}>`
+    : fromAddress;
+}
+
 export function buildSubmissionMessage(
   content: JmapContentRow,
   identity: { email: string; displayName: string | null },
   attachments: SendEmailAttachment[],
 ): SubmissionMessage {
   const fromAddress = identity.email.trim().toLowerCase();
-  const fromName =
-    parseContentJson<ContentAddress[]>(content.fromJson, [])[0]?.name ??
-    identity.displayName ??
-    null;
   const to = parseContentJson<ContentAddress[]>(content.toJson, [])[0];
   if (!to) throw new Error("content has no To address");
   const values = parseContentJson<Record<string, string>>(
@@ -162,9 +177,7 @@ export function buildSubmissionMessage(
 
   return {
     fromAddress,
-    from: fromName
-      ? `${encodeDisplayName(fromName)} <${fromAddress}>`
-      : fromAddress,
+    from: submissionFromHeader(content, identity),
     to: to.email.trim().toLowerCase(),
     toName: to.name ?? null,
     cc: parseContentJson<ContentAddress[]>(content.ccJson, []).map(
