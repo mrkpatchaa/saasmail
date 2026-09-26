@@ -5,7 +5,6 @@ import {
   queryMessageThreadKeys,
   THREAD_KEYS_PER_QUERY,
 } from "../lib/messages/query";
-import { serializeMessageRef } from "../lib/messages/types";
 import {
   CORE_CAPABILITY,
   MAIL_CAPABILITY,
