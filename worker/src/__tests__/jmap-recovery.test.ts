@@ -316,6 +316,46 @@ describe("JMAP submission recovery", () => {
     expect((await changeRows("submission:old")).at(-1)?.op).toBe("d");
   });
 
+  it("prunes and applies more rows than D1 binds in one statement", async () => {
+    // D1 binds at most 100 parameters per statement: an unchunked IN list of
+    // these ids throws, and the same rows would be picked again every hour.
+    const { authorId } = await seedAccount();
+    await insertTestContent({ id: "c1", userId: authorId });
+    for (let i = 0; i < 150; i += 1) {
+      await insertTestSubmission({
+        id: `old-${i}`,
+        userId: authorId,
+        draftId: `d-old-${i}`,
+        contentId: "c1",
+        sentEmailId: `s-old-${i}`,
+        attemptState: "accepted",
+        onSuccessState: "applied",
+        sendAt: NOW - 8 * 86400,
+        createdAt: NOW - 8 * 86400,
+      });
+    }
+    for (let i = 0; i < 100; i += 1) {
+      await insertTestSubmission({
+        id: `pending-${i}`,
+        userId: authorId,
+        draftId: `d-pending-${i}`,
+        contentId: "c1",
+        sentEmailId: `s-pending-${i}`,
+        attemptState: "accepted",
+        onSuccessState: "pending",
+        onSuccessMode: "none",
+        createdAt: OLD,
+      });
+    }
+    expect(await pruneJmapSubmissions(getDb(), NOW)).toBe(150);
+    expect(await applyPendingOnSuccess(getDb(), env, NOW)).toBe(100);
+    const states = (await getDb().select().from(jmapSubmissions)).map(
+      (row) => row.onSuccessState,
+    );
+    expect(states).toHaveLength(100);
+    expect(new Set(states)).toEqual(new Set(["applied"]));
+  });
+
   it("releases held JMAP rows only once their submission is applied", async () => {
     const { authorId } = await seedAccount();
     await insertTestContent({ id: "c1", userId: authorId });

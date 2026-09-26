@@ -25,7 +25,11 @@ function upload(userId: string, apiKey: string, bytes: string, type: string) {
   return uploadBlob(userId, apiKey, new TextEncoder().encode(bytes), type);
 }
 
-async function retryingSubmission(authorId: string, apiKey: string) {
+async function retryingSubmission(
+  authorId: string,
+  apiKey: string,
+  { imageName = "logo.png" }: { imageName?: string | null } = {},
+) {
   const image = await upload(authorId, apiKey, "PNGDATA", "image/png");
   const file = await upload(authorId, apiKey, "PDFDATA", "application/pdf");
   const first = recordingSender(TRANSIENT);
@@ -47,7 +51,7 @@ async function retryingSubmission(authorId: string, apiKey: string) {
                 {
                   blobId: image,
                   type: "image/png",
-                  name: "logo.png",
+                  ...(imageName ? { name: imageName } : {}),
                   cid: "logo@x",
                   disposition: "inline",
                 },
@@ -129,6 +133,23 @@ describe("frozen-content retries of JMAP outbox rows", () => {
     expect(shape(again.attachments)).toContainEqual(
       expect.objectContaining({ contentId: "logo@x", disposition: "inline" }),
     );
+  });
+
+  it("names an unnamed part the same way on the retry as on the first attempt", async () => {
+    const { authorId, authorApiKey } = await seedAccount();
+    const { first, outboxId } = await retryingSubmission(
+      authorId,
+      authorApiKey,
+      { imageName: null },
+    );
+    const retry = recordingSender(OK);
+    expect(await attemptOutboxRow(getDb(), env, retry.sender, outboxId)).toBe(
+      "sent",
+    );
+    const names = (list: typeof first.attachments) =>
+      (list ?? []).map((a) => a.filename);
+    expect(names(first.attachments)).toEqual(["attachment-2", "q3.pdf"]);
+    expect(names(retry.calls[0].attachments)).toEqual(names(first.attachments));
   });
 
   it("holds the row and upgrades the Sent row after a later success", async () => {

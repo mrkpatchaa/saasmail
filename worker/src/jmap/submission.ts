@@ -18,6 +18,7 @@ import {
   buildSubmissionMessage,
   parseContentJson,
   sendSubmission,
+  submissionAttachmentFilename,
   submissionAttachmentLeaves,
   submissionFromHeader,
   submissionUnsendableLeaves,
@@ -511,7 +512,7 @@ async function createSubmission(
   const sentEmailId = nanoid();
   const staged: StagedAttachment[] = leaves.map((leaf) => {
     const id = nanoid();
-    const filename = leaf.name ?? `attachment-${leaf.partId}`;
+    const filename = submissionAttachmentFilename(leaf);
     return {
       id,
       leaf,
@@ -675,18 +676,22 @@ async function knownSubmissionIds(
         .filter((id): id is string => id !== null),
     ),
   ];
-  if (internal.length === 0) return new Set();
-  const rows = await db
-    .select({ id: jmapSubmissions.id })
-    .from(jmapSubmissions)
-    .where(
-      and(
-        eq(jmapSubmissions.userId, userId),
-        eq(jmapSubmissions.attemptState, "accepted"),
-        inArray(jmapSubmissions.id, internal),
-      ),
-    );
-  return new Set(rows.map((row) => publicSubmissionId(row.id)));
+  const known = new Set<string>();
+  // Chunked: D1 binds at most 100 parameters per statement.
+  for (let start = 0; start < internal.length; start += 90) {
+    const rows = await db
+      .select({ id: jmapSubmissions.id })
+      .from(jmapSubmissions)
+      .where(
+        and(
+          eq(jmapSubmissions.userId, userId),
+          eq(jmapSubmissions.attemptState, "accepted"),
+          inArray(jmapSubmissions.id, internal.slice(start, start + 90)),
+        ),
+      );
+    for (const row of rows) known.add(publicSubmissionId(row.id));
+  }
+  return known;
 }
 
 export async function emailSubmissionSet(

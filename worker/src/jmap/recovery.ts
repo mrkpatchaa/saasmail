@@ -28,6 +28,16 @@ export const JMAP_RECOVERY_AGE_SECONDS = 15 * 60;
 export const JMAP_SUBMISSION_RETENTION_SECONDS = 7 * 24 * 60 * 60;
 const RECOVERY_BATCH = 100;
 const PRUNE_BATCH = 500;
+/** Ids per IN list: D1 binds at most 100 parameters per statement. */
+const ID_CHUNK = 90;
+
+function chunks<T>(items: T[]): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < items.length; start += ID_CHUNK) {
+    out.push(items.slice(start, start + ID_CHUNK));
+  }
+  return out;
+}
 
 /**
  * Release JMAP-owned outbox rows the provider accepted (usually on a retry)
@@ -260,16 +270,18 @@ export async function applyPendingOnSuccess(
         submissionIds,
         emitResponse: false,
       });
-      const [{ count }] = await db
-        .select({ count: sql<number>`COUNT(*)` })
-        .from(jmapSubmissions)
-        .where(
-          and(
-            inArray(jmapSubmissions.id, submissionIds),
-            eq(jmapSubmissions.onSuccessState, "applied"),
-          ),
-        );
-      applied += Number(count);
+      for (const ids of chunks(submissionIds)) {
+        const [{ count }] = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(jmapSubmissions)
+          .where(
+            and(
+              inArray(jmapSubmissions.id, ids),
+              eq(jmapSubmissions.onSuccessState, "applied"),
+            ),
+          );
+        applied += Number(count);
+      }
     } catch (err) {
       console.error(
         `[jmap] on-success recovery failed for user ${userId}:`,
@@ -318,24 +330,24 @@ export async function pruneJmapSubmissions(
      LIMIT ${PRUNE_BATCH}
   `);
   if (rows.length === 0) return 0;
-  const ids = rows.map((row) => row.id);
-  await db.run(sql`
-    DELETE FROM jmap_submissions
-     WHERE id IN (${sql.join(
-       ids.map((id) => sql`${id}`),
-       sql`, `,
-     )})
-       AND attempt_state = 'accepted'
-       AND on_success_state = 'applied'
-  `);
-  const survivors = await db.all<{ id: string }>(sql`
-    SELECT id FROM jmap_submissions
-     WHERE id IN (${sql.join(
-       ids.map((id) => sql`${id}`),
-       sql`, `,
-     )})
-  `);
-  return rows.length - survivors.length;
+  let survivors = 0;
+  for (const ids of chunks(rows.map((row) => row.id))) {
+    const list = sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `,
+    );
+    await db.run(sql`
+      DELETE FROM jmap_submissions
+       WHERE id IN (${list})
+         AND attempt_state = 'accepted'
+         AND on_success_state = 'applied'
+    `);
+    const left = await db.all<{ id: string }>(sql`
+      SELECT id FROM jmap_submissions WHERE id IN (${list})
+    `);
+    survivors += left.length;
+  }
+  return rows.length - survivors;
 }
 
 /**

@@ -287,17 +287,27 @@ export async function applyOnSuccessStep(input: {
   if (input.submissionIds.length === 0) return null;
   const userId: string = user.id;
   const accountId = publicAccountId(userId);
-  const pending = await db
-    .select()
-    .from(jmapSubmissions)
-    .where(
-      and(
-        inArray(jmapSubmissions.id, input.submissionIds),
-        eq(jmapSubmissions.userId, userId),
-        eq(jmapSubmissions.attemptState, "accepted"),
-        eq(jmapSubmissions.onSuccessState, "pending"),
-      ),
+  // Chunked: D1 binds at most 100 parameters per statement, and one call may
+  // accept up to maxObjectsInSet submissions.
+  const pending: PendingSubmission[] = [];
+  for (let start = 0; start < input.submissionIds.length; start += 90) {
+    pending.push(
+      ...(await db
+        .select()
+        .from(jmapSubmissions)
+        .where(
+          and(
+            inArray(
+              jmapSubmissions.id,
+              input.submissionIds.slice(start, start + 90),
+            ),
+            eq(jmapSubmissions.userId, userId),
+            eq(jmapSubmissions.attemptState, "accepted"),
+            eq(jmapSubmissions.onSuccessState, "pending"),
+          ),
+        )),
     );
+  }
 
   const update: Record<string, Record<string, unknown>> = {};
   const destroy: string[] = [];

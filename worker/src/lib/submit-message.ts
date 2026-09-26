@@ -85,6 +85,11 @@ export function submissionAttachmentLeaves(
   );
 }
 
+/** The filename a stored leaf is sent under, on the first attempt and on retries. */
+export function submissionAttachmentFilename(leaf: ContentLeaf): string {
+  return leaf.name ?? `attachment-${leaf.partId}`;
+}
+
 /** Text leaves that are neither sent body: there is no way to send them. */
 export function submissionUnsendableLeaves(
   content: JmapContentRow,

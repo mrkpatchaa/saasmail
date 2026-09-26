@@ -2,10 +2,14 @@ import { eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { jmapSubmissions } from "../db/jmap-submissions.schema";
-import { contentLeaves, type JmapContentRow } from "../jmap/content";
+import type { JmapContentRow } from "../jmap/content";
 import type { SendEmailAttachment } from "./email-sender";
 import type { CcRecipient } from "./send";
-import { buildSubmissionMessage } from "./submit-message";
+import {
+  buildSubmissionMessage,
+  submissionAttachmentFilename,
+  submissionAttachmentLeaves,
+} from "./submit-message";
 
 // Note: outbox.ts -> jmap-frozen-send.ts -> submit-message.ts -> outbox.ts is an
 // import cycle. It is safe because every module only exports functions that
@@ -25,8 +29,8 @@ export type FrozenSend = {
 };
 
 /**
- * Every binary part of a content row (attachments and inline related parts),
- * read from the content-owned R2 copies, in part order. Null when an object is
+ * The parts the first attempt sent (submissionAttachmentLeaves), under the same
+ * filenames, read from the content-owned R2 copies. Null when an object is
  * missing, so the caller falls back to the stored outbox fields instead of
  * sending a partial message.
  */
@@ -34,11 +38,9 @@ export async function loadContentAttachments(
   env: CloudflareBindings,
   content: JmapContentRow,
 ): Promise<SendEmailAttachment[] | null> {
-  const tree = JSON.parse(content.partsJson);
   const out: SendEmailAttachment[] = [];
-  for (const leaf of contentLeaves(tree)) {
-    if (!leaf.r2Key) continue;
-    const object = await env.R2.get(leaf.r2Key);
+  for (const leaf of submissionAttachmentLeaves(content)) {
+    const object = await env.R2.get(leaf.r2Key!);
     if (!object) {
       console.error(
         `[outbox] missing content object ${leaf.r2Key} for content ${content.id}`,
@@ -46,7 +48,7 @@ export async function loadContentAttachments(
       return null;
     }
     out.push({
-      filename: leaf.name ?? `part-${leaf.partId}`,
+      filename: submissionAttachmentFilename(leaf),
       contentType: leaf.type,
       content: await object.arrayBuffer(),
       contentId: leaf.cid,

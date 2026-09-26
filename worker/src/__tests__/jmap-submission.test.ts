@@ -877,5 +877,23 @@ describe("EmailSubmission/set create", () => {
     expect(result.notUpdated.Enope.type).toBe("notFound");
     expect(result.notDestroyed[id].type).toBe("forbidden");
     expect(result.notDestroyed.Enope.type).toBe("notFound");
+
+    // More ids than D1 binds in one statement are still answered one by one.
+    const many = Array.from({ length: 150 }, (_, i) => `Enope${i}`);
+    const [bulk] = await runJmap(
+      userId,
+      [
+        [
+          "EmailSubmission/set",
+          { accountId: acct(userId), destroy: [id, ...many] },
+          "s",
+        ],
+      ],
+      sender,
+    );
+    expect(bulk[0]).toBe("EmailSubmission/set");
+    const bulkResult = bulk[1] as Record<string, any>;
+    expect(bulkResult.notDestroyed[id].type).toBe("forbidden");
+    expect(bulkResult.notDestroyed.Enope149.type).toBe("notFound");
   });
 });
