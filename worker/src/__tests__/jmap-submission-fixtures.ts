@@ -88,7 +88,11 @@ export async function seedAccount() {
     createdAt: now,
     updatedAt: now,
   });
-  return { authorId: author.userId, memberId: member.userId };
+  return {
+    authorId: author.userId,
+    authorApiKey: author.apiKey,
+    memberId: member.userId,
+  };
 }
 
 /** Run a JMAP request as `userId`, exactly like POST /jmap/api does. */
