@@ -24,9 +24,10 @@ import {
 } from "./emails";
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { draftThreadMembers, listDraftThreadKeys } from "./drafts";
-import { emailChanges, mailboxChanges } from "./changes";
+import { emailChanges, mailboxChanges, submissionChanges } from "./changes";
 import { emailSet } from "./email-set";
 import { emailSubmissionSet } from "./submission";
+import { emailSubmissionGet, emailSubmissionQuery } from "./submission-read";
 import {
   parseThreadId,
   publicAccountId,
@@ -526,6 +527,97 @@ async function identityGet(
   };
 }
 
+/**
+ * Identities are managed in saasmail settings, so `Identity/set` exists only so
+ * a JMAP client gets a precise answer instead of `unknownMethod`.
+ */
+async function identitySet(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  userId: string,
+  args: Record<string, unknown>,
+): Promise<MethodResult> {
+  const isObject = (value: unknown) =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (
+    args.create !== undefined &&
+    args.create !== null &&
+    !isObject(args.create)
+  ) {
+    return methodError("invalidArguments", undefined, ["create"]);
+  }
+  if (
+    args.update !== undefined &&
+    args.update !== null &&
+    !isObject(args.update)
+  ) {
+    return methodError("invalidArguments", undefined, ["update"]);
+  }
+  if (
+    args.destroy !== undefined &&
+    args.destroy !== null &&
+    (!Array.isArray(args.destroy) ||
+      !args.destroy.every((id) => typeof id === "string"))
+  ) {
+    return methodError("invalidArguments", undefined, ["destroy"]);
+  }
+  const state = await jmapState(db, allowed, userId);
+  if (
+    args.ifInState !== undefined &&
+    args.ifInState !== null &&
+    args.ifInState !== state
+  ) {
+    return methodError("stateMismatch");
+  }
+  const known = new Set(
+    (await listUsableIdentities(db, allowed)).map((row) =>
+      publicIdentityId(row.email),
+    ),
+  );
+  const readOnly = (id: string) =>
+    known.has(id)
+      ? {
+          type: "forbidden",
+          description: "Identities are managed in saasmail settings",
+        }
+      : { type: "notFound" };
+  const notCreated: Record<string, unknown> = {};
+  for (const id of Object.keys(
+    (args.create ?? {}) as Record<string, unknown>,
+  )) {
+    notCreated[id] = {
+      type: "forbidden",
+      description: "Identities are managed in saasmail settings",
+    };
+  }
+  const notUpdated: Record<string, unknown> = {};
+  for (const id of Object.keys(
+    (args.update ?? {}) as Record<string, unknown>,
+  )) {
+    notUpdated[id] = readOnly(id);
+  }
+  const notDestroyed: Record<string, unknown> = {};
+  for (const id of (args.destroy ?? []) as string[])
+    notDestroyed[id] = readOnly(id);
+  const orNull = (value: Record<string, unknown>) =>
+    Object.keys(value).length > 0 ? value : null;
+  return {
+    ok: true,
+    name: "Identity/set",
+    result: {
+      accountId: publicAccountId(userId),
+      oldState: state,
+      newState: state,
+      created: null,
+      updated: null,
+      destroyed: null,
+      notCreated: orNull(notCreated),
+      notUpdated: orNull(notUpdated),
+      notDestroyed: orNull(notDestroyed),
+    },
+  };
+}
+
 export async function executeMethod(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
@@ -591,6 +683,58 @@ export async function executeMethod(
       return methodError(error.type, error.description, error.properties);
     }
     return { ok: true, name, result };
+  }
+
+  if (name === "EmailSubmission/get" || name === "EmailSubmission/query") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result =
+      name === "EmailSubmission/get"
+        ? await emailSubmissionGet(
+            db,
+            allowed,
+            user.id,
+            publicAccountId(user.id),
+            args,
+          )
+        : await emailSubmissionQuery(
+            db,
+            allowed,
+            user.id,
+            publicAccountId(user.id),
+            args,
+          );
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
+  }
+  if (name === "EmailSubmission/changes") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result = await submissionChanges(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+    );
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
+  }
+  if (name === "EmailSubmission/queryChanges") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    return methodError("cannotCalculateChanges");
+  }
+  if (name === "Identity/set") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    return identitySet(db, allowed, user.id, args);
   }
 
   if (/\/(changes|queryChanges)$/.test(name)) {
