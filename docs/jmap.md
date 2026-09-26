@@ -103,13 +103,26 @@ Clients that list `urn:ietf:params:jmap:submission` in `using` can send a saved 
 - **Errors.** Every RFC 8621 §7.5 SetError applies. A provider's permanent rejection returns `forbiddenToSend` with its message, and no Sent Email is created. A temporary failure is accepted: the outbox retries it, and the draft can't be submitted again until the outbox gives up.
 - **The Sent copy** appears in the Sent mailbox as its own Email, with the draft's immutable properties (`blobId`, `size`, `threadId`, addresses, bodies…) and `receivedAt` equal to the send time.
 
-A submission is claimed atomically, so two concurrent `EmailSubmission/set` calls for the same draft make exactly one provider call: one gets `created`, the other `forbiddenToSend`. The claim is released again after a terminal failure or when the outbox finally gives up, so the draft can be submitted once more.
+A submission is claimed atomically, so two concurrent `EmailSubmission/set` calls for the same draft make exactly one provider call: one gets `created`, the other `forbiddenToSend`. The claim is released again after a terminal failure or when the outbox gives up, so the draft can be submitted once more.
+
+### After a send: `onSuccessUpdateEmail` and `onSuccessDestroyEmail`
+
+Both arguments follow RFC 8621 §7.5. After every create in the call has run, one implicit `Email/set` is executed and answered **after** the `EmailSubmission/set` response, under the same method call id. Keys are `#creationId`s of submissions created in the same call; a key naming a submission from an earlier call is ignored. A create that failed is simply skipped, and the successful ones are still applied.
+
+**The implicit `Email/set` uses the ordinary rules table above.** The one extra move is Drafts → Sent (or Trash) for a draft whose submission just succeeded: the draft **becomes** the Sent Email under the same id, keeping the same `receivedAt`, `blobId`, `size`, `threadId` and body. The target must satisfy the Sent rules, and `$seen` is implied rather than required (a Sent Email is always seen in saasmail), so RFC 8621's own example patch — which only removes `$draft` — works unchanged. A patch that keeps `$draft` is rejected with `notUpdated` / `invalidProperties` (the draft rules apply, and Sent is not a mailbox a draft may be in), and the send still stands.
+
+**Any other outcome leaves the draft as it is** and shows the sent message as its own Email in Sent: flagging the draft, moving it to Trash, destroying it, an invalid patch, or neither argument at all (then the Sent Email appears with no extra response). For the same submission, destroy wins over update, and the update is reported as `willDestroy`.
+
+**Other inbox members** see a filed draft appear in Sent as a new Email with the same id (`created`); its author sees it as `updated`. A plain Sent Email is likewise reported as `created` to everyone.
+
+**Crash safety.** Sends are durable through the outbox and an hourly recovery pass, which settles an interrupted send by reading statuses, applies any pending on-success step exactly once, unlocks queued drafts and prunes old submissions. Each step is idempotent, so a client never sees the same patch applied twice. The one remaining window: if the provider accepted a message but the Worker died before recording it, the retry may deliver it twice (there is no provider idempotency key).
+
+**Later failure.** A send that is retried and finally fails stays visible in Sent, marked failed, exactly as on the web.
+
+**Retries resend exactly the original message** — the same From, To and Cc display names, subject, `Message-ID`, `In-Reply-To`, `References`, bodies, attachment filenames and inline `cid`/disposition — even if the identity's display name changed in the meantime.
 
 Not yet supported:
 
-- `onSuccessUpdateEmail`/`onSuccessDestroyEmail` return `invalidArguments`. After sending, clients move or destroy the draft with their own `Email/set`.
-- A retry of a temporarily failed send uses the inbox's current display name and drops the To display name.
-- If the server stops between claiming a draft and recording the send, that draft reports "already being sent" until recovery ships.
 - Mailbox thread counts group JMAP-sent mail by conversation, not by its JMAP `threadId`.
 
 ## State and changes

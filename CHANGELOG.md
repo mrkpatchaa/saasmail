@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **JMAP: `onSuccessUpdateEmail` / `onSuccessDestroyEmail`.** `EmailSubmission/set` now runs the RFC 8621 implicit `Email/set` after a successful send, so a client can file the sent draft into Sent (it keeps its Email id and every immutable property) or destroy it in the same request. JMAP sends are recovered hourly after a crash and retried from their exact original content.
+
 ### Fixed
 
 - **Display names with commas are quoted.** Outbound Cc names such as `Doe, Jane` are now sent as `"Doe, Jane" <…>` instead of being split into two addresses by the provider. The Cloudflare provider now uses the bare address as the envelope recipient when To carries a display name.
@@ -15,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrading to the mailbox/agent/JMAP release
 
-- Apply D1 migrations `0037` through `0058` with `yarn db:migrate:prod` **before** deploying the new Worker. Every outbound send writes the `outbox_emails.bookkeeping_owner` column added in `0053`, so a Worker deployed ahead of that migration fails every send: compose, reply, sequences, campaigns and auto-replies. JMAP blob upload additionally needs the `jmap_blobs` table from `0054`, and JMAP drafts the `jmap_message_content` and `jmap_drafts` tables from `0055` (with `0056`'s change triggers). JMAP sending needs the `jmap_submissions` table, the `sent_emails.jmap_content_id` column and the `jmap_drafts` submission-lock columns from `0057` (with `0058`'s change triggers).
+- Apply D1 migrations `0037` through `0060` with `yarn db:migrate:prod` **before** deploying the new Worker. Every outbound send writes the `outbox_emails.bookkeeping_owner` column added in `0053`, so a Worker deployed ahead of that migration fails every send: compose, reply, sequences, campaigns and auto-replies. JMAP blob upload additionally needs the `jmap_blobs` table from `0054`, and JMAP drafts the `jmap_message_content` and `jmap_drafts` tables from `0055` (with `0056`'s change triggers). JMAP sending needs the `jmap_submissions` table, the `sent_emails.jmap_content_id` column and the `jmap_drafts` submission-lock columns from `0057` (with `0058`'s change triggers). `0059` adds the Draft→Sent alias columns (`sent_emails.jmap_email_id`, `sent_emails.jmap_received_at`, `jmap_changes.exclude_user_id`, `jmap_drafts.alias_delete`, `jmap_submissions.from_header`) and `0060` rewrites the change triggers, so both are needed before the on-success step runs.
 - Diff your gitignored `wrangler.jsonc` against `wrangler.jsonc.example` and add the `AI` binding, the `MAIL_AGENT` Durable Object binding for `MailAgent`, and the `v2` Durable Object migration that creates `MailAgent`.
 - Review the optional `AGENT_APPROVAL_SECRET` and `DB_LOG_QUERIES` variables. Enabling the `AI` binding enables paid Workers AI fallback usage when no Anthropic or OpenAI API key is configured.
 
