@@ -4,6 +4,7 @@ import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
   queryMessages,
   queryMessageThreadKeys,
+  MESSAGE_REFS_PER_QUERY,
   THREAD_KEYS_PER_QUERY,
 } from "../lib/messages/query";
 import {
@@ -28,6 +29,10 @@ import { emailChanges, mailboxChanges, submissionChanges } from "./changes";
 import { emailSet } from "./email-set";
 import { emailSubmissionSet } from "./submission";
 import { emailSubmissionGet, emailSubmissionQuery } from "./submission-read";
+import {
+  listContentThreadKeys,
+  loadContentKeyedSentRefs,
+} from "./sent-content";
 import {
   parseThreadId,
   publicAccountId,
@@ -339,7 +344,7 @@ async function threadGet(
   const keyByPublic = new Map<string, string>();
   const requestedPublic: string[] = [];
   if (ids === undefined || ids === null) {
-    const keys = await queryMessageThreadKeys(
+    const naturalKeys = await queryMessageThreadKeys(
       db,
       allowed,
       { viewer: { userId }, ignoreSnooze: true },
@@ -351,7 +356,15 @@ async function threadGet(
       userId,
       MAX_OBJECTS_IN_GET + 1,
     );
-    const combined = [...new Set([...keys, ...draftKeys])];
+    // JMAP-sent mail can thread under a key neither of those finds.
+    const contentKeys = await listContentThreadKeys(
+      db,
+      allowed,
+      MAX_OBJECTS_IN_GET + 1,
+    );
+    const combined = [
+      ...new Set([...naturalKeys, ...draftKeys, ...contentKeys]),
+    ];
     if (combined.length > MAX_OBJECTS_IN_GET) {
       return methodError("requestTooLarge");
     }
@@ -370,6 +383,8 @@ async function threadGet(
 
   const queryKeys = [...new Set(keyByPublic.values())];
   const grouped = new Map<string, { id: string; at: number }[]>();
+  // Public ids already filed under a key, so nothing is listed twice.
+  const seen = new Set<string>();
   let emailCount = 0;
 
   for (
@@ -385,6 +400,7 @@ async function threadGet(
       order: "asc",
       viewer: { userId },
       withState: true,
+      withJmap: true,
       ignoreSnooze: true,
     });
 
@@ -397,12 +413,11 @@ async function threadGet(
     }
 
     for (const message of page.messages) {
+      const id = publicEmailId(message.ref);
+      seen.add(id);
       const key = jmapThreadKey(message);
       const current = grouped.get(key) ?? [];
-      current.push({
-        id: publicEmailId(message.ref),
-        at: message.occurredAt,
-      });
+      current.push({ id, at: message.occurredAt });
       grouped.set(key, current);
     }
   }
@@ -416,10 +431,51 @@ async function threadGet(
     );
   }
   for (const member of draftMembers) {
+    const id = publicDraftEmailId(member.id);
+    seen.add(id);
     const current = grouped.get(member.threadKey) ?? [];
-    current.push({ id: publicDraftEmailId(member.id), at: member.receivedAt });
+    current.push({ id, at: member.receivedAt });
     grouped.set(member.threadKey, current);
   }
+
+  // JMAP-sent mail keeps its content's thread key (RFC 8621: threadId is
+  // immutable), which can differ from its natural conversation key, so look it
+  // up by content key too.
+  const extraRefs = (
+    await loadContentKeyedSentRefs(db, allowed, queryKeys)
+  ).filter((ref) => !seen.has(publicEmailId(ref)));
+  for (
+    let start = 0;
+    start < extraRefs.length;
+    start += MESSAGE_REFS_PER_QUERY
+  ) {
+    const page = await queryMessages(db, allowed, {
+      messageRefs: extraRefs.slice(start, start + MESSAGE_REFS_PER_QUERY),
+      limit: MESSAGE_REFS_PER_QUERY,
+      order: "asc",
+      viewer: { userId },
+      withState: true,
+      withJmap: true,
+      ignoreSnooze: true,
+    });
+    emailCount += page.messages.length;
+    if (emailCount > MAX_EMAILS_IN_THREAD_GET) {
+      return methodError(
+        "requestTooLarge",
+        `Thread/get is limited to ${MAX_EMAILS_IN_THREAD_GET} matching emails`,
+      );
+    }
+    for (const message of page.messages) {
+      const id = publicEmailId(message.ref);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const key = jmapThreadKey(message);
+      const current = grouped.get(key) ?? [];
+      current.push({ id, at: message.occurredAt });
+      grouped.set(key, current);
+    }
+  }
+
   for (const members of grouped.values()) {
     members.sort(
       (left, right) => left.at - right.at || (left.id < right.id ? -1 : 1),
