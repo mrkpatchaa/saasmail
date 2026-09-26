@@ -1,6 +1,4 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
-import { sanitizeFilename } from "../lib/sanitize-filename";
-import { findReadableAttachment } from "../routers/attachments-router";
 import type { Variables } from "../variables";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import { createEmailSender } from "../lib/email-sender";
@@ -13,13 +11,18 @@ import {
   SUPPORTED_CAPABILITIES,
 } from "./constants";
 import { executeMethod, makeSession } from "./methods";
-import { parseAttachmentBlobId, publicAccountId } from "./public-ids";
+import { publicAccountId } from "./public-ids";
 import { applyResultReferences, type MethodResponse } from "./result-reference";
 import {
   parseDeclaredLength,
   storeUpload,
   uploadTooLargeProblem,
 } from "./upload";
+import {
+  downloadContentType,
+  downloadFilename,
+  resolveReadableBlob,
+} from "./blobs";
 
 function jsonResponse(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
@@ -367,35 +370,35 @@ export function registerJmapRoutes(
       return problem(404, "about:blank", "Not found");
     }
 
-    const attachmentId = parseAttachmentBlobId(c.req.param("blobId"));
-    if (!attachmentId) {
-      return problem(404, "about:blank", "Not found");
-    }
-
-    const attachment = await findReadableAttachment(
+    const blob = await resolveReadableBlob(
       c.get("db"),
       auth.allowed,
-      attachmentId,
+      auth.user.id,
+      c.req.param("blobId"),
     );
-    if (!attachment) {
-      return problem(404, "about:blank", "Not found");
+    if (!blob) return problem(404, "about:blank", "Not found");
+
+    // Strict mode is off: read the union through an explicit shape.
+    const source = blob.source as { r2Key?: string; bytes?: Uint8Array };
+    let body: BodyInit;
+    let length: number;
+    if (source.bytes) {
+      body = source.bytes as BodyInit;
+      length = source.bytes.byteLength;
+    } else {
+      const object = await c.env.R2.get(source.r2Key!);
+      if (!object) return problem(404, "about:blank", "Not found");
+      body = object.body;
+      length = object.size;
     }
 
-    const object = await c.env.R2.get(attachment.r2Key);
-    if (!object) {
-      return problem(404, "about:blank", "Not found");
-    }
-
-    const safeFilename = sanitizeFilename(attachment.filename).replaceAll(
-      '"',
-      "_",
-    );
-    return new Response(object.body, {
+    const filename = downloadFilename(c.req.param("name"), blob.name);
+    return new Response(body, {
       headers: {
-        "Content-Type": attachment.contentType,
-        "Content-Disposition": `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodeURIComponent(safeFilename)}`,
-        "Content-Length": attachment.size.toString(),
-        "Cache-Control": "private, max-age=31536000, immutable",
+        "Content-Type": downloadContentType(c.req.query("type"), blob.type),
+        "Content-Disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+        "Content-Length": length.toString(),
+        "Cache-Control": "private, immutable, max-age=31536000",
         "X-Content-Type-Options": "nosniff",
       },
     });
