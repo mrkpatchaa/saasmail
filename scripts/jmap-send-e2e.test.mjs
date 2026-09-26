@@ -8,6 +8,7 @@ import {
   invalidJmapIds,
   readConfig,
   resolveUrl,
+  run,
   stableStringify,
 } from "./jmap-send-e2e.mjs";
 
@@ -231,5 +232,40 @@ describe("jmap-send-e2e comparisons", () => {
     );
     expect(findMailbox(mailboxes, "sent", "hello@example.com")?.id).toBe("b3");
     expect(findMailbox(mailboxes, "trash", "hello@example.com")).toBeNull();
+  });
+});
+
+describe("jmap-send-e2e runner", () => {
+  it("fails the run, not the process, when the session is not the v2 account", async () => {
+    const lines = [];
+    const fetchImpl = async () => ({
+      status: 200,
+      headers: new Map(),
+      text: async () =>
+        JSON.stringify({
+          capabilities: {},
+          accounts: { "user-1": {} },
+          primaryAccounts: { "urn:ietf:params:jmap:mail": "user-1" },
+          apiUrl: "/jmap/api",
+          uploadUrl: "",
+          downloadUrl: "",
+        }),
+    });
+    const result = await run(
+      {
+        baseUrl: "https://mail.example.com",
+        apiKey: "sk_test",
+        from: "hello@example.com",
+        to: "privacy@example.com",
+        cc: null,
+        oldAccountId: null,
+        expectDelivery: false,
+        deliveryTimeoutSeconds: 1,
+      },
+      { fetchImpl, log: (line) => lines.push(line), sleep: async () => {} },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.failure).toContain("account id is the v2 form");
+    expect(lines.filter((line) => line.startsWith("FAIL"))).toHaveLength(1);
   });
 });
