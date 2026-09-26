@@ -384,7 +384,7 @@ describe("JMAP Email/set", () => {
     expect(changes.methodResponses[0][1].updated).toContain(id);
   });
 
-  it("advertises writable rights except for Drafts", async () => {
+  it("advertises writable rights, including Drafts", async () => {
     const { userId, apiKey } = await seedReceived();
     const result = await jmapJson(apiKey, [
       [
@@ -427,10 +427,11 @@ describe("JMAP Email/set", () => {
     });
     expect(byId.get(sys(MINE, "drafts")).myRights).toMatchObject({
       mayReadItems: true,
-      mayAddItems: false,
-      mayRemoveItems: false,
-      maySetSeen: false,
-      maySetKeywords: false,
+      mayAddItems: true,
+      mayRemoveItems: true,
+      maySetSeen: true,
+      maySetKeywords: true,
+      maySubmit: false,
     });
   });
 });

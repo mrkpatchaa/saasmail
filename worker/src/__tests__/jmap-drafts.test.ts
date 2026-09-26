@@ -10,6 +10,7 @@ import {
   createTestUser,
   getDb,
 } from "./helpers";
+import { emails } from "../db/emails.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
@@ -687,6 +688,254 @@ describe("JMAP drafts", () => {
           `jmap-content/${userId}/${orphan.blobId.slice(1)}.eml`,
         ),
       ).toBeNull();
+    });
+  });
+
+  describe("query, threads and mailboxes", () => {
+    const BASE = 1_790_000_000;
+    const iso = (seconds: number) =>
+      new Date(seconds * 1000).toISOString().replace(".000Z", "Z");
+
+    async function seedMessage(id: string, at: number) {
+      await createTestEmail({
+        id,
+        recipient: MINE,
+        messageId: `${id}@example.com`,
+      });
+      await getDb()
+        .update(emails)
+        .set({ receivedAt: at })
+        .where(eq(emails.id, id));
+    }
+
+    async function query(
+      apiKey: string,
+      userId: string,
+      args: Record<string, unknown> = {},
+    ) {
+      const res = await jmapJson(apiKey, [
+        ["Email/query", { accountId: acct(userId), ...args }, "q"],
+      ]);
+      return res.methodResponses[0][1];
+    }
+
+    it("merges drafts and messages by receivedAt with exact paging and total", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await seedMessage("m1", BASE + 100);
+      await seedMessage("m2", BASE + 300);
+      const d1 = await createDraft(apiKey, userId, {
+        receivedAt: iso(BASE + 200),
+      });
+      const d2 = await createDraft(apiKey, userId, {
+        receivedAt: iso(BASE + 400),
+      });
+
+      expect((await query(apiKey, userId)).ids).toEqual([
+        d2.id,
+        rid("m2"),
+        d1.id,
+        rid("m1"),
+      ]);
+      const page = await query(apiKey, userId, {
+        position: 1,
+        limit: 2,
+        calculateTotal: true,
+      });
+      expect(page).toMatchObject({
+        ids: [rid("m2"), d1.id],
+        position: 1,
+        total: 4,
+      });
+      const last = await query(apiKey, userId, { position: -1, limit: 1 });
+      expect(last).toMatchObject({ ids: [rid("m1")], position: 3 });
+    });
+
+    it("never repeats or drops an id across a same-receivedAt boundary", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await seedMessage("same", BASE + 100);
+      const draftSame = await createDraft(apiKey, userId, {
+        receivedAt: iso(BASE + 100),
+      });
+      const first = await query(apiKey, userId, { position: 0, limit: 1 });
+      const second = await query(apiKey, userId, { position: 1, limit: 1 });
+      expect([...first.ids, ...second.ids].sort()).toEqual(
+        [draftSame.id, rid("same")].sort(),
+      );
+    });
+
+    it("filters drafts by mailbox, $draft, text, from and keywords", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await seedMessage("m1", BASE + 100);
+      const plan = await createDraft(apiKey, userId, {
+        subject: "Quarterly plan",
+        receivedAt: iso(BASE + 200),
+      });
+      const flagged = await createDraft(apiKey, userId, {
+        keywords: { $draft: true, $flagged: true },
+        receivedAt: iso(BASE + 300),
+      });
+
+      expect(
+        (
+          await query(apiKey, userId, {
+            filter: { inMailbox: sys(MINE, "drafts") },
+          })
+        ).ids,
+      ).toEqual([flagged.id, plan.id]);
+      expect(
+        (await query(apiKey, userId, { filter: { hasKeyword: "$draft" } })).ids,
+      ).toEqual([flagged.id, plan.id]);
+      expect(
+        (await query(apiKey, userId, { filter: { notKeyword: "$draft" } })).ids,
+      ).toEqual([rid("m1")]);
+      expect(
+        (await query(apiKey, userId, { filter: { text: "Quarterly" } })).ids,
+      ).toEqual([plan.id]);
+      expect(
+        (await query(apiKey, userId, { filter: { from: "drafts@" } })).ids,
+      ).toEqual([flagged.id, plan.id]);
+      expect(
+        (await query(apiKey, userId, { filter: { hasKeyword: "$flagged" } }))
+          .ids,
+      ).toEqual([flagged.id]);
+      expect(
+        (
+          await query(apiKey, userId, {
+            filter: { inMailbox: sys(MINE, "inbox") },
+          })
+        ).ids,
+      ).toEqual([rid("m1")]);
+    });
+
+    it("shows trashed drafts and trashed mail together in Trash", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await seedMessage("m1", BASE + 100);
+      const d1 = await createDraft(apiKey, userId, {
+        receivedAt: iso(BASE + 200),
+      });
+      await jmapJson(apiKey, [
+        [
+          "Email/set",
+          {
+            accountId: acct(userId),
+            update: {
+              [d1.id]: { mailboxIds: { [sys(MINE, "trash")]: true } },
+              [rid("m1")]: { mailboxIds: { [sys(MINE, "trash")]: true } },
+            },
+          },
+          "s",
+        ],
+      ]);
+      expect(
+        (
+          await query(apiKey, userId, {
+            filter: { inMailbox: sys(MINE, "trash") },
+          })
+        ).ids,
+      ).toEqual([d1.id, rid("m1")]);
+    });
+
+    it("puts a reply draft in its original's thread, ordered by time", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      await createTestPerson();
+      await createTestEmail({
+        id: "orig",
+        recipient: MINE,
+        messageId: "<orig@example.com>",
+        conversationId: "c_0123456789abcdef",
+      });
+      await getDb()
+        .update(emails)
+        .set({ receivedAt: BASE + 100 })
+        .where(eq(emails.id, "orig"));
+      const reply = await createDraft(apiKey, userId, {
+        inReplyTo: ["orig@example.com"],
+        receivedAt: iso(BASE + 200),
+      });
+      const alone = await createDraft(apiKey, userId, {
+        to: [{ email: "nobody@example.com" }],
+      });
+
+      const res = await jmapJson(apiKey, [
+        [
+          "Thread/get",
+          {
+            accountId: acct(userId),
+            ids: [thread("c_0123456789abcdef")],
+          },
+          "t",
+        ],
+        ["Thread/get", { accountId: acct(userId), ids: null }, "all"],
+      ]);
+      expect(res.methodResponses[0][1].list).toEqual([
+        { id: thread("c_0123456789abcdef"), emailIds: [rid("orig"), reply.id] },
+      ]);
+      expect(res.methodResponses[1][1].list).toContainEqual({
+        id: alone.threadId,
+        emailIds: [alone.id],
+      });
+    });
+
+    it("counts drafts in Drafts and Trash, grants Drafts rights, and moves the state", async () => {
+      const { userId, apiKey } = await createTestUser({ id: "drafter" });
+      const before = await jmapJson(apiKey, [
+        ["Mailbox/query", { accountId: acct(userId) }, "q"],
+      ]);
+      await createDraft(apiKey, userId, { to: [{ email: "one@example.com" }] });
+      const seen = await createDraft(apiKey, userId, {
+        to: [{ email: "two@example.com" }],
+        keywords: { $draft: true, $seen: true },
+      });
+      await jmapJson(apiKey, [
+        [
+          "Email/set",
+          {
+            accountId: acct(userId),
+            update: {
+              [seen.id]: { mailboxIds: { [sys(MINE, "trash")]: true } },
+            },
+          },
+          "s",
+        ],
+      ]);
+      const res = await jmapJson(apiKey, [
+        [
+          "Mailbox/get",
+          {
+            accountId: acct(userId),
+            ids: [sys(MINE, "drafts"), sys(MINE, "trash")],
+          },
+          "m",
+        ],
+        ["Mailbox/query", { accountId: acct(userId) }, "q"],
+      ]);
+      const [drafts, trash] = res.methodResponses[0][1].list;
+      expect(drafts).toMatchObject({
+        totalEmails: 1,
+        unreadEmails: 1,
+        totalThreads: 1,
+        unreadThreads: 1,
+        myRights: {
+          mayAddItems: true,
+          mayRemoveItems: true,
+          maySetSeen: true,
+          maySetKeywords: true,
+          maySubmit: false,
+        },
+      });
+      expect(trash).toMatchObject({
+        totalEmails: 1,
+        unreadEmails: 0,
+        totalThreads: 1,
+        unreadThreads: 0,
+      });
+      expect(res.methodResponses[1][1].queryState).not.toBe(
+        before.methodResponses[0][1].queryState,
+      );
     });
   });
 });

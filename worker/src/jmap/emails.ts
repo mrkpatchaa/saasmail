@@ -1,6 +1,8 @@
 import type { DrizzleD1Database } from "drizzle-orm/d1";
+import { sql, type SQL } from "drizzle-orm";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
 import {
+  buildMessageQuerySql,
   countMessages,
   MESSAGE_REFS_PER_QUERY,
   queryMessages,
@@ -15,8 +17,19 @@ import {
 } from "../lib/messages/types";
 import { customMailboxId, systemMailboxId } from "./ids";
 import { selectEmailProperties } from "./content";
-import { draftEmailObject, listDrafts, loadDraftsByIds } from "./drafts";
-import { loadMailboxDescriptors, type MailboxDescriptor } from "./mailboxes";
+import {
+  countDrafts,
+  draftArmSql,
+  draftEmailObject,
+  listDrafts,
+  loadDraftsByIds,
+  type DraftFilter,
+} from "./drafts";
+import {
+  isSystemDescriptor,
+  loadMailboxDescriptors,
+  type MailboxDescriptor,
+} from "./mailboxes";
 import {
   parseAnyEmailId,
   parseEmailId,
@@ -498,33 +511,78 @@ function descriptorFolder(descriptor: MailboxDescriptor): MessageFolder | null {
   return descriptor.role;
 }
 
-function keywordQuery(
-  filter: Record<string, unknown>,
-): Pick<MessageQuery, "seen" | "starred"> | null {
-  const result: Pick<MessageQuery, "seen" | "starred"> = {};
+const QUERY_KEYWORDS = ["$seen", "$flagged", "$draft"];
+
+type KeywordFilter = { seen?: boolean; starred?: boolean; draft?: boolean };
+
+/** null when hasKeyword and notKeyword contradict each other (nothing matches). */
+function keywordFilter(filter: Record<string, unknown>): KeywordFilter | null {
+  const result: KeywordFilter = {};
   const pairs = [
     [filter.hasKeyword, true],
     [filter.notKeyword, false],
   ] as const;
-
   for (const [value, wanted] of pairs) {
     if (value === undefined) continue;
-    if (
-      typeof value !== "string" ||
-      (value !== "$seen" && value !== "$flagged")
-    ) {
-      return null;
-    }
-    if (value === "$seen") {
-      if (result.seen !== undefined && result.seen !== wanted) return null;
-      result.seen = wanted;
-    } else {
-      if (result.starred !== undefined && result.starred !== wanted)
-        return null;
-      result.starred = wanted;
-    }
+    const key =
+      value === "$seen" ? "seen" : value === "$flagged" ? "starred" : "draft";
+    if (result[key] !== undefined && result[key] !== wanted) return null;
+    result[key] = wanted;
   }
   return result;
+}
+
+function descriptorDraftRole(
+  descriptor: MailboxDescriptor,
+): "drafts" | "trash" | null {
+  if (!isSystemDescriptor(descriptor)) return null;
+  return descriptor.role === "drafts" || descriptor.role === "trash"
+    ? descriptor.role
+    : null;
+}
+
+async function mergedEmailPage(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  userId: string,
+  messageQuery: MessageQuery | null,
+  draftFilter: DraftFilter | null,
+  position: number,
+  limit: number,
+): Promise<string[]> {
+  const window = position + limit;
+  const arms: SQL[] = [];
+  if (messageQuery) {
+    const built = buildMessageQuerySql(allowed, {
+      ...messageQuery,
+      offset: 0,
+      limit: window,
+    });
+    if (built) {
+      arms.push(sql`SELECT kind, id, occurred_at FROM (${built.statement})`);
+    }
+  }
+  if (draftFilter) {
+    arms.push(draftArmSql(allowed, userId, draftFilter, window + 1));
+  }
+  if (arms.length === 0) return [];
+  // Each arm already holds its top `window` rows, so the merged top window is
+  // exact.
+  const rows = await db.all<{ kind: string; id: string; occurred_at: number }>(
+    sql`
+    SELECT kind, id, occurred_at FROM (${sql.join(arms, sql` UNION ALL `)})
+     ORDER BY occurred_at DESC, id DESC, kind ASC
+     LIMIT ${limit} OFFSET ${position}
+  `,
+  );
+  return rows.map((row) =>
+    row.kind === "draft"
+      ? publicDraftEmailId(row.id)
+      : publicEmailId({
+          kind: row.kind === "sent" ? "sent" : "received",
+          id: row.id,
+        }),
+  );
 }
 
 export async function emailQuery(
@@ -583,19 +641,15 @@ export async function emailQuery(
     }
   }
 
-  const keywords = keywordQuery(filter);
-  if (
-    keywords === null &&
-    (filter.hasKeyword !== undefined || filter.notKeyword !== undefined)
-  ) {
-    const validKeywords = ["$seen", "$flagged"];
-    const values = [filter.hasKeyword, filter.notKeyword].filter(
-      (value): value is string => typeof value === "string",
-    );
-    if (values.some((value) => !validKeywords.includes(value))) {
+  for (const value of [filter.hasKeyword, filter.notKeyword]) {
+    if (
+      value !== undefined &&
+      (typeof value !== "string" || !QUERY_KEYWORDS.includes(value))
+    ) {
       return { type: "invalidArguments", properties: ["filter"] };
     }
   }
+  const keywords = keywordFilter(filter);
 
   const after = parseAfter(filter.after);
   const before = parseBefore(filter.before);
@@ -617,11 +671,11 @@ export async function emailQuery(
   }
   const limit = Math.min(requestedLimit, MAX_OBJECTS_IN_GET);
 
-  let queryExtra: MessageQuery = {
+  let messagesImpossible = keywords === null || keywords.draft === true;
+  let draftsImpossible = keywords === null || keywords.draft === false;
+  let messageQuery: MessageQuery = {
     order: "desc",
     ignoreSnooze: true,
-    offset: position,
-    limit: Math.max(limit, 1),
     viewer: { userId },
     ...(typeof filter.text === "string"
       ? { search: filter.text, searchMode: "fulltext" as const }
@@ -629,25 +683,38 @@ export async function emailQuery(
     ...(typeof filter.from === "string" ? { from: filter.from } : {}),
     ...(after !== undefined ? { after } : {}),
     ...(before !== undefined ? { before } : {}),
-    ...(keywords ?? {}),
+    ...(keywords && keywords.seen !== undefined ? { seen: keywords.seen } : {}),
+    ...(keywords && keywords.starred !== undefined
+      ? { starred: keywords.starred }
+      : {}),
+  };
+  const draftFilter: DraftFilter = {
+    ...(typeof filter.text === "string" ? { text: filter.text } : {}),
+    ...(typeof filter.from === "string" ? { from: filter.from } : {}),
+    ...(after !== undefined ? { after } : {}),
+    ...(before !== undefined ? { before } : {}),
+    ...(keywords && keywords.seen !== undefined ? { seen: keywords.seen } : {}),
+    ...(keywords && keywords.starred !== undefined
+      ? { flagged: keywords.starred }
+      : {}),
   };
 
-  let impossible = keywords === null;
   if (typeof filter.inMailbox === "string") {
     const descriptors = await loadMailboxDescriptors(db, allowed);
     const descriptor = descriptors.find((item) => item.id === filter.inMailbox);
     if (!descriptor) {
-      impossible = true;
+      messagesImpossible = true;
+      draftsImpossible = true;
     } else {
       const folder = descriptorFolder(descriptor);
-      if (!folder) {
-        impossible = true;
-      } else {
-        queryExtra = {
-          ...queryExtra,
-          inboxes: [descriptor.inbox],
-          folder,
-        };
+      if (!folder) messagesImpossible = true;
+      else
+        messageQuery = { ...messageQuery, inboxes: [descriptor.inbox], folder };
+      const role = descriptorDraftRole(descriptor);
+      if (!role) draftsImpossible = true;
+      else {
+        draftFilter.inbox = descriptor.inbox;
+        draftFilter.role = role;
       }
     }
   }
@@ -655,23 +722,28 @@ export async function emailQuery(
   const queryState = await jmapState(db, allowed, userId);
   let total: number | undefined;
   if (position < 0 || args.calculateTotal === true) {
-    total = impossible
-      ? 0
-      : await countMessages(db, allowed, {
-          ...queryExtra,
-          limit: undefined,
-          offset: undefined,
-        });
+    total =
+      (messagesImpossible
+        ? 0
+        : await countMessages(db, allowed, messageQuery)) +
+      (draftsImpossible
+        ? 0
+        : await countDrafts(db, allowed, userId, draftFilter));
   }
-
   const resolvedPosition =
     position < 0 ? Math.max(0, (total ?? 0) + position) : position;
-  queryExtra = { ...queryExtra, offset: resolvedPosition };
 
   let ids: string[] = [];
-  if (!impossible && limit > 0) {
-    const page = await queryMessages(db, allowed, queryExtra);
-    ids = page.messages.map((message) => publicEmailId(message.ref));
+  if (limit > 0 && (!messagesImpossible || !draftsImpossible)) {
+    ids = await mergedEmailPage(
+      db,
+      allowed,
+      userId,
+      messagesImpossible ? null : messageQuery,
+      draftsImpossible ? null : draftFilter,
+      resolvedPosition,
+      limit,
+    );
   }
 
   const result: Record<string, unknown> = {

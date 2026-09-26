@@ -1,7 +1,8 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
+import { escapeLike } from "../lib/helpers";
 import {
   inboxScopeSql,
   isInboxAllowed,
@@ -149,4 +150,141 @@ export async function destroyDraft(
       error,
     );
   }
+}
+
+export type DraftFilter = {
+  inbox?: string;
+  role?: "drafts" | "trash";
+  text?: string;
+  from?: string;
+  after?: number;
+  before?: number;
+  seen?: boolean;
+  flagged?: boolean;
+  threadKeys?: string[];
+};
+
+/** WHERE clause over `jmap_drafts d JOIN jmap_message_content c`. */
+export function draftWhereSql(
+  allowed: AllowedInboxes,
+  userId: string,
+  filter: DraftFilter,
+): SQL {
+  const text = filter.text?.trim();
+  const textPattern = text ? `%${escapeLike(text)}%` : null;
+  return sql`d.user_id = ${userId}
+    ${inboxScopeSql(allowed, sql`d.inbox`)}
+    ${filter.inbox === undefined ? sql`` : sql`AND d.inbox = ${filter.inbox.toLowerCase()}`}
+    ${filter.role === undefined ? sql`` : sql`AND d.mailbox_role = ${filter.role}`}
+    ${
+      textPattern === null
+        ? sql``
+        : sql`AND (c.subject LIKE ${textPattern} ESCAPE '\\' OR c.body_values_json LIKE ${textPattern} ESCAPE '\\')`
+    }
+    ${
+      filter.from === undefined
+        ? sql``
+        : sql`AND lower(json_extract(c.from_json, '$[0].email')) LIKE ${`%${escapeLike(filter.from.toLowerCase())}%`} ESCAPE '\\'`
+    }
+    ${filter.after === undefined ? sql`` : sql`AND d.received_at >= ${filter.after}`}
+    ${filter.before === undefined ? sql`` : sql`AND d.received_at <= ${filter.before}`}
+    ${filter.seen === undefined ? sql`` : filter.seen ? sql`AND d.seen = 1` : sql`AND d.seen = 0`}
+    ${filter.flagged === undefined ? sql`` : filter.flagged ? sql`AND d.flagged = 1` : sql`AND d.flagged = 0`}
+    ${
+      filter.threadKeys === undefined
+        ? sql``
+        : filter.threadKeys.length === 0
+          ? sql`AND 0`
+          : sql`AND c.thread_key IN ${filter.threadKeys}`
+    }`;
+}
+
+/** One UNION ALL arm with the same shape as the message query: kind, id, occurred_at. */
+export function draftArmSql(
+  allowed: AllowedInboxes,
+  userId: string,
+  filter: DraftFilter,
+  limit: number,
+): SQL {
+  return sql`SELECT * FROM (
+    SELECT 'draft' AS kind, d.id AS id, d.received_at AS occurred_at
+      FROM jmap_drafts d
+      JOIN jmap_message_content c ON c.id = d.content_id
+     WHERE ${draftWhereSql(allowed, userId, filter)}
+     ORDER BY d.received_at DESC, d.id DESC
+     LIMIT ${limit}
+  )`;
+}
+
+export async function countDrafts(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  filter: DraftFilter,
+): Promise<number> {
+  const rows = await db.all<{ count: number }>(sql`
+    SELECT COUNT(*) AS count
+      FROM jmap_drafts d
+      JOIN jmap_message_content c ON c.id = d.content_id
+     WHERE ${draftWhereSql(allowed, userId, filter)}
+  `);
+  return Number(rows[0]?.count ?? 0);
+}
+
+export function draftThreadKeySql(
+  allowed: AllowedInboxes,
+  userId: string,
+  filter: DraftFilter,
+): SQL {
+  return sql`SELECT c.thread_key AS thread_key
+      FROM jmap_drafts d
+      JOIN jmap_message_content c ON c.id = d.content_id
+     WHERE ${draftWhereSql(allowed, userId, filter)}`;
+}
+
+const THREAD_KEY_CHUNK = 20;
+
+export async function draftThreadMembers(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  threadKeys: string[],
+): Promise<{ threadKey: string; id: string; receivedAt: number }[]> {
+  const members: { threadKey: string; id: string; receivedAt: number }[] = [];
+  for (let start = 0; start < threadKeys.length; start += THREAD_KEY_CHUNK) {
+    const rows = await db.all<{
+      thread_key: string;
+      id: string;
+      received_at: number;
+    }>(sql`
+      SELECT c.thread_key AS thread_key, d.id AS id, d.received_at AS received_at
+        FROM jmap_drafts d
+        JOIN jmap_message_content c ON c.id = d.content_id
+       WHERE ${draftWhereSql(allowed, userId, {
+         threadKeys: threadKeys.slice(start, start + THREAD_KEY_CHUNK),
+       })}
+    `);
+    for (const row of rows) {
+      members.push({
+        threadKey: row.thread_key,
+        id: row.id,
+        receivedAt: row.received_at,
+      });
+    }
+  }
+  return members;
+}
+
+export async function listDraftThreadKeys(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  limit: number,
+): Promise<string[]> {
+  const rows = await db.all<{ thread_key: string }>(sql`
+    SELECT DISTINCT thread_key FROM (${draftThreadKeySql(allowed, userId, {})})
+     ORDER BY thread_key
+     LIMIT ${limit}
+  `);
+  return rows.map((row) => row.thread_key);
 }

@@ -28,6 +28,8 @@ type StateAggregate = {
   mailbox_max: number | null;
   identity_count: number;
   identity_max: number | null;
+  draft_count: number;
+  draft_max: number | null;
 };
 
 export async function jmapState(
@@ -40,6 +42,7 @@ export async function jmapState(
   const mailboxStateScope = inboxScopeSql(allowed, sql`mms.inbox`);
   const mailboxScope = inboxScopeSql(allowed, sql`mb.inbox`);
   const identityScope = inboxScopeSql(allowed, sql`si.email`);
+  const draftScope = inboxScopeSql(allowed, sql`jd.inbox`);
 
   const rows = await db.all<StateAggregate>(sql`
     SELECT
@@ -62,7 +65,9 @@ export async function jmapState(
       (SELECT COUNT(*) FROM mailboxes mb WHERE 1 = 1 ${mailboxScope}) AS mailbox_count,
       (SELECT MAX(mb.updated_at) FROM mailboxes mb WHERE 1 = 1 ${mailboxScope}) AS mailbox_max,
       (SELECT COUNT(*) FROM sender_identities si WHERE 1 = 1 ${identityScope}) AS identity_count,
-      (SELECT MAX(si.updated_at) FROM sender_identities si WHERE 1 = 1 ${identityScope}) AS identity_max
+      (SELECT MAX(si.updated_at) FROM sender_identities si WHERE 1 = 1 ${identityScope}) AS identity_max,
+      (SELECT COUNT(*) FROM jmap_drafts jd WHERE jd.user_id = ${userId} ${draftScope}) AS draft_count,
+      (SELECT MAX(jd.updated_at) FROM jmap_drafts jd WHERE jd.user_id = ${userId} ${draftScope}) AS draft_max
   `);
 
   return opaqueState({ v: JMAP_ID_FORMAT_VERSION, ...(rows[0] ?? {}) });
