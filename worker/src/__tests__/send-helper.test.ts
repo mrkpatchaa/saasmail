@@ -9,6 +9,7 @@ const sent: SendEmailParams[] = [];
 const fakeSender = {
   provider: "none" as const,
   maxAttachmentBytes: () => 25_000_000,
+  maxMessageBytes: () => 25_000_000,
   send: vi.fn(async (params: SendEmailParams) => {
     sent.push(params);
     return { id: "fake-msg-id", error: null };

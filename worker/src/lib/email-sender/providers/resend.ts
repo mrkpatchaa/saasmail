@@ -1,6 +1,6 @@
 import { Resend } from "resend";
 import type { EmailSender, SendEmailParams, SendEmailResult } from "../types";
-import { toBase64 } from "../shared";
+import { toBase64, withoutHeader } from "../shared";
 import { classifyErrorMessage } from "../classify";
 
 export class ResendSender implements EmailSender {
@@ -19,12 +19,16 @@ export class ResendSender implements EmailSender {
       subject: params.subject,
       html: params.html,
       text: params.text,
-      headers: params.headers,
+      // Resend stamps Date itself; overriding it isn't documented.
+      headers: withoutHeader(params.headers, "Date"),
       ...(params.attachments && params.attachments.length > 0
         ? {
             attachments: params.attachments.map((a) => ({
               filename: a.filename,
               content: toBase64(a.content),
+              contentType: a.contentType,
+              // The SDK sends a part with contentId as inline.
+              ...(a.contentId ? { contentId: a.contentId } : {}),
             })),
           }
         : {}),
@@ -46,5 +50,11 @@ export class ResendSender implements EmailSender {
 
   maxAttachmentBytes(): number {
     return 25 * 1024 * 1024;
+  }
+
+  maxMessageBytes(): number {
+    // "max 40MB per email, after Base64 encoding of the attachments"
+    // (resend.com/docs/api-reference/emails/send-email).
+    return 40_000_000;
   }
 }

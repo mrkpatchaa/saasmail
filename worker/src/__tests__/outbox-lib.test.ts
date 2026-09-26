@@ -61,6 +61,7 @@ function fakeSender(results: SendEmailResult[]): EmailSender & {
       return results[Math.min(calls.length - 1, results.length - 1)];
     },
     maxAttachmentBytes: () => 25 * 1024 * 1024,
+    maxMessageBytes: () => 25 * 1024 * 1024,
   };
 }
 
@@ -144,6 +145,7 @@ describe("sendViaOutbox", () => {
         throw new Error("unexpected transport crash");
       },
       maxAttachmentBytes: () => 25 * 1024 * 1024,
+      maxMessageBytes: () => 25 * 1024 * 1024,
     };
     await expect(sendViaOutbox(baseParams(throwingSender))).rejects.toThrow(
       "unexpected transport crash",
@@ -162,6 +164,7 @@ describe("sendViaOutbox", () => {
         return { id: "prov-1", error: null };
       },
       maxAttachmentBytes: () => 25 * 1024 * 1024,
+      maxMessageBytes: () => 25 * 1024 * 1024,
     };
     await sendViaOutbox(baseParams(observingSender));
     expect(observedNextRetryAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
