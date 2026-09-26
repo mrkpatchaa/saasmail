@@ -170,6 +170,18 @@ describe("sendViaOutbox", () => {
     expect(observedNextRetryAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
   });
 
+  it("sends To with its display name but stores the bare address", async () => {
+    const sender = fakeSender([TRANSIENT]);
+    await sendViaOutbox({
+      ...baseParams(sender),
+      to: "john@example.com",
+      toName: "Doe, John",
+    });
+    expect(sender.calls[0].to).toBe('"Doe, John" <john@example.com>');
+    const [row] = await getDb().select().from(outboxEmails);
+    expect(row.toAddress).toBe("john@example.com");
+  });
+
   it("deletes the row when every recipient is suppressed", async () => {
     const db = getDb();
     const now = Math.floor(Date.now() / 1000);
