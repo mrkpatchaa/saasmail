@@ -679,6 +679,51 @@ describe("EmailSubmission/set create", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("still answers with the submission when its on-success step fails", async () => {
+    const { sender, calls } = recordingSender();
+    const draft = await createDraft(userId, sender);
+    await env.DB.prepare(
+      `CREATE TRIGGER on_success_fails BEFORE UPDATE OF on_success_state ON jmap_submissions
+       BEGIN SELECT RAISE(ABORT, 'd1 down'); END`,
+    ).run();
+    let responses: unknown[][];
+    try {
+      responses = await runJmap(
+        userId,
+        [
+          [
+            "EmailSubmission/set",
+            {
+              accountId: acct(userId),
+              create: { s1: { identityId: idn(MINE), emailId: draft.id } },
+              onSuccessUpdateEmail: {
+                "#s1": { "keywords/$flagged": true },
+              },
+            },
+            "s",
+          ],
+        ],
+        sender,
+      );
+    } finally {
+      await env.DB.prepare("DROP TRIGGER on_success_fails").run();
+    }
+    expect(calls).toHaveLength(1);
+    expect(responses[0][0]).toBe("EmailSubmission/set");
+    expect(
+      (responses[0][1] as { created: Record<string, { id: string }> }).created
+        .s1.id,
+    ).toMatch(/^E/);
+    expect(responses[1]).toEqual([
+      "error",
+      expect.objectContaining({ type: "serverFail" }),
+      "s",
+    ]);
+    // The step stays pending, so the hourly recovery applies it.
+    const [submission] = await getDb().select().from(jmapSubmissions);
+    expect(submission.onSuccessState).toBe("pending");
+  });
+
   it("a failing create still reports the creates already sent in the same call", async () => {
     const blob = await uploadBlob(
       userId,

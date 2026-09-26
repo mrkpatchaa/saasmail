@@ -821,15 +821,33 @@ export async function emailSubmissionSet(
   // through its own `applied` marker.
   const followUps: { name: string; result: Record<string, unknown> }[] = [];
   if (acceptedIds.length > 0) {
-    const implicit = await applyOnSuccessStep({
-      db,
-      allowed,
-      user,
-      ctx,
-      submissionIds: acceptedIds,
-      emitResponse: wantsImplicitEmailSet(onSuccess),
-    });
-    if (implicit) followUps.push(implicit);
+    try {
+      const implicit = await applyOnSuccessStep({
+        db,
+        allowed,
+        user,
+        ctx,
+        submissionIds: acceptedIds,
+        emitResponse: wantsImplicitEmailSet(onSuccess),
+      });
+      if (implicit) followUps.push(implicit);
+    } catch (error) {
+      // The messages were sent: answer with the submissions regardless. Their
+      // steps stay pending (drafts locked), and the hourly recovery runs them.
+      console.error(
+        "[jmap] on-success step failed; recovery will apply it:",
+        error,
+      );
+      if (wantsImplicitEmailSet(onSuccess)) {
+        followUps.push({
+          name: "error",
+          result: {
+            type: "serverFail",
+            description: "The on-success step will be completed later",
+          },
+        });
+      }
+    }
   }
   // The step wrote change rows, so the new state is read after it.
   response.newState = (await currentJmapState(db, allowed, userId)).state;
