@@ -16,6 +16,7 @@ import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { setUserState } from "../lib/messages/state";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
+import { acct } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
 const OTHER = "other@saasmail.test";
@@ -54,7 +55,7 @@ async function member(id: string, inbox = MINE) {
 
 async function stateFor(apiKey: string, userId: string) {
   const result = await jmapJson(apiKey, [
-    ["Email/get", { accountId: userId, ids: [] }, "g"],
+    ["Email/get", { accountId: acct(userId), ids: [] }, "g"],
   ]);
   return result.methodResponses[0][1].state as string;
 }
@@ -108,7 +109,7 @@ describe("JMAP changes and snooze projection", () => {
     await getDb().delete(emails).where(eq(emails.id, "ephemeral-email"));
 
     const result = await jmapJson(apiKey, [
-      ["Email/changes", { accountId: userId, sinceState }, "c"],
+      ["Email/changes", { accountId: acct(userId), sinceState }, "c"],
     ]);
     const changes = result.methodResponses[0][1];
     expect(changes.created).toEqual(["received:created-email"]);
@@ -148,7 +149,7 @@ describe("JMAP changes and snooze projection", () => {
     const result = await jmapJson(second.apiKey, [
       [
         "Email/changes",
-        { accountId: second.userId, sinceState: secondState },
+        { accountId: acct(second.userId), sinceState: secondState },
         "c",
       ],
     ]);
@@ -182,7 +183,7 @@ describe("JMAP changes and snooze projection", () => {
       const result = await jmapJson(apiKey, [
         [
           "Email/changes",
-          { accountId: userId, sinceState: state, maxChanges: 2 },
+          { accountId: acct(userId), sinceState: state, maxChanges: 2 },
           "c",
         ],
       ]);
@@ -215,7 +216,11 @@ describe("JMAP changes and snooze projection", () => {
         createdBy: null,
       });
     let result = await jmapJson(apiKey, [
-      ["Email/changes", { accountId: userId, sinceState: baseState }, "c1"],
+      [
+        "Email/changes",
+        { accountId: acct(userId), sinceState: baseState },
+        "c1",
+      ],
     ]);
     expect(result.methodResponses[0]).toEqual([
       "error",
@@ -226,16 +231,20 @@ describe("JMAP changes and snooze projection", () => {
     const freshState = await stateFor(apiKey, userId);
     const [, seq, , fp] = freshState.split("-");
     const oldIssuedAt = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
-    const oldState = `j1-${seq}-${oldIssuedAt}-${fp}`;
+    const oldState = `j2-${seq}-${oldIssuedAt}-${fp}`;
     result = await jmapJson(apiKey, [
-      ["Email/changes", { accountId: userId, sinceState: oldState }, "c2"],
+      [
+        "Email/changes",
+        { accountId: acct(userId), sinceState: oldState },
+        "c2",
+      ],
     ]);
     expect(result.methodResponses[0][1].type).toBe("cannotCalculateChanges");
 
     result = await jmapJson(apiKey, [
       [
         "Email/changes",
-        { accountId: userId, sinceState: freshState, maxChanges: 0 },
+        { accountId: acct(userId), sinceState: freshState, maxChanges: 0 },
         "c3",
       ],
     ]);
@@ -253,7 +262,11 @@ describe("JMAP changes and snooze projection", () => {
       FROM n
     `);
     result = await jmapJson(apiKey, [
-      ["Email/changes", { accountId: userId, sinceState: freshState }, "c4"],
+      [
+        "Email/changes",
+        { accountId: acct(userId), sinceState: freshState },
+        "c4",
+      ],
     ]);
     expect(result.methodResponses[0][1].type).toBe("cannotCalculateChanges");
   });
@@ -273,7 +286,7 @@ describe("JMAP changes and snooze projection", () => {
     });
 
     let result = await jmapJson(apiKey, [
-      ["Mailbox/changes", { accountId: userId, sinceState }, "m1"],
+      ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m1"],
     ]);
     expect(result.methodResponses[0][1].updatedProperties).toEqual([
       "totalEmails",
@@ -296,7 +309,7 @@ describe("JMAP changes and snooze projection", () => {
       updatedAt: 1,
     });
     result = await jmapJson(apiKey, [
-      ["Mailbox/changes", { accountId: userId, sinceState }, "m2"],
+      ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m2"],
     ]);
     expect(result.methodResponses[0][1].created).toEqual([
       "mbx:changes-folder",
@@ -306,7 +319,7 @@ describe("JMAP changes and snooze projection", () => {
     sinceState = result.methodResponses[0][1].newState;
     await getDb().delete(mailboxes).where(eq(mailboxes.id, "changes-folder"));
     result = await jmapJson(apiKey, [
-      ["Mailbox/changes", { accountId: userId, sinceState }, "m3"],
+      ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m3"],
     ]);
     expect(result.methodResponses[0][1].destroyed).toEqual([
       "mbx:changes-folder",
@@ -345,16 +358,24 @@ describe("JMAP changes and snooze projection", () => {
       });
 
     const get = await jmapJson(apiKey, [
-      ["Email/get", { accountId: userId, ids: ["received:snooze-email"] }, "g"],
+      [
+        "Email/get",
+        { accountId: acct(userId), ids: ["received:snooze-email"] },
+        "g",
+      ],
       [
         "Email/query",
         {
-          accountId: userId,
+          accountId: acct(userId),
           filter: { inMailbox: `sys:${MINE}:inbox` },
         },
         "q",
       ],
-      ["Mailbox/get", { accountId: userId, ids: [`sys:${MINE}:inbox`] }, "m"],
+      [
+        "Mailbox/get",
+        { accountId: acct(userId), ids: [`sys:${MINE}:inbox`] },
+        "m",
+      ],
     ]);
     expect(get.methodResponses[0][1].list[0].mailboxIds).toEqual({
       [`sys:${MINE}:inbox`]: true,

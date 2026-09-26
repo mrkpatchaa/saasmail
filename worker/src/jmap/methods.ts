@@ -23,6 +23,7 @@ import {
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { emailChanges, mailboxChanges } from "./changes";
 import { emailSet } from "./email-set";
+import { publicAccountId, publicIdentityId } from "./public-ids";
 import { currentJmapState, jmapState } from "./state";
 
 const MAX_EMAILS_IN_THREAD_GET = 1024;
@@ -47,7 +48,7 @@ function methodError(
 }
 
 function accountError(accountId: unknown, userId: string): MethodResult | null {
-  if (typeof accountId !== "string" || accountId !== userId) {
+  if (typeof accountId !== "string" || accountId !== publicAccountId(userId)) {
     return methodError("accountNotFound");
   }
   return null;
@@ -127,18 +128,12 @@ function filterProperties(
   return result;
 }
 
-function identityId(email: string): string {
-  const bytes = new TextEncoder().encode(email.toLowerCase());
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return `idn_${btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "")}`;
-}
-
 export async function makeSession(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
   user: any,
 ): Promise<Record<string, unknown>> {
+  const accountId = publicAccountId(user.id);
   return {
     capabilities: {
       [CORE_CAPABILITY]: {
@@ -154,7 +149,7 @@ export async function makeSession(
       [MAIL_CAPABILITY]: {},
     },
     accounts: {
-      [user.id]: {
+      [accountId]: {
         name: user.name || user.email || user.id,
         isPersonal: true,
         isReadOnly: false,
@@ -173,7 +168,7 @@ export async function makeSession(
     // RFC 8620 keys primaryAccounts by capabilities present in
     // accountCapabilities. Core is session-level and is not listed there.
     primaryAccounts: {
-      [MAIL_CAPABILITY]: user.id,
+      [MAIL_CAPABILITY]: accountId,
     },
     username: user.email ?? user.id,
     apiUrl: "/jmap/api",
@@ -237,7 +232,7 @@ async function mailboxGet(
     ok: true,
     name: "Mailbox/get",
     result: {
-      accountId: userId,
+      accountId: publicAccountId(userId),
       state,
       list,
       notFound,
@@ -274,7 +269,7 @@ async function mailboxQuery(
     ok: true,
     name: "Mailbox/query",
     result: {
-      accountId: userId,
+      accountId: publicAccountId(userId),
       queryState: await jmapState(db, allowed, userId),
       canCalculateChanges: false,
       position,
@@ -378,7 +373,7 @@ async function threadGet(
     ok: true,
     name: "Thread/get",
     result: {
-      accountId: userId,
+      accountId: publicAccountId(userId),
       state,
       list,
       notFound,
@@ -411,7 +406,7 @@ async function identityGet(
 
   const rows = await listUsableIdentities(db, allowed);
   const all = rows.map((row) => ({
-    id: identityId(row.email),
+    id: publicIdentityId(row.email),
     name: row.displayName ?? row.email,
     email: row.email,
     replyTo: null,
@@ -448,7 +443,7 @@ async function identityGet(
     ok: true,
     name: "Identity/get",
     result: {
-      accountId: userId,
+      accountId: publicAccountId(userId),
       state: await jmapState(db, allowed, userId),
       list,
       notFound,

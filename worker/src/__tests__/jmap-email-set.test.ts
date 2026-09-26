@@ -20,6 +20,7 @@ import {
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
+import { acct } from "./jmap-ids";
 
 const MINE = "write@saasmail.test";
 const OTHER = "other-write@saasmail.test";
@@ -58,7 +59,7 @@ async function jmapJson(apiKey: string, methodCalls: unknown[]) {
 
 async function emailGet(apiKey: string, userId: string, id: string) {
   const result = await jmapJson(apiKey, [
-    ["Email/get", { accountId: userId, ids: [id] }, "g"],
+    ["Email/get", { accountId: acct(userId), ids: [id] }, "g"],
   ]);
   return result.methodResponses[0][1];
 }
@@ -70,7 +71,7 @@ async function emailSet(
   extra: Record<string, unknown> = {},
 ) {
   const result = await jmapJson(apiKey, [
-    ["Email/set", { accountId: userId, update, ...extra }, "s"],
+    ["Email/set", { accountId: acct(userId), update, ...extra }, "s"],
   ]);
   return result.methodResponses[0];
 }
@@ -307,7 +308,7 @@ describe("JMAP Email/set", () => {
       [
         "Email/set",
         {
-          accountId: userId,
+          accountId: acct(userId),
           create: { draft1: {} },
           destroy: [id],
         },
@@ -374,7 +375,11 @@ describe("JMAP Email/set", () => {
     expect(response[0]).toBe("Email/set");
 
     const changes = await jmapJson(apiKey, [
-      ["Email/changes", { accountId: userId, sinceState: before.state }, "c"],
+      [
+        "Email/changes",
+        { accountId: acct(userId), sinceState: before.state },
+        "c",
+      ],
     ]);
     expect(changes.methodResponses[0][1].updated).toContain(id);
   });
@@ -385,7 +390,7 @@ describe("JMAP Email/set", () => {
       [
         "Mailbox/get",
         {
-          accountId: userId,
+          accountId: acct(userId),
           ids: [
             `sys:${MINE}:inbox`,
             `sys:${MINE}:drafts`,
