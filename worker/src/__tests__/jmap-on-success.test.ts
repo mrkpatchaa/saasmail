@@ -184,6 +184,50 @@ describe("EmailSubmission/set on-success step", () => {
     expect(submission.emailId).toBe(draftId);
   });
 
+  it("updates the aliased Email under its D id, and forbids destroying it", async () => {
+    const { authorId } = await seedAccount();
+    const draftId = await createDraft(authorId);
+    await submit(authorId, draftId, {
+      onSuccessUpdateEmail: { "#k1": FILE_INTO_SENT() },
+    });
+    const res = (await jmapCall(
+      authorId,
+      [
+        [
+          "Email/set",
+          {
+            accountId: acct(authorId),
+            update: { [draftId]: { "keywords/$flagged": true } },
+          },
+          "u",
+        ],
+        [
+          "Email/set",
+          {
+            accountId: acct(authorId),
+            update: {
+              [draftId]: {
+                [`mailboxIds/${SENT()}`]: null,
+                [`mailboxIds/${TRASH()}`]: true,
+              },
+            },
+          },
+          "t",
+        ],
+        ["Email/set", { accountId: acct(authorId), destroy: [draftId] }, "d"],
+      ],
+      { sender: recordingSender(OK).sender },
+    )) as Responses;
+    expect(res[0][1].updated).toEqual({ [draftId]: null });
+    expect(res[1][1].updated).toEqual({ [draftId]: null });
+    expect(res[2][1].notDestroyed).toEqual({
+      [draftId]: { type: "forbidden" },
+    });
+    const email = (await getEmail(authorId, draftId)).list[0];
+    expect(email.keywords).toEqual({ $seen: true, $flagged: true });
+    expect(email.mailboxIds).toEqual({ [TRASH()]: true });
+  });
+
   it("keeps every immutable property when the draft is filed into Sent", async () => {
     const { authorId } = await seedAccount();
     const draftId = await createDraft(authorId);

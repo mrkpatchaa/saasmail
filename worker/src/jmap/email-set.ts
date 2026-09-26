@@ -8,7 +8,7 @@ import {
   setMailboxState,
   setUserState,
 } from "../lib/messages/state";
-import type { UnifiedMessage } from "../lib/messages/types";
+import type { MessageRef, UnifiedMessage } from "../lib/messages/types";
 import { MAX_OBJECTS_IN_SET } from "./constants";
 import type { CreatedIds } from "./creation-refs";
 import { resolveCreationRef } from "./creation-refs";
@@ -29,6 +29,7 @@ import {
 import {
   jmapKeywords,
   jmapMailboxIds,
+  loadAliasedSentRefs,
   loadJmapEmailObjectsByIds,
   type JmapMethodError,
 } from "./emails";
@@ -39,7 +40,11 @@ import {
 } from "./mailboxes";
 import type { JmapMethodContext } from "./methods";
 import { aliasDraftToSent, type PendingSubmission } from "./on-success";
-import { parseAnyEmailId, publicDraftEmailId } from "./public-ids";
+import {
+  parseAnyEmailId,
+  publicDraftEmailId,
+  publicEmailId,
+} from "./public-ids";
 import { currentJmapState, parseJmapState } from "./state";
 
 type SystemDescriptor = Extract<MailboxDescriptor, { kind: "system" }>;
@@ -571,13 +576,17 @@ export async function emailSet(
     if (ref && ref.kind === "draft") draftIds.push(ref.id);
     else messageIds.push(id);
   }
-  const loadedMessages = await loadJmapEmailObjectsByIds(
-    db,
-    allowed,
-    userId,
-    messageIds,
-  );
   const loadedDrafts = await loadDraftsByIds(db, allowed, userId, draftIds);
+  // A D id with no draft row may be a draft filed into Sent (the alias): it is
+  // that Sent row now, loaded under the same D id (as Email/get does).
+  const missingDraftIds = draftIds.filter((id) => !loadedDrafts.has(id));
+  const aliased = missingDraftIds.length
+    ? await loadAliasedSentRefs(db, missingDraftIds)
+    : new Map<string, MessageRef>();
+  const loadedMessages = await loadJmapEmailObjectsByIds(db, allowed, userId, [
+    ...messageIds,
+    ...[...aliased.values()].map(publicEmailId),
+  ]);
   const draftFor = (id: string): DraftWithContent | undefined => {
     const ref = parseAnyEmailId(id);
     if (!ref || ref.kind !== "draft") return undefined;
@@ -636,9 +645,10 @@ export async function emailSet(
       continue;
     }
     const ref = parseAnyEmailId(id);
-    // Master plan Decision 7: received and sent destroy stays forbidden.
+    // Master plan Decision 7: received and sent destroy stays forbidden, an
+    // aliased D id included.
     notDestroyed[id] =
-      ref && ref.kind === "draft"
+      ref && ref.kind === "draft" && !loadedMessages.has(id)
         ? { type: "notFound" }
         : { type: "forbidden" };
   }
