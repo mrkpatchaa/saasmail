@@ -20,7 +20,7 @@ import {
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { mailboxes } from "../db/mailboxes.schema";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
-import { acct, mbx, sys } from "./jmap-ids";
+import { acct, mbx, rid, sid, sys } from "./jmap-ids";
 
 const MINE = "write@saasmail.test";
 const OTHER = "other-write@saasmail.test";
@@ -118,29 +118,29 @@ describe("JMAP Email/set", () => {
   it("updates keyword patches and full keyword objects", async () => {
     const { userId, apiKey } = await seedReceived();
     let response = await emailSet(apiKey, userId, {
-      "received:jmap-write-email": { "keywords/$seen": true },
+      [rid("jmap-write-email")]: { "keywords/$seen": true },
     });
     expect(response[0]).toBe("Email/set");
     expect(response[1].updated).toEqual({
-      "received:jmap-write-email": null,
+      [rid("jmap-write-email")]: null,
     });
 
-    let get = await emailGet(apiKey, userId, "received:jmap-write-email");
+    let get = await emailGet(apiKey, userId, rid("jmap-write-email"));
     expect(get.list[0].keywords).toEqual({ $seen: true });
 
     response = await emailSet(apiKey, userId, {
-      "received:jmap-write-email": {
+      [rid("jmap-write-email")]: {
         keywords: { $flagged: true },
       },
     });
     expect(response[0]).toBe("Email/set");
-    get = await emailGet(apiKey, userId, "received:jmap-write-email");
+    get = await emailGet(apiKey, userId, rid("jmap-write-email"));
     expect(get.list[0].keywords).toEqual({ $flagged: true });
   });
 
   it("moves mail through system mailboxes and custom folders", async () => {
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
 
     for (const role of ["archive", "junk", "trash"] as const) {
       const response = await emailSet(apiKey, userId, {
@@ -180,7 +180,7 @@ describe("JMAP Email/set", () => {
 
   it("rejects invalid patch and keyword targets", async () => {
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
 
     let response = await emailSet(apiKey, userId, {
       [id]: { subject: "nope" },
@@ -208,7 +208,7 @@ describe("JMAP Email/set", () => {
 
   it("rejects every invalid mailbox target before writing", async () => {
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
     const cases = [
       {},
       { [sys(MINE, "inbox")]: true, [mbx("missing")]: true },
@@ -244,7 +244,7 @@ describe("JMAP Email/set", () => {
       fromAddress: MINE,
       toAddress: "person@example.com",
     });
-    const id = "sent:jmap-write-sent";
+    const id = sid("jmap-write-sent");
 
     let response = await emailSet(apiKey, userId, {
       [id]: { "keywords/$seen": null },
@@ -283,18 +283,18 @@ describe("JMAP Email/set", () => {
     });
 
     const response = await emailSet(apiKey, userId, {
-      "received:missing": { "keywords/$seen": true },
-      "received:other-inbox-email": { "keywords/$seen": true },
+      [rid("missing")]: { "keywords/$seen": true },
+      [rid("other-inbox-email")]: { "keywords/$seen": true },
     });
     expect(response[1].notUpdated).toEqual({
-      "received:missing": { type: "notFound" },
-      "received:other-inbox-email": { type: "notFound" },
+      [rid("missing")]: { type: "notFound" },
+      [rid("other-inbox-email")]: { type: "notFound" },
     });
   });
 
   it("enforces state, forbids create/destroy, and caps updates", async () => {
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
 
     let response = await emailSet(
       apiKey,
@@ -325,7 +325,7 @@ describe("JMAP Email/set", () => {
 
     const tooMany = Object.fromEntries(
       Array.from({ length: 257 }, (_, index) => [
-        `received:too-many-${index}`,
+        rid(`too-many-${index}`),
         { "keywords/$seen": true },
       ]),
     );
@@ -337,7 +337,7 @@ describe("JMAP Email/set", () => {
   it("keeps states stable across time and accepts ifInState by seq and fingerprint", async () => {
     vi.setSystemTime(new Date("2026-09-23T12:00:00.000Z"));
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
 
     const first = await emailGet(apiKey, userId, id);
     vi.setSystemTime(new Date("2026-09-23T12:05:00.000Z"));
@@ -366,7 +366,7 @@ describe("JMAP Email/set", () => {
 
   it("feeds successful Email/set writes into Email/changes", async () => {
     const { userId, apiKey } = await seedReceived();
-    const id = "received:jmap-write-email";
+    const id = rid("jmap-write-email");
     const before = await emailGet(apiKey, userId, id);
 
     const response = await emailSet(apiKey, userId, {

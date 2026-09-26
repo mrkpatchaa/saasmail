@@ -16,7 +16,7 @@ import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { setUserState } from "../lib/messages/state";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
-import { acct, mbx, sys } from "./jmap-ids";
+import { acct, mbx, rid, sys } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
 const OTHER = "other@saasmail.test";
@@ -112,9 +112,9 @@ describe("JMAP changes and snooze projection", () => {
       ["Email/changes", { accountId: acct(userId), sinceState }, "c"],
     ]);
     const changes = result.methodResponses[0][1];
-    expect(changes.created).toEqual(["received:created-email"]);
-    expect(changes.updated).toEqual(["received:existing-update"]);
-    expect(changes.destroyed).toEqual(["received:existing-delete"]);
+    expect(changes.created).toEqual([rid("created-email")]);
+    expect(changes.updated).toEqual([rid("existing-update")]);
+    expect(changes.destroyed).toEqual([rid("existing-delete")]);
     expect(changes.updatedProperties).toBeNull();
   });
 
@@ -195,9 +195,7 @@ describe("JMAP changes and snooze projection", () => {
     }
 
     expect(new Set(seen)).toEqual(
-      new Set(
-        Array.from({ length: 5 }, (_, index) => `received:page-${index}`),
-      ),
+      new Set(Array.from({ length: 5 }, (_, index) => rid(`page-${index}`))),
     );
     expect(seen).toHaveLength(5);
     expect(finalState).toBe(await stateFor(apiKey, userId));
@@ -360,7 +358,7 @@ describe("JMAP changes and snooze projection", () => {
     const get = await jmapJson(apiKey, [
       [
         "Email/get",
-        { accountId: acct(userId), ids: ["received:snooze-email"] },
+        { accountId: acct(userId), ids: [rid("snooze-email")] },
         "g",
       ],
       [
@@ -380,7 +378,7 @@ describe("JMAP changes and snooze projection", () => {
     expect(get.methodResponses[0][1].list[0].mailboxIds).toEqual({
       [sys(MINE, "inbox")]: true,
     });
-    expect(get.methodResponses[1][1].ids).toContain("received:snooze-email");
+    expect(get.methodResponses[1][1].ids).toContain(rid("snooze-email"));
     expect(get.methodResponses[2][1].list[0].totalEmails).toBe(1);
   });
 

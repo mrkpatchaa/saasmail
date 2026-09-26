@@ -17,13 +17,19 @@ import {
 import {
   emailGet,
   emailQuery,
-  jmapThreadId,
+  jmapThreadKey,
   type JmapMethodError,
 } from "./emails";
 import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { emailChanges, mailboxChanges } from "./changes";
 import { emailSet } from "./email-set";
-import { publicAccountId, publicIdentityId } from "./public-ids";
+import {
+  parseThreadId,
+  publicAccountId,
+  publicEmailId,
+  publicIdentityId,
+  publicThreadId,
+} from "./public-ids";
 import { currentJmapState, jmapState } from "./state";
 
 const MAX_EMAILS_IN_THREAD_GET = 1024;
@@ -303,22 +309,33 @@ async function threadGet(
   }
 
   const state = (await currentJmapState(db, allowed, userId)).state;
-  let requested: string[];
+  // Public id (as the client sent it, or as we emit it) -> internal thread key.
+  const keyByPublic = new Map<string, string>();
+  const requestedPublic: string[] = [];
   if (ids === undefined || ids === null) {
-    requested = await queryMessageThreadKeys(
+    const keys = await queryMessageThreadKeys(
       db,
       allowed,
       { viewer: { userId }, ignoreSnooze: true },
       MAX_OBJECTS_IN_GET + 1,
     );
-    if (requested.length > MAX_OBJECTS_IN_GET) {
+    if (keys.length > MAX_OBJECTS_IN_GET) {
       return methodError("requestTooLarge");
     }
+    for (const key of keys) {
+      const publicId = publicThreadId(key);
+      requestedPublic.push(publicId);
+      keyByPublic.set(publicId, key);
+    }
   } else {
-    requested = ids as string[];
+    for (const publicId of ids as string[]) {
+      requestedPublic.push(publicId);
+      const key = parseThreadId(publicId);
+      if (key !== null) keyByPublic.set(publicId, key);
+    }
   }
 
-  const queryKeys = [...new Set(requested)];
+  const queryKeys = [...new Set(keyByPublic.values())];
   const grouped = new Map<string, string[]>();
   let emailCount = 0;
 
@@ -347,22 +364,26 @@ async function threadGet(
     }
 
     for (const message of page.messages) {
-      const key = jmapThreadId(message);
+      const key = jmapThreadKey(message);
       const current = grouped.get(key) ?? [];
-      current.push(serializeMessageRef(message.ref));
+      current.push(publicEmailId(message.ref));
       grouped.set(key, current);
     }
   }
 
   const list: Record<string, unknown>[] = [];
   const notFound: string[] = [];
-  for (const id of requested) {
-    const emailIds = grouped.get(id);
+  for (const publicId of [...new Set(requestedPublic)]) {
+    const key = keyByPublic.get(publicId);
+    const emailIds = key === undefined ? undefined : grouped.get(key);
     if (!emailIds) {
-      notFound.push(id);
+      notFound.push(publicId);
       continue;
     }
-    const thread = filterProperties({ id, emailIds }, args.properties);
+    const thread = filterProperties(
+      { id: publicId, emailIds },
+      args.properties,
+    );
     if (!thread) {
       return methodError("invalidArguments", undefined, ["properties"]);
     }

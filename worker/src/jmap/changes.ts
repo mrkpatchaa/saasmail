@@ -272,9 +272,9 @@ export async function emailChanges(
     oldState: args.sinceState as string,
     newState,
     hasMoreChanges,
-    created: sets.created,
-    updated: sets.updated,
-    destroyed: sets.destroyed,
+    created: sets.created.map(publicIdForChangeObject),
+    updated: sets.updated.map(publicIdForChangeObject),
+    destroyed: sets.destroyed.map(publicIdForChangeObject),
     updatedProperties: null,
   };
 }
