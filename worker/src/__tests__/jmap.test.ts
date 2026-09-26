@@ -1043,6 +1043,7 @@ describe("JMAP", () => {
         ["Core/boom", {}, "boom"],
         ["Core/echo", { ok: true }, "next"],
       ],
+      { env: env as unknown as CloudflareBindings, createdIds: new Map() },
       async (_db, _allowed, _user, name, args) => {
         if (name === "Core/boom") throw new Error("boom");
         return { ok: true, name, result: args };

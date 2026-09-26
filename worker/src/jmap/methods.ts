@@ -14,6 +14,7 @@ import {
   MAX_OBJECTS_IN_SET,
   MAX_SIZE_REQUEST,
 } from "./constants";
+import type { CreatedIds } from "./creation-refs";
 import {
   emailGet,
   emailQuery,
@@ -37,6 +38,13 @@ const MAX_EMAILS_IN_THREAD_GET = 1024;
 export type MethodResult =
   | { ok: true; name: string; result: Record<string, unknown> }
   | { ok: false; error: Record<string, unknown> };
+
+/** Per-request state every method can use. */
+export type JmapMethodContext = {
+  env: CloudflareBindings;
+  /** Creation id -> server id for this request (RFC 8620 §3.3). */
+  createdIds: CreatedIds;
+};
 
 function methodError(
   type: string,
@@ -482,6 +490,7 @@ export async function executeMethod(
   user: any,
   name: string,
   args: Record<string, unknown>,
+  ctx: JmapMethodContext,
 ): Promise<MethodResult> {
   if (name === "Core/echo") {
     return { ok: true, name, result: args };

@@ -10,9 +10,10 @@ import {
   MAX_SIZE_REQUEST,
   SUPPORTED_CAPABILITIES,
 } from "./constants";
-import { executeMethod, makeSession } from "./methods";
+import { executeMethod, makeSession, type JmapMethodContext } from "./methods";
 import { publicAccountId } from "./public-ids";
 import { applyResultReferences, type MethodResponse } from "./result-reference";
+import { recordCreated, resolveCallCreationRefs } from "./creation-refs";
 import {
   parseDeclaredLength,
   storeUpload,
@@ -241,6 +242,7 @@ export async function executeJmapCalls(
   user: any,
   using: string[],
   methodCalls: [string, Record<string, unknown>, string][],
+  ctx: JmapMethodContext,
   executor: typeof executeMethod = executeMethod,
 ): Promise<MethodResponse[]> {
   const methodResponses: MethodResponse[] = [];
@@ -250,8 +252,8 @@ export async function executeJmapCalls(
       continue;
     }
 
-    const args = applyResultReferences(rawArgs, methodResponses);
-    if (!args) {
+    const referenced = applyResultReferences(rawArgs, methodResponses);
+    if (!referenced) {
       methodResponses.push([
         "error",
         { type: "invalidResultReference" },
@@ -259,13 +261,19 @@ export async function executeJmapCalls(
       ]);
       continue;
     }
+    // Creates from earlier calls (RFC 8620 §5.3); each /set handles its own
+    // same-call references.
+    const args = resolveCallCreationRefs(referenced, ctx.createdIds);
 
     try {
-      const result = await executor(db, allowed, user, name, args);
+      const result = await executor(db, allowed, user, name, args, ctx);
       if ("error" in result) {
         methodResponses.push(["error", result.error, callId]);
       } else {
         methodResponses.push([result.name, result.result, callId]);
+        if (result.name.endsWith("/set")) {
+          recordCreated(result.result, ctx.createdIds);
+        }
       }
     } catch {
       methodResponses.push(["error", { type: "serverFail" }, callId]);
@@ -302,12 +310,17 @@ export function registerJmapRoutes(
     const request = await readJmapRequest(c.req.raw);
     if (request instanceof Response) return request;
 
+    const ctx: JmapMethodContext = {
+      env: c.env,
+      createdIds: new Map(Object.entries(request.createdIds ?? {})),
+    };
     const methodResponses = await executeJmapCalls(
       c.get("db"),
       auth.allowed,
       auth.user,
       request.using,
       request.methodCalls,
+      ctx,
     );
 
     const session = await makeSession(
@@ -318,7 +331,11 @@ export function registerJmapRoutes(
     );
     return jsonResponse({
       methodResponses,
-      ...(request.createdIds ? { createdIds: request.createdIds } : {}),
+      // RFC 8620 §3.4: only when the request sent createdIds, with every
+      // id it passed plus the ones created here.
+      ...(request.createdIds
+        ? { createdIds: Object.fromEntries(ctx.createdIds) }
+        : {}),
       sessionState: session.state,
     });
   });
