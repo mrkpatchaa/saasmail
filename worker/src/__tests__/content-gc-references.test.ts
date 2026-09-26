@@ -114,17 +114,15 @@ describe("content GC references", () => {
       createdAt: 1,
       updatedAt: 1,
     });
-    await getDb()
-      .insert(sentEmails)
-      .values({
-        id: "sent-row",
-        fromAddress: inbox,
-        toAddress: "bob@example.com",
-        subject: "hi",
-        sentAt: 1,
-        createdAt: 1,
-        jmapContentId: sentContent === "" ? null : "c-sent",
-      });
+    await getDb().insert(sentEmails).values({
+      id: "sent-row",
+      fromAddress: inbox,
+      toAddress: "bob@example.com",
+      subject: "hi",
+      sentAt: 1,
+      createdAt: 1,
+      jmapContentId: "c-sent",
+    });
     await addSubmission("sub-claimed", userId, "c-claimed", "claimed");
     await addSubmission("sub-accepted", userId, "c-accepted", "accepted");
 
