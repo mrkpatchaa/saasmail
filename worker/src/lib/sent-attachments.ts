@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { attachments } from "../db/attachments.schema";
+import { outboxEmails } from "../db/outbox-emails.schema";
 import type { ParsedFile } from "./multipart-send";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -15,6 +16,8 @@ export const SENT_ATTACHMENT_ORPHAN_GRACE_SECONDS = 3600;
  * loader (which reads these rows) always finds them. D1 first (it records the
  * R2 keys, so a crash after it leaves something the reaper can find), then R2.
  * On an R2 failure everything staged so far is discarded and the error rethrown.
+ * The discard waits for every put to settle: a put still in flight could land
+ * after its row and key were deleted, leaving an object nothing tracks.
  */
 export async function stageSentAttachments(
   db: Db,
@@ -45,17 +48,19 @@ export async function stageSentAttachments(
       createdAt: now,
     })),
   );
-  try {
-    await Promise.all(
-      rows.map((row) =>
-        env.R2.put(row.r2Key, row.file.bytes, {
-          httpMetadata: { contentType: row.file.contentType },
-        }),
-      ),
-    );
-  } catch (err) {
+  const puts = await Promise.allSettled(
+    rows.map((row) =>
+      env.R2.put(row.r2Key, row.file.bytes, {
+        httpMetadata: { contentType: row.file.contentType },
+      }),
+    ),
+  );
+  const failed = puts.find(
+    (put): put is PromiseRejectedResult => put.status === "rejected",
+  );
+  if (failed) {
     await discardSentAttachments(db, env, sentEmailId);
-    throw err;
+    throw failed.reason;
   }
   return rows.map((row) => row.id);
 }
@@ -79,6 +84,35 @@ export async function discardSentAttachments(
   for (const row of rows) {
     await env.R2.delete(row.r2Key);
     await db.delete(attachments).where(eq(attachments.id, row.id));
+  }
+}
+
+/**
+ * Error path of a send. `sendViaOutbox` deletes its outbox row only when the
+ * provider call itself throws; a D1 failure after that call leaves the row
+ * pending, and its retry still needs the files. So discard only when no outbox
+ * row references this send. A failed cleanup is logged and left to the reaper,
+ * so it never replaces the send's own error.
+ */
+export async function discardSentAttachmentsUnlessQueued(
+  db: Db,
+  env: CloudflareBindings,
+  sentEmailId: string,
+): Promise<void> {
+  try {
+    const queued = await db
+      .select({ id: outboxEmails.id })
+      .from(outboxEmails)
+      .where(eq(outboxEmails.sentEmailId, sentEmailId))
+      .limit(1);
+    if (queued.length === 0) {
+      await discardSentAttachments(db, env, sentEmailId);
+    }
+  } catch (err) {
+    console.error(
+      `[sent-attachments] cleanup after a failed send ${sentEmailId} failed:`,
+      err,
+    );
   }
 }
 

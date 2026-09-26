@@ -17,6 +17,7 @@ import type { ParsedFile } from "./multipart-send";
 import { sendViaOutbox, type OutboxOutcome } from "./outbox";
 import {
   discardSentAttachments,
+  discardSentAttachmentsUnlessQueued,
   stageSentAttachments,
 } from "./sent-attachments";
 
@@ -207,7 +208,7 @@ export async function sendEmail(
       transactional,
     }));
   } catch (err) {
-    await discardSentAttachments(db, env, id);
+    await discardSentAttachmentsUnlessQueued(db, env, id);
     throw err;
   }
 
@@ -522,7 +523,7 @@ export async function replyToEmail(
         : { retryOnFailure: params.retryOnFailure }),
     }));
   } catch (err) {
-    await discardSentAttachments(db, env, id);
+    await discardSentAttachmentsUnlessQueued(db, env, id);
     throw err;
   }
 

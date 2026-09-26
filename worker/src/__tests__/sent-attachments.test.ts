@@ -107,6 +107,59 @@ describe("sent attachment lifecycle", () => {
     expect(await objectsUnder("attachments/sent/se-putfail/")).toEqual([]);
   });
 
+  it("leaves no untracked object when a slow R2 write lands after another fails", async () => {
+    // The first put fails at once. The second is slow: it lands right after
+    // its key is deleted (the worst case for the cleanup), or after 200 ms if
+    // no delete comes first.
+    const inFlight: Promise<unknown>[] = [];
+    const landWhenDeleted = new Map<string, () => void>();
+    let puts = 0;
+    const r2 = new Proxy(env.R2, {
+      get(target, prop) {
+        if (prop === "put") {
+          return (key: string, ...rest: unknown[]) => {
+            puts += 1;
+            if (puts === 1) return Promise.reject(new Error("r2 down"));
+            const slow = new Promise<void>((resolve) => {
+              landWhenDeleted.set(key, resolve);
+              setTimeout(resolve, 200);
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            }).then(() => (target as any).put(key, ...rest));
+            inFlight.push(slow);
+            return slow;
+          };
+        }
+        if (prop === "delete") {
+          return async (key: string) => {
+            await target.delete(key);
+            landWhenDeleted.get(key)?.();
+          };
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const racyEnv = new Proxy(env, {
+      get(target, prop) {
+        return prop === "R2" ? r2 : Reflect.get(target, prop);
+      },
+    }) as CloudflareBindings;
+
+    await expect(
+      stageSentAttachments(
+        getDb(),
+        racyEnv,
+        "se-race",
+        [file("a.txt"), file("b.txt")],
+        100,
+      ),
+    ).rejects.toThrow("r2 down");
+    await Promise.allSettled(inFlight);
+
+    expect(await rowsFor("se-race")).toHaveLength(0);
+    expect(await objectsUnder("attachments/sent/se-race/")).toEqual([]);
+  });
+
   it("discards objects and rows", async () => {
     await stageSentAttachments(
       getDb(),

@@ -176,4 +176,43 @@ describe("sent attachments are staged before the provider call", () => {
       [],
     );
   });
+
+  it("keeps staged attachments when the send throws but its outbox row survives", async () => {
+    // A D1 failure after the provider call (here the transient-failure update)
+    // leaves the outbox row pending. Its retry must still find the files.
+    await env.DB.prepare(
+      `CREATE TRIGGER outbox_update_fails BEFORE UPDATE ON outbox_emails
+       BEGIN SELECT RAISE(ABORT, 'd1 down'); END`,
+    ).run();
+    try {
+      await expect(
+        sendEmail({
+          db: getDb(),
+          env,
+          payload: { ...payload, transactional: true },
+          files: [file("kept.txt", "kept-bytes")],
+          allowed: ADMIN,
+          sender: probingSender(TRANSIENT).sender,
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await env.DB.prepare("DROP TRIGGER outbox_update_fails").run();
+    }
+
+    const [row] = await getDb().select().from(outboxEmails);
+    expect(row.status).toBe("pending");
+    await getDb()
+      .update(outboxEmails)
+      .set({ nextRetryAt: 0 })
+      .where(eq(outboxEmails.id, row.id));
+    const retry = probingSender(OK);
+    expect(await attemptOutboxRow(getDb(), env, retry.sender, row.id)).toBe(
+      "sent",
+    );
+    const sent = retry.calls[0].attachments ?? [];
+    expect(sent).toHaveLength(1);
+    expect(new TextDecoder().decode(sent[0].content as ArrayBuffer)).toBe(
+      "kept-bytes",
+    );
+  });
 });
