@@ -16,7 +16,7 @@ import { mailboxes } from "../db/mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { setUserState } from "../lib/messages/state";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
-import { acct } from "./jmap-ids";
+import { acct, mbx, sys } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
 const OTHER = "other@saasmail.test";
@@ -294,7 +294,7 @@ describe("JMAP changes and snooze projection", () => {
       "totalThreads",
       "unreadThreads",
     ]);
-    expect(result.methodResponses[0][1].updated).toContain(`sys:${MINE}:inbox`);
+    expect(result.methodResponses[0][1].updated).toContain(sys(MINE, "inbox"));
 
     sinceState = result.methodResponses[0][1].newState;
     await getDb().insert(mailboxes).values({
@@ -312,7 +312,7 @@ describe("JMAP changes and snooze projection", () => {
       ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m2"],
     ]);
     expect(result.methodResponses[0][1].created).toEqual([
-      "mbx:changes-folder",
+      mbx("changes-folder"),
     ]);
     expect(result.methodResponses[0][1].updatedProperties).toBeNull();
 
@@ -322,7 +322,7 @@ describe("JMAP changes and snooze projection", () => {
       ["Mailbox/changes", { accountId: acct(userId), sinceState }, "m3"],
     ]);
     expect(result.methodResponses[0][1].destroyed).toEqual([
-      "mbx:changes-folder",
+      mbx("changes-folder"),
     ]);
   });
 
@@ -367,18 +367,18 @@ describe("JMAP changes and snooze projection", () => {
         "Email/query",
         {
           accountId: acct(userId),
-          filter: { inMailbox: `sys:${MINE}:inbox` },
+          filter: { inMailbox: sys(MINE, "inbox") },
         },
         "q",
       ],
       [
         "Mailbox/get",
-        { accountId: acct(userId), ids: [`sys:${MINE}:inbox`] },
+        { accountId: acct(userId), ids: [sys(MINE, "inbox")] },
         "m",
       ],
     ]);
     expect(get.methodResponses[0][1].list[0].mailboxIds).toEqual({
-      [`sys:${MINE}:inbox`]: true,
+      [sys(MINE, "inbox")]: true,
     });
     expect(get.methodResponses[1][1].ids).toContain("received:snooze-email");
     expect(get.methodResponses[2][1].list[0].totalEmails).toBe(1);

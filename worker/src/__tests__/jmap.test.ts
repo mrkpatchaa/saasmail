@@ -22,7 +22,7 @@ import {
   MAX_CALLS_IN_REQUEST,
 } from "../jmap/constants";
 import { executeJmapCalls, validateJmapPostRequest } from "../jmap/http";
-import { acct, att } from "./jmap-ids";
+import { acct, att, mbx, sys } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
 const THEIRS = "theirs@saasmail.test";
@@ -297,17 +297,17 @@ describe("JMAP", () => {
     const mailboxGet = result.methodResponses[0][1];
     expect(mailboxGet.list.map((mailbox: any) => mailbox.id)).toEqual(
       expect.arrayContaining([
-        `sys:${MINE}:inbox`,
-        `sys:${MINE}:drafts`,
-        `sys:${MINE}:sent`,
-        `sys:${MINE}:archive`,
-        `sys:${MINE}:junk`,
-        `sys:${MINE}:trash`,
-        "mbx:folder-1",
+        sys(MINE, "inbox"),
+        sys(MINE, "drafts"),
+        sys(MINE, "sent"),
+        sys(MINE, "archive"),
+        sys(MINE, "junk"),
+        sys(MINE, "trash"),
+        mbx("folder-1"),
       ]),
     );
     const inbox = mailboxGet.list.find(
-      (mailbox: any) => mailbox.id === `sys:${MINE}:inbox`,
+      (mailbox: any) => mailbox.id === sys(MINE, "inbox"),
     );
     expect(inbox).toMatchObject({
       role: "inbox",
@@ -315,7 +315,7 @@ describe("JMAP", () => {
       unreadEmails: 1,
       myRights: { mayReadItems: true, mayDelete: false },
     });
-    expect(result.methodResponses[1][1].ids).toContain("mbx:folder-1");
+    expect(result.methodResponses[1][1].ids).toContain(mbx("folder-1"));
     expect(result.methodResponses[2][1].list).toEqual([
       expect.objectContaining({
         email: MINE,
@@ -474,7 +474,7 @@ describe("JMAP", () => {
       preview: "Visible plain text",
       hasAttachment: true,
       keywords: { $seen: true, $flagged: true },
-      mailboxIds: { [`sys:${MINE}:inbox`]: true },
+      mailboxIds: { [sys(MINE, "inbox")]: true },
       bodyValues: {
         text: { value: "Visible plain text" },
         html: { value: "<p>Hello</p>" },
@@ -514,7 +514,7 @@ describe("JMAP", () => {
         {
           accountId: acct(userId),
           filter: {
-            inMailbox: `sys:${MINE}:inbox`,
+            inMailbox: sys(MINE, "inbox"),
             text: "alpha",
             from: "alice@",
             hasKeyword: "$seen",
@@ -598,7 +598,7 @@ describe("JMAP", () => {
     expect(result.methodResponses[0][1]).not.toHaveProperty("total");
     expect(result.methodResponses[1][1]).toMatchObject({
       position: 5,
-      ids: [`sys:${MINE}:trash`],
+      ids: [sys(MINE, "trash")],
       total: 6,
     });
     expect(result.methodResponses[2][1]).toMatchObject({
@@ -713,7 +713,7 @@ describe("JMAP", () => {
       ],
       [
         "Mailbox/get",
-        { accountId: acct(userId), ids: [`sys:${THEIRS}:inbox`] },
+        { accountId: acct(userId), ids: [sys(THEIRS, "inbox")] },
         "m1",
       ],
     ]);
@@ -723,7 +723,7 @@ describe("JMAP", () => {
     });
     expect(result.methodResponses[1][1]).toMatchObject({
       list: [],
-      notFound: [`sys:${THEIRS}:inbox`],
+      notFound: [sys(THEIRS, "inbox")],
     });
   });
 
