@@ -29,7 +29,7 @@ that order wins, and the others are ignored.
 
 Every send path applies Cloudflare's limits, the strictest of the four, whichever provider is configured: at most **50 recipients** (one To plus up to 49 Cc) and **32 attachments**, inline images included. The attachment size allowance is each provider's own; on Cloudflare the whole message must fit 5 MiB to arbitrary recipients.
 
-**Known issue (Cloudflare):** Cc recipients don't receive the message. The Cloudflare sender hands Cloudflare a raw message whose only envelope recipient is the To address, so Cc appears in the headers but is never delivered. Resend, Bavimail and Postmark deliver Cc normally.
+On Cloudflare, saasmail uses the `send_email` binding's structured form: every To and Cc is a real recipient, with its display name, and Cloudflare assembles the message and assigns its `Message-ID` and `Date` itself.
 
 ---
 
