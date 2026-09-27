@@ -1,7 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { env } from "cloudflare:workers";
 import { applyMigrations, cleanDb, getDb } from "./helpers";
-import { acct, drf, raw, sid, sys } from "./jmap-ids";
+import { acct, drf, sid, sys } from "./jmap-ids";
 import {
   INBOX,
   insertJmapSentRow,
