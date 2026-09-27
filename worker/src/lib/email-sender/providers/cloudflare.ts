@@ -4,7 +4,7 @@ import type {
   SendEmailParams,
   SendEmailResult,
 } from "../types";
-import { parseFrom, toBase64 } from "../shared";
+import { parseFrom } from "../shared";
 import { classifyErrorMessage } from "../classify";
 
 /**
@@ -42,10 +42,7 @@ function attachment(a: SendEmailAttachment) {
   const base = {
     filename: a.filename,
     type: a.contentType,
-    // Base64, not bytes: given bytes, Cloudflare re-encodes a text/* part as
-    // text and appends a line break, so the recipient's file differs from ours
-    // (live QA 2026-09-27: a 39-byte notes.txt arrived as 40 bytes).
-    content: toBase64(a.content),
+    content: a.content,
   };
   // A part is only inline when the HTML can reference it by Content-ID.
   return a.disposition === "inline" && a.contentId
