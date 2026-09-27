@@ -812,19 +812,20 @@ describe("inline attachments and exact headers", () => {
         contentId: "logo@x",
         filename: "logo.png",
         type: "image/png",
-        content: png,
+        content: "AQID",
       },
       {
+        // Base64: given bytes, Cloudflare appends a line break to text parts.
         disposition: "attachment",
         filename: "a.txt",
         type: "text/plain",
-        content: text,
+        content: "YQ==",
       },
       {
         disposition: "attachment",
         filename: "b.png",
         type: "image/png",
-        content: png,
+        content: "AQID",
       },
     ]);
   });
