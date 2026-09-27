@@ -42,6 +42,10 @@ function attachment(a: SendEmailAttachment) {
   const base = {
     filename: a.filename,
     type: a.contentType,
+    // Bytes, although the docs also allow a base64 string: live, Cloudflare
+    // sent such a string verbatim instead of decoding it. Known Cloudflare
+    // quirks with bytes (docs/email-providers.md): a text/* part arrives with a
+    // line break appended, and an inline part loses its filename.
     content: a.content,
   };
   // A part is only inline when the HTML can reference it by Content-ID.

@@ -31,6 +31,11 @@ Every send path applies Cloudflare's limits, the strictest of the four, whicheve
 
 On Cloudflare, saasmail uses the `send_email` binding's structured form: every To and Cc is a real recipient, with its display name, and Cloudflare assembles the message and assigns its `Message-ID` and `Date` itself.
 
+Two Cloudflare quirks of that form, seen live:
+
+- **A text attachment arrives with a line break appended.** A `text/*` file (`.txt`, `.csv`, `.json`, …) that saasmail sends as `abc` reaches the recipient as `abc` plus a newline. Binary attachments and images arrive byte-for-byte. saasmail keeps the true content type rather than disguising text files as `application/octet-stream`.
+- **An inline image loses its filename.** It still renders in the message (its Content-ID, type and bytes are intact), but a recipient who saves it sees no name.
+
 ---
 
 **See also:** [Setup](setup.md) · [Configuration](configuration.md) · [Per-inbox forwarding](inboxes.md#per-inbox-forwarding) (why forwarding goes through your provider rather than Email Routing)
