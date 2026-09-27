@@ -1125,7 +1125,9 @@ async function stepSent(ctx, env, sent) {
     `${step}: the delivered attachments, with the inline cid`,
     inline?.type === "image/png" &&
       inline.size === PNG_BYTES.byteLength &&
-      Boolean(notes),
+      // Still text/plain: Cloudflare appends a line break to text parts, and
+      // saasmail must not "fix" that by disguising them as octet-streams.
+      notes?.type === "text/plain",
     `${inline?.name ?? "?"} (cid ${INLINE_CID}), notes.txt`,
     JSON.stringify(parts),
   );

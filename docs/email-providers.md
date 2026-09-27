@@ -33,7 +33,7 @@ On Cloudflare, saasmail uses the `send_email` binding's structured form: every T
 
 Two Cloudflare quirks of that form, seen live:
 
-- **A text attachment arrives with a line break appended.** A `text/*` file (`.txt`, `.csv`, `.json`, …) that saasmail sends as `abc` reaches the recipient as `abc` plus a newline. Binary attachments and images arrive byte-for-byte. saasmail keeps the true content type rather than disguising text files as `application/octet-stream`.
+- **A text attachment arrives with a line break appended.** A `text/*` file (`.txt`, `.csv`, `.md`, …) that saasmail sends as `abc` reaches the recipient as `abc` plus a newline. Binary attachments and images arrive byte-for-byte. saasmail keeps the true content type rather than disguising text files as `application/octet-stream`.
 - **An inline image loses its filename.** It still renders in the message (its Content-ID, type and bytes are intact), but a recipient who saves it sees no name.
 
 ---
