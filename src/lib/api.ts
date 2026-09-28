@@ -930,9 +930,12 @@ export async function fetchDraftList(params?: {
   inbox?: string;
   limit?: number;
   offset?: number;
+  /** Also list drafts made in a mail client (read-only), on the first page. */
+  includeMailClient?: boolean;
 }): Promise<{ drafts: DraftListItem[] }> {
   const qs = new URLSearchParams();
   if (params?.inbox) qs.set("inbox", params.inbox);
+  if (params?.includeMailClient) qs.set("includeMailClient", "1");
   if (params?.limit !== undefined) qs.set("limit", String(params.limit));
   if (params?.offset !== undefined) qs.set("offset", String(params.offset));
   const query = qs.toString();

@@ -24,12 +24,18 @@ function addressList(list: { email: string; name: string | null }[]): string {
  */
 export default function JmapDraftPreviewDialog({
   contextKey,
+  subject,
   onClose,
   onDelete,
+  onMissing,
 }: {
   contextKey: string | null;
+  /** The listed subject, shown while the draft loads. */
+  subject?: string | null;
   onClose: () => void;
   onDelete: () => void;
+  /** The draft is gone from the mail client (sent, deleted, trashed). */
+  onMissing?: () => void;
 }) {
   const [draft, setDraft] = useState<JmapDraftPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +52,7 @@ export default function JmapDraftPreviewDialog({
       .catch(() => {
         if (!cancelled) {
           setError("This draft is no longer available in your mail client.");
+          onMissing?.();
         }
       });
     return () => {
@@ -60,7 +67,9 @@ export default function JmapDraftPreviewDialog({
     >
       <DialogContent className="max-w-2xl" data-testid="jmap-draft-preview">
         <DialogHeader>
-          <DialogTitle>{draft?.subject || "(no subject)"}</DialogTitle>
+          <DialogTitle>
+            {(draft ? draft.subject : subject) || "(no subject)"}
+          </DialogTitle>
           <DialogDescription>
             Written in a mail client. Edit or send it there; here it is
             read-only.

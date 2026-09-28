@@ -242,6 +242,7 @@ describe("MailPage", () => {
     await waitFor(() =>
       expect(api.fetchDraftList).toHaveBeenCalledWith({
         inbox: "support@e2e.test",
+        includeMailClient: true,
       }),
     );
     expect(await screen.findByText("To: alice@example.test")).toBeTruthy();

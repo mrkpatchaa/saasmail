@@ -1,5 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/d1";
+import { env } from "cloudflare:workers";
+import { users } from "../db/auth.schema";
+import { resolveAllowedInboxes } from "../lib/inbox-permissions";
+import { publishWebDraft } from "../jmap/web-drafts";
 import { applyMigrations, authFetch, cleanDb, getDb } from "./helpers";
 import { acct, sys } from "./jmap-ids";
 import { drafts } from "../db/drafts.schema";
@@ -75,7 +80,7 @@ describe("shared drafts: mail-client drafts in the web, read-only", () => {
   it("lists a mail-client draft and previews it read-only", async () => {
     const internal = await clientDraft();
     const list = await api(
-      `/api/drafts/list?inbox=${encodeURIComponent(INBOX)}`,
+      `/api/drafts/list?inbox=${encodeURIComponent(INBOX)}&includeMailClient=1`,
     );
     expect(list.body.drafts).toEqual([
       expect.objectContaining({
@@ -125,6 +130,27 @@ describe("shared drafts: mail-client drafts in the web, read-only", () => {
     expect(left.map((d) => d.id)).toEqual([trashed]);
   });
 
+  it("a mail-client draft can't be saved over from the web", async () => {
+    const internal = await clientDraft();
+    const res = await api("/api/drafts", {
+      method: "PUT",
+      body: JSON.stringify({
+        contextKey: `jmap:${internal}`,
+        subject: "Overwritten",
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await getDb().select().from(drafts)).toEqual([]);
+  });
+
+  it("the plain list stays paged over the web's own drafts", async () => {
+    await clientDraft();
+    const plain = await api(
+      `/api/drafts/list?inbox=${encodeURIComponent(INBOX)}`,
+    );
+    expect(plain.body.drafts).toEqual([]);
+  });
+
   describe("web drafts published to JMAP", () => {
     const BASE = {
       contextKey: "draft:one",
@@ -158,6 +184,93 @@ describe("shared drafts: mail-client drafts in the web, read-only", () => {
       await save(BASE);
       expect((await publish()).body.status).toBe("unchanged");
       expect(await linked()).toBe(first);
+    });
+
+    /** An env whose DB runs `hook` just before the publish links its revision. */
+    function hookedEnv(hook: () => Promise<void>) {
+      const realDb = env.DB;
+      const DB = new Proxy(realDb, {
+        get(target, prop) {
+          if (prop === "prepare") {
+            return (query: string) => {
+              const statement = target.prepare(query);
+              if (!/^\s*UPDATE drafts/.test(query)) return statement;
+              return {
+                bind: (...args: unknown[]) => {
+                  const bound = statement.bind(...args);
+                  return {
+                    run: async () => {
+                      await hook();
+                      return bound.run();
+                    },
+                  };
+                },
+              };
+            };
+          }
+          const value = (target as any)[prop];
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      return { ...env, DB } as any;
+    }
+
+    async function publishWhile(hook: () => Promise<void>) {
+      const db = getDb();
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, authorId));
+      const allowed = await resolveAllowedInboxes(db, user);
+      const hooked = hookedEnv(hook);
+      return publishWebDraft(
+        drizzle(hooked.DB),
+        hooked,
+        allowed,
+        authorId,
+        "draft:one",
+      );
+    }
+
+    it("a draft a mail client deletes mid-publish isn't brought back", async () => {
+      await save(BASE);
+      await publish();
+      const first = await linked();
+      await save({ ...BASE, subject: "Edited" });
+      const outcome = await publishWhile(async () => {
+        await jmapCall(authorId, [
+          [
+            "Email/set",
+            {
+              accountId: acct(authorId),
+              destroy: [publicDraftEmailId(first)],
+            },
+            "x",
+          ],
+        ]);
+      });
+      expect(outcome.status).toBe("gone");
+      expect(await getDb().select().from(jmapDrafts)).toEqual([]);
+    });
+
+    it("a draft a mail client trashes mid-publish stays in Trash, and publishes again once back", async () => {
+      await save(BASE);
+      await publish();
+      const first = await linked();
+      await save({ ...BASE, subject: "Edited" });
+      const outcome = await publishWhile(async () => {
+        await moveTo(first, "trash");
+      });
+      expect(outcome.status).toBe("gone");
+      let all = await getDb().select().from(jmapDrafts);
+      expect(all.map((d) => [d.id, d.mailboxRole])).toEqual([[first, "trash"]]);
+      expect(await linked()).toBe(first);
+
+      await moveTo(first, "drafts");
+      expect((await publish()).body.status).toBe("published");
+      all = await getDb().select().from(jmapDrafts);
+      expect(all).toHaveLength(1);
+      expect(all[0].mailboxRole).toBe("drafts");
     });
 
     it("a draft a mail client moved to Trash stays there; moved back, publishing resumes", async () => {

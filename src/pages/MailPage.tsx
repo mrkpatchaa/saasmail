@@ -184,7 +184,7 @@ export default function MailPage() {
     if (systemFolder !== "drafts" || !inbox) return;
     let cancelled = false;
     setDraftsLoading(true);
-    fetchDraftList({ inbox })
+    fetchDraftList({ inbox, includeMailClient: true })
       .then((result) => {
         if (!cancelled) setDrafts(result.drafts);
       })
@@ -645,6 +645,16 @@ export default function MailPage() {
               />
               <JmapDraftPreviewDialog
                 contextKey={previewDraft?.contextKey ?? null}
+                subject={previewDraft?.subject}
+                onMissing={() => {
+                  // Sent, deleted or trashed in the mail client: off the list.
+                  const gone = previewDraft;
+                  if (gone) {
+                    setDrafts((current) =>
+                      current.filter((item) => item.id !== gone.id),
+                    );
+                  }
+                }}
                 onClose={() => setPreviewDraft(null)}
                 onDelete={() => {
                   if (previewDraft) void removeDraft(previewDraft);

@@ -78,6 +78,12 @@ const DraftListQuery = z.object({
   inbox: z.string().min(1).max(320).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).default(0),
+  /**
+   * "1" also lists drafts made in a mail client (read-only, `jmap:<id>`) on
+   * the first page; the web's Drafts folder asks for them. Without it the
+   * endpoint lists only the web's own drafts, with plain limit/offset paging.
+   */
+  includeMailClient: z.enum(["0", "1"]).optional(),
 });
 
 // GET /api/drafts/list — list the current user's drafts newest-first.
@@ -100,7 +106,7 @@ const listDraftsRoute = createRoute({
 draftsRouter.openapi(listDraftsRoute, async (c) => {
   const db = c.get("db");
   const user = c.get("user");
-  const { inbox, limit, offset } = c.req.valid("query");
+  const { inbox, limit, offset, includeMailClient } = c.req.valid("query");
   const normalizedInbox = inbox?.trim().toLowerCase();
 
   const where = normalizedInbox
@@ -128,7 +134,7 @@ draftsRouter.openapi(listDraftsRoute, async (c) => {
 
   // Drafts made in a mail client are listed too (read-only, first page).
   const jmapOnly =
-    offset === 0
+    includeMailClient === "1" && offset === 0
       ? await listJmapOnlyDrafts(
           db,
           c.get("allowedInboxes")!,
@@ -177,7 +183,14 @@ draftsRouter.openapi(getDraftRoute, async (c) => {
 
 // PUT /api/drafts — upsert the draft for a compose surface.
 const SaveDraftBody = z.object({
-  contextKey: z.string().min(1).max(200),
+  contextKey: z
+    .string()
+    .min(1)
+    .max(200)
+    // `jmap:<id>` names a draft made in a mail client, read-only here.
+    .refine((key) => !key.startsWith("jmap:"), {
+      message: "jmap: drafts are read-only; edit them in the mail client",
+    }),
   fromAddress: z.string().max(320).optional(),
   // A draft `to` may be a partial/incomplete address while the user types,
   // so it is deliberately NOT validated as an email here.

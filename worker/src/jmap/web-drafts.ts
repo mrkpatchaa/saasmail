@@ -66,7 +66,7 @@ async function destroyIfIdle(
   db: Db,
   env: CloudflareBindings,
   jmapDraftId: string,
-): Promise<void> {
+): Promise<boolean> {
   const deleted = await env.DB.prepare(
     `DELETE FROM jmap_drafts
       WHERE id = ? AND submit_state IS NULL AND mailbox_role = 'drafts'
@@ -74,13 +74,14 @@ async function destroyIfIdle(
   )
     .bind(jmapDraftId)
     .first<{ content_id: string }>();
-  if (!deleted) return;
+  if (!deleted) return false;
   try {
     await deleteContentIfUnreferenced(db, env, deleted.content_id);
   } catch (error) {
     // The draft is gone either way; content GC retries the cleanup.
     console.error(`[drafts] content cleanup for ${jmapDraftId} failed:`, error);
   }
+  return true;
 }
 
 /** The bare `id` of a `<id>` Message-ID header value. */
@@ -291,20 +292,18 @@ export async function publishWebDraft(
       .limit(1);
     return { status: "unchanged", jmapDraftId: current?.jmapDraftId ?? null };
   }
-  // The previous revision goes. If a mail client claimed it to send, or moved
-  // it to Trash, meanwhile, that wins: the new revision goes instead (the copy
-  // then reads as gone), so the draft is never both there and in Drafts.
-  if (previous) {
-    const [still] = await db
-      .select()
-      .from(jmapDrafts)
-      .where(eq(jmapDrafts.id, previous.id))
-      .limit(1);
-    if (still && isGoneDraft(still)) {
-      if (fresh) await destroyIfIdle(db, env, fresh.id);
-      return { status: "gone" };
-    }
-    if (still) await destroyIfIdle(db, env, still.id);
+  // The previous revision goes, in one guarded statement. If it can't (a mail
+  // client deleted, sent, claimed or trashed it while we published), the
+  // client wins: the new revision goes and the copy points back at the old
+  // one, so it reads as gone, and publishes again if that draft comes back
+  // to Drafts. Never a resurrected or duplicated draft.
+  if (previous && !(await destroyIfIdle(db, env, previous.id))) {
+    await destroyIfIdle(db, env, newId);
+    await db
+      .update(drafts)
+      .set({ jmapDraftId: previous.id, dirty: 1 })
+      .where(and(eq(drafts.id, row.id), eq(drafts.jmapDraftId, newId)));
+    return { status: "gone" };
   }
   return { status: "published", jmapDraftId: newId };
 }
@@ -346,6 +345,13 @@ async function listedJmapDraft(
     .limit(1);
   if (!draft || isGoneDraft(draft)) return null;
   if (!isInboxAllowed(allowed, draft.inbox)) return null;
+  // A revision a web draft is linked to belongs to that draft, not the list.
+  const [linked] = await db
+    .select({ id: drafts.id })
+    .from(drafts)
+    .where(and(eq(drafts.userId, userId), eq(drafts.jmapDraftId, draft.id)))
+    .limit(1);
+  if (linked) return null;
   return draft;
 }
 
