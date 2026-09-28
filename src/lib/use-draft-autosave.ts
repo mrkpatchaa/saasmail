@@ -22,6 +22,8 @@ export interface DraftValues {
   bodyHtml?: string;
   bodyText?: string;
   replyToEmailId?: string | null;
+  bcc?: CcEntry[];
+  keptAttachments?: string[];
 }
 
 interface UseDraftAutosaveOptions {
@@ -146,6 +148,8 @@ export function useDraftAutosave({
     values.bodyHtml,
     values.bodyText,
     values.replyToEmailId,
+    JSON.stringify(values.bcc),
+    JSON.stringify(values.keptAttachments),
   ]);
 
   // Close (enabled → false) or surface change: flush the latest state so the

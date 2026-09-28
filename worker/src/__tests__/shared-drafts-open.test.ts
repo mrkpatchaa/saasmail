@@ -135,11 +135,12 @@ describe("shared drafts: a mail-client draft in the web", () => {
       bodyText: "Numbers attached.",
       jmapState: null,
     });
-    expect(draft.jmapExtras).toEqual([
-      "2 To recipients",
-      "a Bcc recipient",
-      "a Reply-To address",
-      "an attachment",
+    // Several To, Bcc and stored attachments show in the composer; only a
+    // Reply-To is carried unseen.
+    expect(draft.jmapExtras).toEqual(["a Reply-To address"]);
+    expect(draft.bcc).toEqual([{ name: null, email: "boss@example.com" }]);
+    expect(draft.storedAttachments).toEqual([
+      expect.objectContaining({ name: "figures.csv", type: "text/csv" }),
     ]);
     // Opening again reuses the working copy; the list shows it once.
     await api("/api/drafts/open-jmap", {
@@ -229,5 +230,81 @@ describe("shared drafts: a mail-client draft in the web", () => {
       body: JSON.stringify({ contextKey: "jmap:nope" }),
     });
     expect(res.status).toBe(404);
+  });
+
+  it("the composer's Bcc and kept attachments decide the next revision", async () => {
+    const extra = await uploadBlob(
+      authorId,
+      apiKey,
+      new TextEncoder().encode("appendix"),
+      "text/plain",
+    );
+    const res = (await jmapCall(authorId, [
+      [
+        "Email/set",
+        {
+          accountId: acct(authorId),
+          create: {
+            d: draftCreate({
+              cc: [],
+              bcc: [{ name: null, email: "boss@example.com" }],
+              attachments: [
+                { blobId: extra, type: "text/plain", name: "appendix.txt" },
+                { blobId: extra, type: "text/plain", name: "copy.txt" },
+              ],
+            }),
+          },
+        },
+        "c",
+      ],
+    ])) as Responses;
+    const internal = parseDraftEmailId(res[0][1].created.d.id)!;
+    const contextKey = `jmap:${internal}`;
+    await api("/api/drafts/open-jmap", {
+      method: "POST",
+      body: JSON.stringify({ contextKey }),
+    });
+    const opened = (
+      await api(`/api/drafts?contextKey=${encodeURIComponent(contextKey)}`)
+    ).body.draft;
+    expect(
+      opened.storedAttachments.map((part: { name: string }) => part.name),
+    ).toEqual(["appendix.txt", "copy.txt"]);
+    const keep = opened.storedAttachments[0].partId as string;
+
+    await api("/api/drafts", {
+      method: "PUT",
+      body: JSON.stringify({
+        contextKey,
+        fromAddress: INBOX,
+        to: "alice@example.com",
+        subject: "Quarterly numbers",
+        bodyText: "Numbers attached.",
+        bcc: [{ email: "cfo@example.com", name: "CFO" }],
+        keptAttachments: [keep],
+      }),
+    });
+    await api("/api/drafts/publish", {
+      method: "POST",
+      body: JSON.stringify({ contextKey }),
+    });
+    const [row] = await getDb()
+      .select()
+      .from(drafts)
+      .where(eq(drafts.contextKey, contextKey));
+    const next = (await email(publicDraftEmailId(row.jmapDraftId!))).list[0];
+    expect(next.bcc).toEqual([{ name: "CFO", email: "cfo@example.com" }]);
+    expect(next.attachments.map((part: { name: string }) => part.name)).toEqual(
+      ["appendix.txt"],
+    );
+    // The new revision holds exactly the kept ones: the choice resets.
+    expect(row.attachmentsJson).toBeNull();
+    expect(row.dirty).toBe(0);
+    const after = (
+      await api(`/api/drafts?contextKey=${encodeURIComponent(contextKey)}`)
+    ).body.draft;
+    expect(
+      after.storedAttachments.map((part: { name: string }) => part.name),
+    ).toEqual(["appendix.txt"]);
   });
 });

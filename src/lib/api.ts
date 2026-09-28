@@ -809,6 +809,8 @@ export async function sendDraft(
     fromAddress: string;
     to: string;
     cc?: CcEntry[];
+    bcc?: CcEntry[];
+    keptAttachments?: string[];
     subject: string;
     bodyHtml: string;
     bodyText?: string;
@@ -944,6 +946,17 @@ export interface Draft {
   jmapExtras?: string[];
   /** `gone` once it was sent or deleted from a mail client. */
   jmapState?: "gone" | null;
+  /** Shared drafts: Bcc recipients. */
+  bcc?: CcEntry[] | null;
+  /** Attachments the draft carries from its mail-client revision. */
+  storedAttachments?: StoredAttachment[];
+}
+
+export interface StoredAttachment {
+  partId: string;
+  name: string | null;
+  type: string;
+  size: number;
 }
 
 export interface DraftListItem {
@@ -965,6 +978,10 @@ export interface DraftInput {
   bodyHtml?: string;
   bodyText?: string;
   replyToEmailId?: string | null;
+  /** Shared drafts: Bcc recipients (omit to leave them unchanged). */
+  bcc?: CcEntry[];
+  /** Shared drafts: part ids of the stored attachments to keep. */
+  keptAttachments?: string[];
 }
 
 export async function fetchDraftList(params?: {

@@ -8,7 +8,13 @@ import {
   TrayMetaRow,
   trayContentClass,
 } from "@/components/Tray";
-import { sendDraft, sendEmail, fetchStats, type CcEntry } from "@/lib/api";
+import {
+  sendDraft,
+  sendEmail,
+  fetchStats,
+  type CcEntry,
+  type StoredAttachment,
+} from "@/lib/api";
 import { useDraftAutosave } from "@/lib/use-draft-autosave";
 import { dispatchEmailSent } from "@/lib/email-events";
 import { getFromLabel } from "@/lib/format";
@@ -84,6 +90,11 @@ export default function ComposeModal({
   // and whether the draft was sent or deleted from a mail client.
   const [jmapExtras, setJmapExtras] = useState<string[]>([]);
   const [jmapGone, setJmapGone] = useState(false);
+  // Shared drafts: Bcc, and the attachments a mail-client draft already
+  // carries (null until a saved draft says; then the ones kept).
+  const [bcc, setBcc] = useState<CcEntry[]>([]);
+  const [showBcc, setShowBcc] = useState(false);
+  const [stored, setStored] = useState<StoredAttachment[] | null>(null);
   // Compact tray vs. full-viewport. Toggled by the maximize button in
   // the header; reset every time the drawer reopens.
   const [fullscreen, setFullscreen] = useState(false);
@@ -144,6 +155,9 @@ export default function ComposeModal({
       setFullscreen(false);
       setJmapExtras([]);
       setJmapGone(false);
+      setBcc([]);
+      setShowBcc(false);
+      setStored(null);
       setFiles([]);
     }
     // We intentionally don't track `fromAddress` here — it's only used
@@ -179,10 +193,22 @@ export default function ComposeModal({
     enabled: open,
     isEmpty: composeIsEmpty,
     restore: open && !hasPrefill,
-    values: { fromAddress, to, cc, subject, bodyHtml, bodyText },
+    values: {
+      fromAddress,
+      to,
+      cc,
+      subject,
+      bodyHtml,
+      bodyText,
+      bcc,
+      ...(stored ? { keptAttachments: stored.map((part) => part.partId) } : {}),
+    },
     onRestore: (draft) => {
       setJmapExtras(draft.jmapExtras ?? []);
       setJmapGone(draft.jmapState === "gone");
+      setBcc(draft.bcc ?? []);
+      setShowBcc((draft.bcc?.length ?? 0) > 0);
+      setStored(draft.storedAttachments ?? []);
       if (draft.toAddress) setTo(draft.toAddress);
       if (draft.cc) setCc(draft.cc);
       if (draft.subject) setSubject(draft.subject);
@@ -214,6 +240,10 @@ export default function ComposeModal({
           fromAddress,
           to,
           ...(cc.length > 0 ? { cc } : {}),
+          bcc,
+          ...(stored
+            ? { keptAttachments: stored.map((part) => part.partId) }
+            : {}),
           subject,
           bodyHtml: finalBody,
           ...(bodyText.trim() ? { bodyText } : {}),
@@ -221,6 +251,11 @@ export default function ComposeModal({
         attached,
       );
       if (fallback) {
+        if (bcc.length > 0 || (stored?.length ?? 0) > 0) {
+          throw new Error(
+            "This inbox can only send through the direct route, which can't send Bcc or stored attachments",
+          );
+        }
         // This inbox can't send through JMAP: the direct route.
         await sendEmail({
           to,
@@ -328,22 +363,48 @@ export default function ComposeModal({
               <input
                 id="compose-to"
                 type="email"
+                multiple
                 value={to}
                 onChange={(e) => setTo(e.target.value)}
                 required
-                placeholder="recipient@example.com"
+                placeholder="recipient@example.com, another@example.com"
                 aria-label="To"
                 className="w-full bg-transparent py-2 pr-3 text-sm text-text-primary outline-none placeholder:text-text-tertiary"
               />
             </TrayMetaRow>
             <TrayMetaRow label="Cc">
-              <CcInput
-                value={cc}
-                onChange={setCc}
-                internalDomains={internalDomains}
-                testId="compose-cc-input"
-              />
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <CcInput
+                    value={cc}
+                    onChange={setCc}
+                    internalDomains={internalDomains}
+                    testId="compose-cc-input"
+                  />
+                </div>
+                {!showBcc && (
+                  <button
+                    type="button"
+                    data-testid="compose-show-bcc"
+                    onClick={() => setShowBcc(true)}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[11px] text-text-tertiary hover:bg-bg-muted hover:text-text-primary"
+                  >
+                    Bcc
+                  </button>
+                )}
+              </div>
             </TrayMetaRow>
+            {showBcc && (
+              <TrayMetaRow label="Bcc">
+                <CcInput
+                  value={bcc}
+                  onChange={setBcc}
+                  internalDomains={internalDomains}
+                  placeholder="Add Bcc — Enter to confirm"
+                  testId="compose-bcc-input"
+                />
+              </TrayMetaRow>
+            )}
             <TrayMetaRow label="Subject" htmlFor="compose-subject">
               <input
                 id="compose-subject"
@@ -375,6 +436,36 @@ export default function ComposeModal({
                   setBodyText(text);
                 }}
               />
+              {stored && stored.length > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5"
+                  data-testid="compose-stored-attachments"
+                >
+                  {stored.map((part) => (
+                    <span
+                      key={part.partId}
+                      data-testid="compose-stored-attachment"
+                      className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700"
+                    >
+                      {part.name ?? part.type}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${part.name ?? part.type}`}
+                        onClick={() =>
+                          setStored((prev) =>
+                            (prev ?? []).filter(
+                              (item) => item.partId !== part.partId,
+                            ),
+                          )
+                        }
+                        className="rounded-full p-0.5 hover:bg-gray-200"
+                      >
+                        <X size={10} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <AttachmentChips
                 files={files}
                 capBytes={ATTACHMENT_CAP_BYTES}

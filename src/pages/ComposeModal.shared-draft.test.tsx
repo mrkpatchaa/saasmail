@@ -111,4 +111,38 @@ describe("ComposeModal with a shared draft", () => {
     await waitFor(() => expect(api.fetchDraft).toHaveBeenCalled());
     expect(screen.queryByTestId("compose-shared-draft-notice")).toBeNull();
   });
+
+  it("shows the draft's Bcc and stored attachments, and saves which are kept", async () => {
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: null,
+      bcc: [{ email: "boss@example.test", name: null }],
+      storedAttachments: [
+        { partId: "3", name: "figures.csv", type: "text/csv", size: 12 },
+        { partId: "4", name: "notes.txt", type: "text/plain", size: 5 },
+      ],
+    });
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    const chips = await screen.findAllByTestId("compose-stored-attachment");
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "figures.csv",
+      "notes.txt",
+    ]);
+    expect(screen.getByTestId("compose-bcc-input")).toBeTruthy();
+    expect(screen.getByLabelText("Remove boss@example.test")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Remove notes.txt"));
+    await waitFor(
+      () =>
+        expect(api.saveDraft).toHaveBeenCalledWith(
+          expect.objectContaining({
+            contextKey: "jmap:abc",
+            keptAttachments: ["3"],
+            bcc: [{ email: "boss@example.test", name: null }],
+          }),
+        ),
+      { timeout: 4000 },
+    );
+  });
 });

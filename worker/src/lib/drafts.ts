@@ -18,6 +18,13 @@ export type DraftUpsertInput = {
   bodyHtml?: string;
   bodyText?: string;
   replyToEmailId?: string | null;
+  /** Shared drafts: Bcc recipients; omitted leaves them as they are. */
+  bcc?: DraftCcEntry[];
+  /**
+   * Shared drafts: part ids of the linked JMAP revision's attachments to keep;
+   * omitted leaves the choice as it is.
+   */
+  keptAttachments?: string[];
 };
 
 export async function getDraft(
@@ -55,6 +62,10 @@ export async function upsertDraft(
       bodyHtml: input.bodyHtml ?? null,
       bodyText: input.bodyText ?? null,
       replyToEmailId: input.replyToEmailId ?? null,
+      bcc: input.bcc ? JSON.stringify(input.bcc) : null,
+      attachmentsJson: input.keptAttachments
+        ? JSON.stringify(input.keptAttachments)
+        : null,
       createdAt: now,
       updatedAt: now,
     })
@@ -68,6 +79,10 @@ export async function upsertDraft(
         bodyHtml: input.bodyHtml ?? null,
         bodyText: input.bodyText ?? null,
         replyToEmailId: input.replyToEmailId ?? null,
+        ...(input.bcc !== undefined ? { bcc: JSON.stringify(input.bcc) } : {}),
+        ...(input.keptAttachments !== undefined
+          ? { attachmentsJson: JSON.stringify(input.keptAttachments) }
+          : {}),
         // Shared drafts: the next publish makes a new JMAP revision.
         dirty: 1,
         updatedAt: now,

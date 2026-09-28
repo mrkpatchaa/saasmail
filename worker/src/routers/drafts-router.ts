@@ -14,6 +14,7 @@ import { publicAccountId } from "../jmap/public-ids";
 import {
   type ExtraAttachment,
   sendWebDraft,
+  storedAttachments,
   destroyJmapDraftFromWeb,
   destroyLinkedJmapDraft,
   jmapDraftExtras,
@@ -54,6 +55,17 @@ const DraftSchema = z.object({
   jmapExtras: z.array(z.string()),
   /** `gone` once the draft was sent or deleted from a JMAP client. */
   jmapState: z.enum(["gone"]).nullable(),
+  /** Shared drafts: Bcc recipients, null when there are none yet. */
+  bcc: z.array(CcEntrySchema).nullable(),
+  /** Attachments the draft carries from its JMAP revision (kept ones only). */
+  storedAttachments: z.array(
+    z.object({
+      partId: z.string(),
+      name: z.string().nullable(),
+      type: z.string(),
+      size: z.number(),
+    }),
+  ),
 });
 
 type DraftRow = typeof drafts.$inferSelect;
@@ -61,7 +73,17 @@ type DraftRow = typeof drafts.$inferSelect;
 function toDraft(
   row: DraftRow,
   jmapExtras: string[] = [],
+  storedAttachments: z.infer<typeof DraftSchema>["storedAttachments"] = [],
 ): z.infer<typeof DraftSchema> {
+  let bcc: z.infer<typeof CcEntrySchema>[] | null = null;
+  if (row.bcc) {
+    try {
+      const parsed = JSON.parse(row.bcc);
+      if (Array.isArray(parsed)) bcc = parsed;
+    } catch {
+      bcc = null;
+    }
+  }
   let cc: z.infer<typeof CcEntrySchema>[] | null = null;
   if (row.cc) {
     try {
@@ -84,6 +106,8 @@ function toDraft(
     updatedAt: row.updatedAt,
     jmapExtras,
     jmapState: row.jmapState ?? null,
+    bcc,
+    storedAttachments,
   };
 }
 
@@ -199,7 +223,11 @@ draftsRouter.openapi(getDraftRoute, async (c) => {
   return c.json(
     {
       draft: row
-        ? toDraft(row, await jmapDraftExtras(db, row.jmapDraftId))
+        ? toDraft(
+            row,
+            await jmapDraftExtras(db, row.jmapDraftId),
+            await storedAttachments(db, row),
+          )
         : null,
     },
     200,
@@ -218,6 +246,13 @@ const SaveDraftBody = z.object({
   bodyHtml: z.string().optional(),
   bodyText: z.string().optional(),
   replyToEmailId: z.string().nullable().optional(),
+  /** Shared drafts: Bcc recipients (omit to leave them unchanged). */
+  bcc: z.array(CcEntrySchema).max(MAX_CC_ENTRIES).optional(),
+  /**
+   * Shared drafts: part ids of the stored attachments to keep (from
+   * `storedAttachments`); omit to leave the choice unchanged.
+   */
+  keptAttachments: z.array(z.string().max(20)).max(64).optional(),
 });
 
 const saveDraftRoute = createRoute({
@@ -243,7 +278,13 @@ draftsRouter.openapi(saveDraftRoute, async (c) => {
   const body = c.req.valid("json");
   const draft = await upsertDraft(db, user.id, body);
   return c.json(
-    { draft: toDraft(draft, await jmapDraftExtras(db, draft.jmapDraftId)) },
+    {
+      draft: toDraft(
+        draft,
+        await jmapDraftExtras(db, draft.jmapDraftId),
+        await storedAttachments(db, draft),
+      ),
+    },
     200,
   );
 });

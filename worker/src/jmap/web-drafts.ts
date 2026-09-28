@@ -171,7 +171,11 @@ async function createInput(
   const inReplyTo = await replyThreading(db, row.replyToEmailId);
   const carried: Record<string, unknown> = {};
   if (prior && previous) {
-    const bcc = JSON.parse(prior.bccJson) as unknown[];
+    // Bcc: the composer's once it has set them, else the revision's.
+    const bcc =
+      row.bcc !== null
+        ? (JSON.parse(row.bcc) as { email: string; name?: string | null }[])
+        : (JSON.parse(prior.bccJson) as unknown[]);
     if (bcc.length > 0) carried.bcc = bcc;
     if (prior.replyToJson) carried.replyTo = JSON.parse(prior.replyToJson);
     // The draft keeps one Message-ID across revisions.
@@ -188,7 +192,13 @@ async function createInput(
         leaf,
       ]),
     );
+    // The stored attachments the composer kept (all, until it chose).
+    const kept =
+      row.attachmentsJson !== null
+        ? new Set(JSON.parse(row.attachmentsJson) as string[])
+        : null;
     const attachments = (JSON.parse(prior.attachmentsJson) as string[])
+      .filter((partId) => kept === null || kept.has(partId))
       .map((partId) => leaves.get(partId))
       .filter((leaf): leaf is ContentLeaf => leaf !== undefined)
       .map((leaf) => ({
@@ -202,6 +212,11 @@ async function createInput(
         ...(leaf.cid ? { cid: leaf.cid } : {}),
       }));
     if (attachments.length > 0) carried.attachments = attachments;
+  }
+  // A draft published for the first time: the composer's Bcc.
+  if (!prior && row.bcc !== null) {
+    const bcc = JSON.parse(row.bcc) as unknown[];
+    if (bcc.length > 0) carried.bcc = bcc;
   }
   // Files the web composer added (slice 4: uploaded at send time).
   if (extraAttachments.length > 0) {
@@ -313,7 +328,10 @@ export async function publishWebDraft(
         SET jmap_draft_id = ?,
             dirty = CASE WHEN from_address IS ? AND to_address IS ? AND cc IS ? AND subject IS ?
                                AND body_html IS ? AND body_text IS ? AND reply_to_email_id IS ?
-                         THEN 0 ELSE 1 END
+                               AND bcc IS ? AND attachments_json IS ?
+                         THEN 0 ELSE 1 END,
+            -- The new revision holds exactly the kept attachments.
+            attachments_json = CASE WHEN attachments_json IS ? THEN NULL ELSE attachments_json END
       WHERE id = ? AND jmap_draft_id IS ? AND jmap_state IS NULL`,
   )
     .bind(
@@ -325,6 +343,9 @@ export async function publishWebDraft(
       row.bodyHtml,
       row.bodyText,
       row.replyToEmailId,
+      row.bcc,
+      row.attachmentsJson,
+      row.attachmentsJson,
       row.id,
       row.jmapDraftId,
     )
@@ -456,6 +477,10 @@ export async function openJmapDraft(
     email: string;
     name: string | null;
   }[];
+  const bcc = JSON.parse(content.bccJson) as {
+    email: string;
+    name: string | null;
+  }[];
   const { text, html } = bodyTexts(content);
   const contextKey = jmapContextKey(jmapDraftId);
   const now = Math.floor(Date.now() / 1000);
@@ -468,6 +493,7 @@ export async function openJmapDraft(
       fromAddress: from?.email.toLowerCase() ?? null,
       toAddress: to.map((address) => address.email).join(", ") || null,
       cc: cc.length > 0 ? JSON.stringify(cc) : null,
+      bcc: JSON.stringify(bcc),
       subject: content.subject,
       bodyHtml: html,
       bodyText: text,
@@ -482,8 +508,48 @@ export async function openJmapDraft(
 }
 
 /**
- * What a linked draft carries that the web composer can't show yet (slice 2):
- * listed in the composer's notice, and web Send is off while any remain.
+ * The stored attachments of a working copy's linked revision that it keeps,
+ * for the composer's chips (slice 3).
+ */
+export async function storedAttachments(
+  db: Db,
+  row: Pick<WorkingCopy, "jmapDraftId" | "attachmentsJson">,
+): Promise<
+  { partId: string; name: string | null; type: string; size: number }[]
+> {
+  if (!row.jmapDraftId) return [];
+  const [draft] = await db
+    .select({ contentId: jmapDrafts.contentId })
+    .from(jmapDrafts)
+    .where(eq(jmapDrafts.id, row.jmapDraftId))
+    .limit(1);
+  const content = draft ? await loadContent(db, draft.contentId) : null;
+  if (!content) return [];
+  const kept =
+    row.attachmentsJson !== null
+      ? new Set(JSON.parse(row.attachmentsJson) as string[])
+      : null;
+  const leaves = new Map(
+    contentLeaves(JSON.parse(content.partsJson) as ContentPart).map((leaf) => [
+      leaf.partId,
+      leaf,
+    ]),
+  );
+  return (JSON.parse(content.attachmentsJson) as string[])
+    .filter((partId) => kept === null || kept.has(partId))
+    .map((partId) => leaves.get(partId))
+    .filter((leaf): leaf is ContentLeaf => leaf !== undefined)
+    .map((leaf) => ({
+      partId: leaf.partId,
+      name: leaf.name,
+      type: leaf.type,
+      size: leaf.size,
+    }));
+}
+
+/**
+ * What a linked draft carries that the web composer can't show: listed in the
+ * composer's notice; it is kept and sent along.
  */
 export async function jmapDraftExtras(
   db: Db,
@@ -497,23 +563,10 @@ export async function jmapDraftExtras(
     .limit(1);
   const content = draft ? await loadContent(db, draft.contentId) : null;
   if (!content) return [];
+  // Several To, Bcc and stored attachments show in the composer (slice 3);
+  // only a Reply-To is still carried unseen.
   const extras: string[] = [];
-  const to = JSON.parse(content.toJson) as unknown[];
-  if (to.length > 1) extras.push(`${to.length} To recipients`);
-  const bcc = JSON.parse(content.bccJson) as unknown[];
-  if (bcc.length > 0)
-    extras.push(
-      bcc.length === 1 ? "a Bcc recipient" : `${bcc.length} Bcc recipients`,
-    );
   if (content.replyToJson) extras.push("a Reply-To address");
-  const attachments = JSON.parse(content.attachmentsJson) as unknown[];
-  if (attachments.length > 0) {
-    extras.push(
-      attachments.length === 1
-        ? "an attachment"
-        : `${attachments.length} attachments`,
-    );
-  }
   return extras;
 }
 

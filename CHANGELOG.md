@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bcc, several To and stored attachments in the web composer.** The compose window has a Bcc row, takes several comma-separated To, and shows the attachments a mail-client draft already carries, which can be removed. Its choices decide the draft's next revision. Migration 0074 (`drafts.bcc`, `attachments_json`).
+
 - **The web composer sends through the JMAP submission path.** Sending from the compose window publishes the draft's final revision (signature and new files included) and submits it the way a mail client does, so the same Email is filed into Sent and a mail-client draft goes out with its Bcc, every To, Reply-To and attachments. An inbox without a sender identity falls back to the direct send route. `POST /api/drafts/send`.
 
 - **JMAP drafts appear in the web.** Drafts made in a mail client are listed in the web Drafts folder and open in the web composer. A web edit is published as a patch on the draft's last revision: Bcc, Reply-To, threading, attachments, recipient names and the Message-ID carry over unchanged. While a draft has something the composer can't show yet (several To, Bcc, Reply-To, attachments) the composer lists it and Send is off. Deleting such a draft in the web deletes it in JMAP.

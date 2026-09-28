@@ -30,6 +30,11 @@ export const drafts = sqliteTable(
     toAddress: text("to_address"),
     /** JSON-encoded array of { email, name? }. */
     cc: text("cc"),
+    /**
+     * Shared drafts: JSON array of { email, name? } Bcc recipients. Null until
+     * the composer (or opening a mail-client draft) sets it.
+     */
+    bcc: text("bcc"),
     subject: text("subject"),
     bodyHtml: text("body_html"),
     bodyText: text("body_text"),
@@ -47,6 +52,12 @@ export const drafts = sqliteTable(
      * then stops publishing and the composer says so. Null otherwise.
      */
     jmapState: text("jmap_state", { enum: ["gone"] }),
+    /**
+     * Shared drafts: JSON array of the part ids (of the linked JMAP revision)
+     * whose stored attachments the composer keeps. Null keeps them all; reset
+     * to null after each publish (the new revision holds exactly those).
+     */
+    attachmentsJson: text("attachments_json"),
     createdAt: integer("created_at").notNull(),
     updatedAt: integer("updated_at").notNull(),
   },

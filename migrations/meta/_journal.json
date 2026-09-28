@@ -519,6 +519,13 @@
       "when": 1790597619742,
       "tag": "0073_shared_drafts",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "6",
+      "when": 1790600902813,
+      "tag": "0074_shared_drafts_composer",
+      "breakpoints": true
     }
   ]
 }
