@@ -4,20 +4,25 @@
 // the working copy to it with a compare-and-set, then destroy the previous one.
 // Publishing happens at coarse moments (composer close, 60 s idle), never per
 // keystroke.
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { drafts } from "../db/drafts.schema";
 import { emails } from "../db/emails.schema";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
+import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { sentEmails } from "../db/sent-emails.schema";
 import { createEmailSender } from "../lib/email-sender";
-import type { AllowedInboxes } from "../lib/inbox-permissions";
+import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
+import { contentLeaves, type ContentLeaf, type ContentPart } from "./content";
 import { createDraftEmail, Rejection } from "./email-create";
 import { destroyDraft } from "./drafts";
 import { listUsableIdentities } from "./mailboxes";
 import {
   parseDraftEmailId,
+  publicBodyPartBlobId,
   publicCustomMailboxId,
+  publicDraftEmailId,
   publicSystemMailboxId,
 } from "./public-ids";
 
@@ -78,6 +83,23 @@ function parseCc(
   }
 }
 
+/** Comma- or semicolon-separated addresses, as the web To field holds them. */
+function splitAddresses(value: string | null): string[] {
+  return (value ?? "")
+    .split(/[,;]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+}
+
+async function loadContent(db: Db, contentId: string) {
+  const [content] = await db
+    .select()
+    .from(jmapMessageContent)
+    .where(eq(jmapMessageContent.id, contentId))
+    .limit(1);
+  return content ?? null;
+}
+
 /** The Email/set create a working copy publishes as, or why it can't yet. */
 async function createInput(
   db: Db,
@@ -93,7 +115,19 @@ async function createInput(
   );
   if (!identity) return { input: null, reason: "From isn't a usable identity" };
 
-  const to = row.toAddress?.trim() ?? "";
+  // Slice 2: a revision is a patch on the previous one. Everything the web
+  // composer can't show (Bcc, Reply-To, threading, attachments, To names) rides
+  // along from the previous revision's content untouched.
+  const prior = previous ? await loadContent(db, previous.contentId) : null;
+  const priorTo = prior
+    ? (JSON.parse(prior.toJson) as { name: string | null; email: string }[])
+    : [];
+  const to = splitAddresses(row.toAddress).map((email) => {
+    const known = priorTo.find(
+      (address) => address.email.toLowerCase() === email.toLowerCase(),
+    );
+    return known?.name ? { email, name: known.name } : { email };
+  });
   const cc = parseCc(row.cc)
     .map((entry) => ({
       email: entry.email.trim(),
@@ -127,6 +161,40 @@ async function createInput(
   if (previous?.flagged) keywords.$flagged = true;
 
   const inReplyTo = await replyThreading(db, row.replyToEmailId);
+  const carried: Record<string, unknown> = {};
+  if (prior && previous) {
+    const bcc = JSON.parse(prior.bccJson) as unknown[];
+    if (bcc.length > 0) carried.bcc = bcc;
+    if (prior.replyToJson) carried.replyTo = JSON.parse(prior.replyToJson);
+    // The draft keeps one Message-ID across revisions.
+    carried.messageId = [prior.messageId];
+    if (!inReplyTo) {
+      if (prior.inReplyToJson)
+        carried.inReplyTo = JSON.parse(prior.inReplyToJson);
+      if (prior.referencesJson)
+        carried.references = JSON.parse(prior.referencesJson);
+    }
+    const leaves = new Map(
+      contentLeaves(JSON.parse(prior.partsJson) as ContentPart).map((leaf) => [
+        leaf.partId,
+        leaf,
+      ]),
+    );
+    const attachments = (JSON.parse(prior.attachmentsJson) as string[])
+      .map((partId) => leaves.get(partId))
+      .filter((leaf): leaf is ContentLeaf => leaf !== undefined)
+      .map((leaf) => ({
+        blobId: publicBodyPartBlobId(
+          publicDraftEmailId(previous.id),
+          leaf.partId,
+        ),
+        type: leaf.type,
+        ...(leaf.name ? { name: leaf.name } : {}),
+        ...(leaf.disposition ? { disposition: leaf.disposition } : {}),
+        ...(leaf.cid ? { cid: leaf.cid } : {}),
+      }));
+    if (attachments.length > 0) carried.attachments = attachments;
+  }
   return {
     input: {
       mailboxIds,
@@ -137,10 +205,11 @@ async function createInput(
           ...(identity.displayName ? { name: identity.displayName } : {}),
         },
       ],
-      to: to.length > 0 ? [{ email: to }] : [],
+      to,
       cc,
       subject: row.subject ?? "",
       ...(inReplyTo ? { inReplyTo: [inReplyTo], references: [inReplyTo] } : {}),
+      ...carried,
       bodyValues,
       textBody,
       htmlBody,
@@ -289,4 +358,207 @@ export async function destroyLinkedJmapDraft(
   if (linked && linked.submitState === null) {
     await destroyDraft(db, env, linked);
   }
+}
+
+/** The web context key of a JMAP draft that has no working copy yet. */
+export function jmapContextKey(jmapDraftId: string): string {
+  return `jmap:${jmapDraftId}`;
+}
+
+/** The user's own JMAP draft, in Drafts, not being sent, in an allowed inbox. */
+async function openableJmapDraft(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  jmapDraftId: string,
+) {
+  const [draft] = await db
+    .select()
+    .from(jmapDrafts)
+    .where(and(eq(jmapDrafts.id, jmapDraftId), eq(jmapDrafts.userId, userId)))
+    .limit(1);
+  if (!draft || draft.submitState !== null) return null;
+  if (!isInboxAllowed(allowed, draft.inbox)) return null;
+  return draft;
+}
+
+/** The plain value of the first text/plain and text/html body parts. */
+function bodyTexts(content: typeof jmapMessageContent.$inferSelect): {
+  text: string | null;
+  html: string | null;
+} {
+  const values = JSON.parse(content.bodyValuesJson) as Record<string, string>;
+  const leaves = new Map(
+    contentLeaves(JSON.parse(content.partsJson) as ContentPart).map((leaf) => [
+      leaf.partId,
+      leaf,
+    ]),
+  );
+  const first = (ids: string[], type: string) => {
+    const leaf = ids
+      .map((id) => leaves.get(id))
+      .find((candidate) => candidate?.type === type);
+    return leaf ? (values[leaf.partId] ?? null) : null;
+  };
+  return {
+    text: first(JSON.parse(content.textBodyJson) as string[], "text/plain"),
+    html: first(JSON.parse(content.htmlBodyJson) as string[], "text/html"),
+  };
+}
+
+/**
+ * Open a JMAP draft in the web composer (slice 2): seed a working copy linked
+ * to it, not dirty, from its content. An existing working copy for it is
+ * reused. Returns its context key, or null when the draft can't be opened.
+ */
+export async function openJmapDraft(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  jmapDraftId: string,
+): Promise<string | null> {
+  const [linked] = await db
+    .select({ contextKey: drafts.contextKey })
+    .from(drafts)
+    .where(and(eq(drafts.userId, userId), eq(drafts.jmapDraftId, jmapDraftId)))
+    .limit(1);
+  if (linked) return linked.contextKey;
+  const draft = await openableJmapDraft(db, allowed, userId, jmapDraftId);
+  if (!draft) return null;
+  const content = await loadContent(db, draft.contentId);
+  if (!content) return null;
+  const from = (JSON.parse(content.fromJson) as { email: string }[])[0];
+  const to = JSON.parse(content.toJson) as { email: string }[];
+  const cc = JSON.parse(content.ccJson) as {
+    email: string;
+    name: string | null;
+  }[];
+  const { text, html } = bodyTexts(content);
+  const contextKey = jmapContextKey(jmapDraftId);
+  const now = Math.floor(Date.now() / 1000);
+  await db
+    .insert(drafts)
+    .values({
+      id: nanoid(),
+      userId,
+      contextKey,
+      fromAddress: from?.email.toLowerCase() ?? null,
+      toAddress: to.map((address) => address.email).join(", ") || null,
+      cc: cc.length > 0 ? JSON.stringify(cc) : null,
+      subject: content.subject,
+      bodyHtml: html,
+      bodyText: text,
+      replyToEmailId: null,
+      jmapDraftId,
+      dirty: 0,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  return contextKey;
+}
+
+/**
+ * What a linked draft carries that the web composer can't show yet (slice 2):
+ * listed in the composer's notice, and web Send is off while any remain.
+ */
+export async function jmapDraftExtras(
+  db: Db,
+  jmapDraftId: string | null,
+): Promise<string[]> {
+  if (!jmapDraftId) return [];
+  const [draft] = await db
+    .select({ contentId: jmapDrafts.contentId })
+    .from(jmapDrafts)
+    .where(eq(jmapDrafts.id, jmapDraftId))
+    .limit(1);
+  const content = draft ? await loadContent(db, draft.contentId) : null;
+  if (!content) return [];
+  const extras: string[] = [];
+  const to = JSON.parse(content.toJson) as unknown[];
+  if (to.length > 1) extras.push(`${to.length} To recipients`);
+  const bcc = JSON.parse(content.bccJson) as unknown[];
+  if (bcc.length > 0)
+    extras.push(
+      bcc.length === 1 ? "a Bcc recipient" : `${bcc.length} Bcc recipients`,
+    );
+  if (content.replyToJson) extras.push("a Reply-To address");
+  const attachments = JSON.parse(content.attachmentsJson) as unknown[];
+  if (attachments.length > 0) {
+    extras.push(
+      attachments.length === 1
+        ? "an attachment"
+        : `${attachments.length} attachments`,
+    );
+  }
+  return extras;
+}
+
+export type JmapDraftListItem = {
+  id: string;
+  contextKey: string;
+  fromAddress: string;
+  toAddress: string | null;
+  subject: string | null;
+  replyToEmailId: null;
+  updatedAt: number;
+};
+
+/** The user's JMAP drafts no working copy is linked to (the web lists them too). */
+export async function listJmapOnlyDrafts(
+  db: Db,
+  allowed: AllowedInboxes,
+  userId: string,
+  inbox: string | undefined,
+): Promise<JmapDraftListItem[]> {
+  const rows = await db
+    .select({
+      id: jmapDrafts.id,
+      inbox: jmapDrafts.inbox,
+      updatedAt: jmapDrafts.updatedAt,
+      toJson: jmapMessageContent.toJson,
+      subject: jmapMessageContent.subject,
+    })
+    .from(jmapDrafts)
+    .innerJoin(
+      jmapMessageContent,
+      eq(jmapMessageContent.id, jmapDrafts.contentId),
+    )
+    .where(
+      and(
+        eq(jmapDrafts.userId, userId),
+        eq(jmapDrafts.mailboxRole, "drafts"),
+        isNull(jmapDrafts.submitState),
+        ...(inbox ? [eq(jmapDrafts.inbox, inbox)] : []),
+        sql`NOT EXISTS (SELECT 1 FROM drafts d WHERE d.user_id = ${userId} AND d.jmap_draft_id = ${jmapDrafts.id})`,
+      ),
+    )
+    .orderBy(desc(jmapDrafts.updatedAt))
+    .limit(100);
+  return rows
+    .filter((row) => isInboxAllowed(allowed, row.inbox))
+    .map((row) => {
+      const to = JSON.parse(row.toJson) as { email: string }[];
+      return {
+        id: jmapContextKey(row.id),
+        contextKey: jmapContextKey(row.id),
+        fromAddress: row.inbox,
+        toAddress: to.map((address) => address.email).join(", ") || null,
+        subject: row.subject || null,
+        replyToEmailId: null,
+        updatedAt: row.updatedAt,
+      };
+    });
+}
+
+/** Delete a JMAP-only draft from the web (no working copy exists for it). */
+export async function destroyJmapDraftFromWeb(
+  db: Db,
+  env: CloudflareBindings,
+  allowed: AllowedInboxes,
+  userId: string,
+  jmapDraftId: string,
+): Promise<void> {
+  const draft = await openableJmapDraft(db, allowed, userId, jmapDraftId);
+  if (draft) await destroyDraft(db, env, draft);
 }

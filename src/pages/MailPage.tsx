@@ -26,6 +26,7 @@ import {
   fetchInboxAssignees,
   fetchMailboxes,
   fetchStats,
+  openJmapDraft,
   type DraftListItem,
   type InboxAssignee,
   type Mailbox,
@@ -274,6 +275,15 @@ export default function MailPage() {
       return;
     }
 
+    if (draft.contextKey.startsWith("jmap:")) {
+      // A draft made in a mail client: create the working copy first.
+      openJmapDraft(draft.contextKey)
+        .then(({ contextKey }) => onCompose(undefined, contextKey))
+        .catch(() =>
+          showToast({ kind: "error", message: "Couldn’t open draft" }),
+        );
+      return;
+    }
     onCompose(undefined, draft.contextKey);
   }
 

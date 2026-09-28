@@ -16,6 +16,7 @@ const api = vi.hoisted(() => ({
   deleteMailbox: vi.fn(),
   fetchDraft: vi.fn(),
   fetchDraftList: vi.fn(),
+  openJmapDraft: vi.fn(),
   fetchSuggestedReply: vi.fn(),
   fetchInboxAssignees: vi.fn(),
   fetchMailboxes: vi.fn(),
@@ -255,6 +256,30 @@ describe("MailPage", () => {
       from: "support@e2e.test",
     });
     expect(onCompose.mock.calls.at(-1)?.[1]).toMatch(/^draft:[A-Za-z0-9_-]+$/);
+  });
+
+  it("opens a draft made in a mail client through its working copy", async () => {
+    api.fetchDraftList.mockResolvedValue({
+      drafts: [
+        {
+          id: "jmap:abc",
+          contextKey: "jmap:abc",
+          fromAddress: "support@e2e.test",
+          toAddress: "alice@example.test, carol@example.test",
+          subject: "From my phone",
+          replyToEmailId: null,
+          updatedAt: 1_800_000_000,
+        },
+      ],
+    });
+    api.openJmapDraft.mockResolvedValue({ contextKey: "jmap:abc" });
+
+    renderMail("/mail/support%40e2e.test/drafts");
+    fireEvent.click(await screen.findByText("From my phone"));
+    await waitFor(() =>
+      expect(onCompose).toHaveBeenLastCalledWith(undefined, "jmap:abc"),
+    );
+    expect(api.openJmapDraft).toHaveBeenCalledWith("jmap:abc");
   });
 
   it("opens reply drafts on the received message and restores the reply composer", async () => {

@@ -80,6 +80,10 @@ export default function ComposeModal({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  // Shared drafts: parts of a mail-client draft this composer can't show yet,
+  // and whether the draft was sent or deleted from a mail client.
+  const [jmapExtras, setJmapExtras] = useState<string[]>([]);
+  const [jmapGone, setJmapGone] = useState(false);
   // Compact tray vs. full-viewport. Toggled by the maximize button in
   // the header; reset every time the drawer reopens.
   const [fullscreen, setFullscreen] = useState(false);
@@ -138,6 +142,8 @@ export default function ComposeModal({
       setSignatureHtml(null);
       setError("");
       setFullscreen(false);
+      setJmapExtras([]);
+      setJmapGone(false);
       setFiles([]);
     }
     // We intentionally don't track `fromAddress` here — it's only used
@@ -175,6 +181,8 @@ export default function ComposeModal({
     restore: open && !hasPrefill,
     values: { fromAddress, to, cc, subject, bodyHtml, bodyText },
     onRestore: (draft) => {
+      setJmapExtras(draft.jmapExtras ?? []);
+      setJmapGone(draft.jmapState === "gone");
       if (draft.toAddress) setTo(draft.toAddress);
       if (draft.cc) setCc(draft.cc);
       if (draft.subject) setSubject(draft.subject);
@@ -364,6 +372,17 @@ export default function ComposeModal({
             </AttachmentPicker>
           </div>
 
+          {(jmapExtras.length > 0 || jmapGone) && (
+            <div
+              data-testid="compose-shared-draft-notice"
+              className="shrink-0 border-t border-border bg-amber-50 px-4 py-2 text-[11px] text-amber-800 sm:px-5"
+            >
+              {jmapGone
+                ? "This draft was sent or deleted from a mail client. Changes here are no longer saved there."
+                : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it; send it from your mail client.`}
+            </div>
+          )}
+
           {/* Slim footer — single row, just send + cancel + hint. */}
           <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-card px-4 py-2.5 sm:px-5">
             <div className="min-w-0 truncate text-[11px] font-light text-text-tertiary">
@@ -405,7 +424,9 @@ export default function ComposeModal({
                   sending ||
                   bodyIsEmpty ||
                   !to ||
-                  totalAttachmentBytes > ATTACHMENT_CAP_BYTES
+                  totalAttachmentBytes > ATTACHMENT_CAP_BYTES ||
+                  // Sending here would drop what the composer can't show.
+                  jmapExtras.length > 0
                 }
                 className="inline-flex items-center gap-1.5 rounded-[6px] bg-text-primary px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-text-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >

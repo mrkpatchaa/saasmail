@@ -903,6 +903,13 @@ export interface Draft {
   bodyText: string | null;
   replyToEmailId: string | null;
   updatedAt: number;
+  /**
+   * Shared drafts: what the draft carries that the composer can't show yet
+   * (kept when it is saved; web Send is off while any remain).
+   */
+  jmapExtras?: string[];
+  /** `gone` once it was sent or deleted from a mail client. */
+  jmapState?: "gone" | null;
 }
 
 export interface DraftListItem {
@@ -958,6 +965,19 @@ export async function saveDraft(data: DraftInput): Promise<Draft> {
 export async function deleteDraft(contextKey: string): Promise<void> {
   await apiFetch(`/api/drafts?contextKey=${encodeURIComponent(contextKey)}`, {
     method: "DELETE",
+  });
+}
+
+/**
+ * Shared drafts: open a draft made in a mail client (listed as `jmap:<id>`) in
+ * the web composer. Returns the working copy's context key.
+ */
+export async function openJmapDraft(
+  contextKey: string,
+): Promise<{ contextKey: string }> {
+  return apiFetch("/api/drafts/open-jmap", {
+    method: "POST",
+    body: JSON.stringify({ contextKey }),
   });
 }
 
