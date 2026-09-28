@@ -9,10 +9,12 @@ import {
   trayContentClass,
 } from "@/components/Tray";
 import {
+  SendDraftError,
   sendDraft,
   sendEmail,
   fetchStats,
   type CcEntry,
+  type Draft,
   type StoredAttachment,
 } from "@/lib/api";
 import { useDraftAutosave } from "@/lib/use-draft-autosave";
@@ -95,6 +97,8 @@ export default function ComposeModal({
   const [bcc, setBcc] = useState<CcEntry[]>([]);
   const [showBcc, setShowBcc] = useState(false);
   const [stored, setStored] = useState<StoredAttachment[] | null>(null);
+  // The JMAP revision `stored` part ids belong to (they renumber on publish).
+  const [storedRev, setStoredRev] = useState<string | null>(null);
   // Compact tray vs. full-viewport. Toggled by the maximize button in
   // the header; reset every time the drawer reopens.
   const [fullscreen, setFullscreen] = useState(false);
@@ -158,6 +162,7 @@ export default function ComposeModal({
       setBcc([]);
       setShowBcc(false);
       setStored(null);
+      setStoredRev(null);
       setFiles([]);
     }
     // We intentionally don't track `fromAddress` here — it's only used
@@ -180,7 +185,26 @@ export default function ComposeModal({
   // Autosave a "half-written" draft so it survives closing the composer.
   // Restore only on a plain open — an explicit prefill (e.g. the chat
   // "open in compose" handoff) should win over a stale draft.
-  const composeIsEmpty = !to.trim() && !subject.trim() && bodyIsEmpty;
+  // A draft linked to a mail-client draft is never "empty": only an explicit
+  // delete may remove it (an attachment-only draft has no To or body).
+  const composeIsEmpty =
+    storedRev === null &&
+    !to.trim() &&
+    !subject.trim() &&
+    bodyIsEmpty &&
+    !bodyText.trim() &&
+    cc.length === 0 &&
+    bcc.length === 0 &&
+    (stored?.length ?? 0) === 0;
+  // A draft opened from a mail client carries its own signature, if any.
+  const fromMailClient = contextKey.startsWith("jmap:");
+  const effectiveSignatureHtml = fromMailClient ? null : safeSignatureHtml;
+  function applyDraftState(draft: Draft) {
+    setJmapExtras(draft.jmapExtras ?? []);
+    setJmapGone(draft.jmapState === "gone");
+    setStored(draft.storedAttachments ?? []);
+    setStoredRev(draft.storedAttachmentsRev ?? null);
+  }
   const hasPrefill = !!(
     prefill &&
     (prefill.to ||
@@ -201,14 +225,19 @@ export default function ComposeModal({
       bodyHtml,
       bodyText,
       bcc,
-      ...(stored ? { keptAttachments: stored.map((part) => part.partId) } : {}),
+      ...(stored
+        ? {
+            keptAttachments: stored.map((part) => part.partId),
+            keptAttachmentsRev: storedRev,
+          }
+        : {}),
     },
+    paused: sending,
+    onPublished: applyDraftState,
     onRestore: (draft) => {
-      setJmapExtras(draft.jmapExtras ?? []);
-      setJmapGone(draft.jmapState === "gone");
+      applyDraftState(draft);
       setBcc(draft.bcc ?? []);
       setShowBcc((draft.bcc?.length ?? 0) > 0);
-      setStored(draft.storedAttachments ?? []);
       if (draft.toAddress) setTo(draft.toAddress);
       if (draft.cc) setCc(draft.cc);
       if (draft.subject) setSubject(draft.subject);
@@ -228,8 +257,8 @@ export default function ComposeModal({
       // toggle can strip it back out cleanly.
       // Use the sanitized signature — even the outbound payload that
       // never touches the browser DOM gets the cleaned version.
-      const finalBody = safeSignatureHtml
-        ? `${bodyHtml}<div data-signature>${safeSignatureHtml}</div>`
+      const finalBody = effectiveSignatureHtml
+        ? `${bodyHtml}<div data-signature>${effectiveSignatureHtml}</div>`
         : bodyHtml;
       // Shared drafts: send the draft the way a mail client would, so the
       // same Email is filed into Sent and everything it carries goes out.
@@ -242,18 +271,30 @@ export default function ComposeModal({
           ...(cc.length > 0 ? { cc } : {}),
           bcc,
           ...(stored
-            ? { keptAttachments: stored.map((part) => part.partId) }
+            ? {
+                keptAttachments: stored.map((part) => part.partId),
+                keptAttachmentsRev: storedRev,
+              }
             : {}),
           subject,
-          bodyHtml: finalBody,
+          // The draft keeps the body as typed; the signature goes on the sent
+          // message only.
+          bodyHtml,
+          ...(effectiveSignatureHtml
+            ? { signatureHtml: effectiveSignatureHtml }
+            : {}),
           ...(bodyText.trim() ? { bodyText } : {}),
         },
         attached,
       );
       if (fallback) {
-        if (bcc.length > 0 || (stored?.length ?? 0) > 0) {
+        if (
+          bcc.length > 0 ||
+          (stored?.length ?? 0) > 0 ||
+          /[,;]/.test(to.trim())
+        ) {
           throw new Error(
-            "This inbox can only send through the direct route, which can't send Bcc or stored attachments",
+            "This inbox can only send through the direct route, which sends to one To address without Bcc or stored attachments",
           );
         }
         // This inbox can't send through JMAP: the direct route.
@@ -273,6 +314,12 @@ export default function ComposeModal({
       setFiles([]);
       onClose();
     } catch (err) {
+      // A refused send may have saved the new files into the draft: show them
+      // as stored and don't attach them again.
+      if (err instanceof SendDraftError && err.draft) {
+        applyDraftState(err.draft);
+        setFiles([]);
+      }
       setError(
         err instanceof Error &&
           err.message &&
@@ -301,7 +348,7 @@ export default function ComposeModal({
     <DialogPrimitive.Root
       open
       modal={false}
-      onOpenChange={(v) => !v && onClose()}
+      onOpenChange={(v) => !v && !sending && onClose()}
     >
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className="tray-overlay fixed inset-0 z-50" />
@@ -473,7 +520,7 @@ export default function ComposeModal({
                   setFiles((prev) => prev.filter((_, i) => i !== idx))
                 }
               />
-              {safeSignatureHtml && (
+              {effectiveSignatureHtml && (
                 <div
                   data-signature
                   data-testid="compose-signature-preview"
@@ -481,7 +528,7 @@ export default function ComposeModal({
                   // Read-only signature preview. Auto-attached at send time;
                   // edited via the admin Inboxes page rather than inline.
                   // Pre-sanitized via sanitizeEmailHtml — see safeSignatureHtml.
-                  dangerouslySetInnerHTML={{ __html: safeSignatureHtml }}
+                  dangerouslySetInnerHTML={{ __html: effectiveSignatureHtml }}
                 />
               )}
             </AttachmentPicker>
@@ -527,6 +574,7 @@ export default function ComposeModal({
               <button
                 type="button"
                 onClick={onClose}
+                disabled={sending}
                 className="rounded-[6px] border border-border bg-card px-3 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-muted hover:text-text-primary"
               >
                 Cancel

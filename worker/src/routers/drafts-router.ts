@@ -14,10 +14,11 @@ import { publicAccountId } from "../jmap/public-ids";
 import {
   type ExtraAttachment,
   sendWebDraft,
-  storedAttachments,
   destroyJmapDraftFromWeb,
   destroyLinkedJmapDraft,
-  jmapDraftExtras,
+  linkedDraftInfo,
+  refreshGone,
+  type LinkedDraftInfo,
   listJmapOnlyDrafts,
   openJmapDraft,
   publishWebDraft,
@@ -66,14 +67,18 @@ const DraftSchema = z.object({
       size: z.number(),
     }),
   ),
+  /**
+   * The JMAP revision those part ids belong to: send it back as
+   * `keptAttachmentsRev` (part ids renumber on each publish).
+   */
+  storedAttachmentsRev: z.string().nullable(),
 });
 
 type DraftRow = typeof drafts.$inferSelect;
 
 function toDraft(
   row: DraftRow,
-  jmapExtras: string[] = [],
-  storedAttachments: z.infer<typeof DraftSchema>["storedAttachments"] = [],
+  linked: LinkedDraftInfo = { extras: [], stored: [], rev: null },
 ): z.infer<typeof DraftSchema> {
   let bcc: z.infer<typeof CcEntrySchema>[] | null = null;
   if (row.bcc) {
@@ -104,10 +109,11 @@ function toDraft(
     bodyText: row.bodyText,
     replyToEmailId: row.replyToEmailId,
     updatedAt: row.updatedAt,
-    jmapExtras,
+    jmapExtras: linked.extras,
     jmapState: row.jmapState ?? null,
     bcc,
-    storedAttachments,
+    storedAttachments: linked.stored,
+    storedAttachmentsRev: linked.rev,
   };
 }
 
@@ -219,17 +225,10 @@ draftsRouter.openapi(getDraftRoute, async (c) => {
     .from(drafts)
     .where(and(eq(drafts.userId, user.id), eq(drafts.contextKey, contextKey)))
     .limit(1);
-  const row = rows[0];
+  // A copy whose JMAP draft was sent or deleted elsewhere says so on open.
+  const row = rows[0] ? await refreshGone(db, rows[0]) : null;
   return c.json(
-    {
-      draft: row
-        ? toDraft(
-            row,
-            await jmapDraftExtras(db, row.jmapDraftId),
-            await storedAttachments(db, row),
-          )
-        : null,
-    },
+    { draft: row ? toDraft(row, await linkedDraftInfo(db, row)) : null },
     200,
   );
 });
@@ -239,8 +238,12 @@ const SaveDraftBody = z.object({
   contextKey: z.string().min(1).max(200),
   fromAddress: z.string().max(320).optional(),
   // A draft `to` may be a partial/incomplete address while the user types,
-  // so it is deliberately NOT validated as an email here.
-  to: z.string().max(320).optional(),
+  // so it is deliberately NOT validated as an email here. Several To are
+  // comma-separated (up to the 50-recipient limit).
+  to: z
+    .string()
+    .max(50 * 322)
+    .optional(),
   cc: z.array(CcEntrySchema).max(MAX_CC_ENTRIES).optional(),
   subject: z.string().max(2000).optional(),
   bodyHtml: z.string().optional(),
@@ -253,6 +256,13 @@ const SaveDraftBody = z.object({
    * `storedAttachments`); omit to leave the choice unchanged.
    */
   keptAttachments: z.array(z.string().max(20)).max(64).optional(),
+  /** The `storedAttachmentsRev` the kept list was chosen on. */
+  keptAttachmentsRev: z.string().max(64).nullable().optional(),
+});
+
+/** A send also carries the signature, added to the sent revision only. */
+const SendDraftBody = SaveDraftBody.extend({
+  signatureHtml: z.string().max(100_000).optional(),
 });
 
 const saveDraftRoute = createRoute({
@@ -278,13 +288,7 @@ draftsRouter.openapi(saveDraftRoute, async (c) => {
   const body = c.req.valid("json");
   const draft = await upsertDraft(db, user.id, body);
   return c.json(
-    {
-      draft: toDraft(
-        draft,
-        await jmapDraftExtras(db, draft.jmapDraftId),
-        await storedAttachments(db, draft),
-      ),
-    },
+    { draft: toDraft(draft, await linkedDraftInfo(db, draft)) },
     200,
   );
 });
@@ -354,21 +358,32 @@ const openJmapRoute = createRoute({
       },
     },
     404: { description: "No such draft" },
+    409: { description: "A body the web composer can't edit whole" },
   },
 });
 
 draftsRouter.openapi(openJmapRoute, async (c) => {
   const { contextKey } = c.req.valid("json");
-  const opened = contextKey.startsWith("jmap:")
-    ? await openJmapDraft(
-        c.get("db"),
-        c.get("allowedInboxes")!,
-        c.get("user").id,
-        contextKey.slice("jmap:".length),
-      )
-    : null;
-  if (!opened) return c.json({ error: "Not found" }, 404);
-  return c.json({ contextKey: opened }, 200);
+  if (!contextKey.startsWith("jmap:")) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  const opened = await openJmapDraft(
+    c.get("db"),
+    c.get("allowedInboxes")!,
+    c.get("user").id,
+    contextKey.slice("jmap:".length),
+  );
+  if (opened.error === "multipart") {
+    return c.json(
+      {
+        error:
+          "This draft's text is split into several parts (with images between them); edit it in your mail client.",
+      },
+      409,
+    );
+  }
+  if (!opened.contextKey) return c.json({ error: "Not found" }, 404);
+  return c.json({ contextKey: opened.contextKey }, 200);
 });
 
 // POST /api/drafts/send — send a draft through the JMAP submission path.
@@ -421,7 +436,7 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
   const sender = createEmailSender(c.env);
   const parsed = await parseSendBody(
     c,
-    SaveDraftBody,
+    SendDraftBody,
     sender.maxAttachmentBytes(),
   );
   // Worker strict mode is off, so the union doesn't narrow on `ok`.
@@ -432,7 +447,8 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
     return c.json(body, status);
   }
   const { payload, files } = parsed.value;
-  await upsertDraft(db, user.id, payload);
+  const { signatureHtml, ...fields } = payload;
+  await upsertDraft(db, user.id, fields);
   const extraAttachments: ExtraAttachment[] = [];
   for (const file of files) {
     const stored = await storeUpload(db, c.env, {
@@ -458,8 +474,10 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
     c.env,
     allowed,
     user,
-    payload.contextKey,
+    fields.contextKey,
     extraAttachments,
+    undefined,
+    signatureHtml ? `<div data-signature>${signatureHtml}</div>` : null,
   );
   if (outcome.status === "sent") {
     return c.json(
@@ -470,18 +488,41 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
   if (outcome.status === "fallback") {
     return c.json({ error: outcome.reason, fallback: true }, 409);
   }
-  if (outcome.status === "gone") return c.json({ error: outcome.reason }, 409);
-  if (outcome.status === "invalid") {
-    return c.json({ error: outcome.reason }, 400);
-  }
-  return c.json({ error: outcome.reason }, 422);
+  // Not sent: the draft as it is now (new files may be part of it), so the
+  // composer shows them as stored and doesn't attach them again.
+  const [row] = await db
+    .select()
+    .from(drafts)
+    .where(
+      and(eq(drafts.userId, user.id), eq(drafts.contextKey, fields.contextKey)),
+    )
+    .limit(1);
+  const draft = row ? toDraft(row, await linkedDraftInfo(db, row)) : null;
+  const status =
+    outcome.status === "invalid" ? 400 : outcome.status === "busy" ? 409 : 422;
+  return c.json({ error: friendlyReason(outcome.reason), draft }, status);
 });
 
 // POST /api/drafts/publish — publish a compose surface's draft to JMAP.
 const PublishResponse = z.object({
   status: z.enum(["published", "unchanged", "skipped", "gone", "notFound"]),
   reason: z.string().optional(),
+  draft: DraftSchema.nullable(),
 });
+
+/** Publish reasons, as a person reads them. */
+function friendlyReason(reason: string | null): string {
+  if (!reason) return "The message wasn't sent";
+  if (reason.startsWith("invalid to")) return "Check the To addresses";
+  if (reason.startsWith("invalid cc")) return "Check the Cc addresses";
+  if (reason.startsWith("invalid bcc")) return "Check the Bcc addresses";
+  if (reason.startsWith("invalid subject")) return "The subject is too long";
+  if (reason.startsWith("invalid tooLarge") || reason === "tooLarge") {
+    return "The attachments are too large";
+  }
+  if (reason.startsWith("invalid")) return "This draft can't be sent as it is";
+  return reason;
+}
 
 const publishDraftRoute = createRoute({
   method: "post",
@@ -510,17 +551,27 @@ const publishDraftRoute = createRoute({
 
 draftsRouter.openapi(publishDraftRoute, async (c) => {
   const { contextKey } = c.req.valid("json");
+  const db = c.get("db");
+  const userId = c.get("user").id;
   const outcome = await publishWebDraft(
-    c.get("db"),
+    db,
     c.env,
     c.get("allowedInboxes")!,
-    c.get("user").id,
+    userId,
     contextKey,
   );
+  // The draft after the publish: part ids renumber, so the composer refreshes
+  // its stored attachments from here.
+  const [row] = await db
+    .select()
+    .from(drafts)
+    .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)))
+    .limit(1);
   return c.json(
     {
       status: outcome.status,
       ...(outcome.status === "skipped" ? { reason: outcome.reason } : {}),
+      draft: row ? toDraft(row, await linkedDraftInfo(db, row)) : null,
     },
     200,
   );

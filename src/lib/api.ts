@@ -811,9 +811,12 @@ export async function sendDraft(
     cc?: CcEntry[];
     bcc?: CcEntry[];
     keptAttachments?: string[];
+    keptAttachmentsRev?: string | null;
     subject: string;
     bodyHtml: string;
     bodyText?: string;
+    /** Added to the sent message only, never to the saved draft. */
+    signatureHtml?: string;
   },
   files: AttachedFile[] = [],
 ): Promise<{ fallback: boolean }> {
@@ -828,10 +831,26 @@ export async function sendDraft(
   const body = (await res.json().catch(() => ({}))) as {
     error?: string;
     fallback?: boolean;
+    draft?: Draft | null;
   };
   if (res.status === 409 && body.fallback) return { fallback: true };
-  if (!res.ok) throw new Error(body.error || `API error: ${res.status}`);
+  if (!res.ok) {
+    throw new SendDraftError(
+      body.error || `API error: ${res.status}`,
+      body.draft ?? null,
+    );
+  }
   return { fallback: false };
+}
+
+/** A refused send; `draft` is the draft as it is now (new files may be in it). */
+export class SendDraftError extends Error {
+  constructor(
+    message: string,
+    readonly draft: Draft | null,
+  ) {
+    super(message);
+  }
 }
 
 export async function replyToEmail(
@@ -950,6 +969,8 @@ export interface Draft {
   bcc?: CcEntry[] | null;
   /** Attachments the draft carries from its mail-client revision. */
   storedAttachments?: StoredAttachment[];
+  /** The JMAP revision `storedAttachments` part ids belong to. */
+  storedAttachmentsRev?: string | null;
 }
 
 export interface StoredAttachment {
@@ -982,6 +1003,8 @@ export interface DraftInput {
   bcc?: CcEntry[];
   /** Shared drafts: part ids of the stored attachments to keep. */
   keptAttachments?: string[];
+  /** The `storedAttachmentsRev` those part ids came from. */
+  keptAttachmentsRev?: string | null;
 }
 
 export async function fetchDraftList(params?: {
@@ -1043,9 +1066,12 @@ export type PublishDraftStatus =
  * Shared drafts: publish a compose surface's draft so JMAP clients see it.
  * `gone` means it was sent or deleted from a JMAP client.
  */
-export async function publishDraft(
-  contextKey: string,
-): Promise<{ status: PublishDraftStatus; reason?: string }> {
+export async function publishDraft(contextKey: string): Promise<{
+  status: PublishDraftStatus;
+  reason?: string;
+  /** The draft after the publish (stored attachments renumber). */
+  draft?: Draft | null;
+}> {
   return apiFetch("/api/drafts/publish", {
     method: "POST",
     body: JSON.stringify({ contextKey }),

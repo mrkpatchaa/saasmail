@@ -136,7 +136,8 @@ describe("shared drafts: sending a web draft through the submission path", () =>
     const db = getDb();
     const [user] = await db.select().from(users).where(eq(users.id, authorId));
     const allowed = await resolveAllowedInboxes(db, user);
-    const contextKey = (await openJmapDraft(db, allowed, authorId, id))!;
+    const contextKey = (await openJmapDraft(db, allowed, authorId, id))
+      .contextKey!;
     await db
       .update(drafts)
       .set({ subject: "Final numbers", dirty: 1 })
@@ -198,7 +199,7 @@ describe("shared drafts: sending a web draft through the submission path", () =>
     expect((await sentEmails()).submissions).toEqual([]);
   });
 
-  it("a draft sent or deleted from a mail client isn't sent again", async () => {
+  it("a copy whose draft was deleted in a mail client is sent as a new draft when the user presses Send", async () => {
     await send({
       contextKey: "draft:s4",
       fromAddress: INBOX,
@@ -217,12 +218,14 @@ describe("shared drafts: sending a web draft through the submission path", () =>
     const id = parseDraftEmailId(created[0][1].created.d.id)!;
     const db = getDb();
     const [user] = await db.select().from(users).where(eq(users.id, authorId));
-    const contextKey = (await openJmapDraft(
-      db,
-      await resolveAllowedInboxes(db, user),
-      authorId,
-      id,
-    ))!;
+    const contextKey = (
+      await openJmapDraft(
+        db,
+        await resolveAllowedInboxes(db, user),
+        authorId,
+        id,
+      )
+    ).contextKey!;
     await jmapCall(authorId, [
       [
         "Email/set",
@@ -237,7 +240,13 @@ describe("shared drafts: sending a web draft through the submission path", () =>
       subject: "Again",
       bodyHtml: "<p>2</p>",
     });
-    expect(res.status).toBe(409);
-    expect((await sentEmails()).submissions).toHaveLength(1);
+    // The user pressed Send with the content in front of them: it goes out,
+    // as a new draft, and a stale link never blocks the compose slot.
+    expect(res.status).toBe(200);
+    const { emails, submissions } = await sentEmails();
+    expect(submissions).toHaveLength(2);
+    expect(
+      emails.map((email: { subject: string }) => email.subject).sort(),
+    ).toEqual(["Again", "First"]);
   });
 });

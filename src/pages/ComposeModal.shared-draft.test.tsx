@@ -9,6 +9,14 @@ const api = vi.hoisted(() => ({
   saveDraft: vi.fn(),
   deleteDraft: vi.fn(),
   publishDraft: vi.fn(),
+  SendDraftError: class SendDraftError extends Error {
+    constructor(
+      message: string,
+      readonly draft: unknown,
+    ) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock("@/lib/api", () => api);
@@ -144,5 +152,94 @@ describe("ComposeModal with a shared draft", () => {
         ),
       { timeout: 4000 },
     );
+  });
+
+  it("never auto-deletes a mail-client draft that only has attachments", async () => {
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      toAddress: null,
+      subject: null,
+      bodyHtml: null,
+      bodyText: null,
+      jmapExtras: [],
+      jmapState: null,
+      bcc: [],
+      storedAttachments: [
+        { partId: "2", name: "scan.pdf", type: "application/pdf", size: 9 },
+      ],
+      storedAttachmentsRev: "rev1",
+    });
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    await screen.findByTestId("compose-stored-attachment");
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    expect(api.deleteDraft).not.toHaveBeenCalled();
+  });
+
+  it("sends the signature separately, and none for a mail-client draft", async () => {
+    api.fetchStats.mockResolvedValue({
+      recipients: ["support@e2e.test"],
+      senderIdentities: [
+        { email: "support@e2e.test", signatureHtml: "<p>Sig</p>" },
+      ],
+    });
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      contextKey: "draft:x",
+      jmapExtras: [],
+      jmapState: null,
+    });
+    api.sendDraft.mockResolvedValue({ fallback: false });
+    const { unmount } = render(
+      <ComposeModal open onClose={() => {}} contextKey="draft:x" />,
+    );
+    await screen.findByTestId("compose-signature-preview");
+    const send = screen.getByTestId("compose-send-button") as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(api.sendDraft).toHaveBeenCalled());
+    expect(api.sendDraft.mock.calls[0][0]).toMatchObject({
+      bodyHtml: "<p>Hi</p>",
+      signatureHtml: "<p>Sig</p>",
+    });
+    unmount();
+
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: null,
+    });
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    await waitFor(() => expect(api.fetchDraft).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("compose-signature-preview")).toBeNull();
+  });
+
+  it("a refused send shows the saved files as stored and doesn't attach them again", async () => {
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: null,
+      storedAttachments: [],
+      storedAttachmentsRev: "rev1",
+    });
+    api.sendDraft.mockRejectedValue(
+      new api.SendDraftError("Too many recipients", {
+        ...DRAFT,
+        jmapExtras: [],
+        jmapState: null,
+        storedAttachments: [
+          { partId: "3", name: "notes.txt", type: "text/plain", size: 3 },
+        ],
+        storedAttachmentsRev: "rev2",
+      }),
+    );
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    const send = (await screen.findByTestId(
+      "compose-send-button",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    expect(await screen.findByText("Too many recipients")).toBeTruthy();
+    const chips = await screen.findAllByTestId("compose-stored-attachment");
+    expect(chips.map((chip) => chip.textContent)).toEqual(["notes.txt"]);
   });
 });

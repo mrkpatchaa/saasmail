@@ -162,7 +162,10 @@ export default function TiptapEditor({
 
   useEffect(() => {
     if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content);
+      // Loading content from outside (a restored draft) is not an edit: don't
+      // emit an update, which would replace it with the editor's normalised
+      // HTML and mark the draft changed.
+      editor.commands.setContent(content, { emitUpdate: false });
     }
   }, [content]);
 

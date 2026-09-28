@@ -183,3 +183,32 @@ describe("useDraftAutosave", () => {
     });
   });
 });
+
+describe("useDraftAutosave: publish feedback and pausing", () => {
+  it("hands the published draft to onPublished", async () => {
+    const draft = { contextKey: "compose" } as Draft;
+    mPublish.mockResolvedValue({ status: "published", draft });
+    const onPublished = vi.fn();
+    const { rerender } = renderHook((p: Props) => useDraftAutosave(p), {
+      initialProps: baseProps({ onPublished }),
+    });
+    rerender(baseProps({ enabled: false, onPublished }));
+    await waitFor(() => expect(onPublished).toHaveBeenCalledWith(draft));
+  });
+
+  it("saves, publishes and flushes nothing while paused (a send owns the draft)", async () => {
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: Props) => useDraftAutosave(p), {
+      initialProps: baseProps({ paused: true, publishIdleMs: 1000 }),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    rerender(baseProps({ enabled: false, paused: true }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
+    expect(mSave).not.toHaveBeenCalled();
+    expect(mPublish).not.toHaveBeenCalled();
+  });
+});

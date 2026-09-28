@@ -179,7 +179,7 @@ describe("shared drafts: a mail-client draft in the web", () => {
       method: "POST",
       body: JSON.stringify({ contextKey }),
     });
-    expect(published.body).toEqual({ status: "published" });
+    expect(published.body).toMatchObject({ status: "published" });
 
     const [row] = await getDb()
       .select()
@@ -282,6 +282,7 @@ describe("shared drafts: a mail-client draft in the web", () => {
         bodyText: "Numbers attached.",
         bcc: [{ email: "cfo@example.com", name: "CFO" }],
         keptAttachments: [keep],
+        keptAttachmentsRev: opened.storedAttachmentsRev,
       }),
     });
     await api("/api/drafts/publish", {

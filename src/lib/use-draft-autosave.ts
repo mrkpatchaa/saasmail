@@ -24,6 +24,7 @@ export interface DraftValues {
   replyToEmailId?: string | null;
   bcc?: CcEntry[];
   keptAttachments?: string[];
+  keptAttachmentsRev?: string | null;
 }
 
 interface UseDraftAutosaveOptions {
@@ -52,6 +53,16 @@ interface UseDraftAutosaveOptions {
   debounceMs?: number;
   /** Idle time before publishing to JMAP, in ms. */
   publishIdleMs?: number;
+  /**
+   * The draft after each publish: part ids of stored attachments renumber
+   * with every revision, so the composer refreshes them from here.
+   */
+  onPublished?: (draft: Draft) => void;
+  /**
+   * While true (a send is in progress), nothing is saved or published and the
+   * close flush is skipped, so nothing races the send's own revision.
+   */
+  paused?: boolean;
 }
 
 /**
@@ -68,7 +79,19 @@ export function useDraftAutosave({
   restore,
   debounceMs = 1500,
   publishIdleMs = PUBLISH_IDLE_MS,
+  onPublished,
+  paused = false,
 }: UseDraftAutosaveOptions) {
+  const onPublishedRef = useRef(onPublished);
+  onPublishedRef.current = onPublished;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+  const publish = () =>
+    publishDraft(contextKey)
+      .then((result) => {
+        if (result?.draft) onPublishedRef.current?.(result.draft);
+      })
+      .catch(() => {});
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const publishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest render values/flags, read inside async + cleanup callbacks so they
@@ -111,8 +134,9 @@ export function useDraftAutosave({
     if (timer.current) clearTimeout(timer.current);
     // Still editing: the idle publish waits for the next save.
     if (publishTimer.current) clearTimeout(publishTimer.current);
+    if (paused) return;
     timer.current = setTimeout(() => {
-      if (clearedRef.current) return;
+      if (clearedRef.current || pausedRef.current) return;
       if (isEmptyRef.current) {
         // Nothing meaningful left — drop any draft we'd previously saved.
         if (savedRef.current) {
@@ -127,8 +151,10 @@ export function useDraftAutosave({
           // Publish once the user has stopped editing for a while.
           if (publishTimer.current) clearTimeout(publishTimer.current);
           publishTimer.current = setTimeout(() => {
-            if (clearedRef.current || !savedRef.current) return;
-            publishDraft(contextKey).catch(() => {});
+            if (clearedRef.current || !savedRef.current || pausedRef.current) {
+              return;
+            }
+            void publish();
           }, publishIdleMs);
         })
         .catch(() => {});
@@ -150,6 +176,8 @@ export function useDraftAutosave({
     values.replyToEmailId,
     JSON.stringify(values.bcc),
     JSON.stringify(values.keptAttachments),
+    values.keptAttachmentsRev,
+    paused,
   ]);
 
   // Close (enabled → false) or surface change: flush the latest state so the
@@ -160,12 +188,13 @@ export function useDraftAutosave({
     return () => {
       if (timer.current) clearTimeout(timer.current);
       if (publishTimer.current) clearTimeout(publishTimer.current);
-      if (clearedRef.current) return;
+      // A send in progress owns the draft: no close flush.
+      if (clearedRef.current || pausedRef.current) return;
       if (!isEmptyRef.current) {
         savedRef.current = true;
         // Save the last edits, then publish them to JMAP.
         saveDraft({ contextKey, ...valuesRef.current })
-          .then(() => publishDraft(contextKey))
+          .then(() => publish())
           .catch(() => {});
       } else if (savedRef.current) {
         savedRef.current = false;

@@ -103,7 +103,7 @@ describe("shared drafts: publishing a web draft to JMAP", () => {
 
   it("publishes a web draft as a JMAP draft with its fields, once", async () => {
     await save(FULL);
-    expect(await publish()).toEqual({ status: "published" });
+    expect(await publish()).toMatchObject({ status: "published" });
     const id = (await linkedId())!;
     const got = await getEmail(id);
     const email = got.list[0];
@@ -121,7 +121,7 @@ describe("shared drafts: publishing a web draft to JMAP", () => {
     );
 
     // Nothing changed: no new revision.
-    expect(await publish()).toEqual({ status: "unchanged" });
+    expect(await publish()).toMatchObject({ status: "unchanged" });
     expect(await linkedId()).toBe(id);
   });
 
@@ -130,7 +130,7 @@ describe("shared drafts: publishing a web draft to JMAP", () => {
     await publish();
     const first = (await linkedId())!;
     await save({ ...FULL, subject: "Plans v2" });
-    expect(await publish()).toEqual({ status: "published" });
+    expect(await publish()).toMatchObject({ status: "published" });
     const second = (await linkedId())!;
     expect(second).not.toBe(first);
     expect((await getEmail(first)).notFound).toEqual([
@@ -206,7 +206,9 @@ describe("shared drafts: publishing a web draft to JMAP", () => {
       replyToEmailId: "recv-1",
       subject: "Re: Question",
     });
-    expect(await publish("reply:recv-1")).toEqual({ status: "published" });
+    expect(await publish("reply:recv-1")).toMatchObject({
+      status: "published",
+    });
     const email = (await getEmail((await linkedId("reply:recv-1"))!)).list[0];
     expect(email.inReplyTo).toEqual(["question-1@example.com"]);
     expect(email.references).toEqual(["question-1@example.com"]);
@@ -236,8 +238,8 @@ describe("shared drafts: publishing a web draft to JMAP", () => {
       ],
     ]);
     await save({ ...FULL, subject: "Edited after" });
-    expect(await publish()).toEqual({ status: "gone" });
-    expect(await publish()).toEqual({ status: "gone" });
+    expect(await publish()).toMatchObject({ status: "gone" });
+    expect(await publish()).toMatchObject({ status: "gone" });
     expect(await getDb().select().from(jmapDrafts)).toEqual([]);
   });
 
