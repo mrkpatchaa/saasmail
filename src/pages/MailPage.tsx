@@ -10,6 +10,7 @@ import MailFolderRail, {
   SYSTEM_FOLDERS,
 } from "@/components/mail/MailFolderRail";
 import MailDraftList from "@/components/mail/MailDraftList";
+import JmapDraftPreviewDialog from "@/components/mail/JmapDraftPreview";
 import MailMessageList from "@/components/mail/MailMessageList";
 import MailReadingPane from "@/components/mail/MailReadingPane";
 import MailSelectionBar from "@/components/mail/MailSelectionBar";
@@ -71,6 +72,8 @@ export default function MailPage() {
   const [assignees, setAssignees] = useState<InboxAssignee[]>([]);
   const [drafts, setDrafts] = useState<DraftListItem[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
+  // A mail-client draft shown read-only.
+  const [previewDraft, setPreviewDraft] = useState<DraftListItem | null>(null);
   const [mobilePane, setMobilePane] = useState<MobilePane>(
     searchParams.get("m") ? "reader" : "list",
   );
@@ -264,6 +267,11 @@ export default function MailPage() {
   }
 
   function openDraft(draft: DraftListItem) {
+    // A draft written in a mail client: shown read-only.
+    if (draft.contextKey.startsWith("jmap:")) {
+      setPreviewDraft(draft);
+      return;
+    }
     if (draft.contextKey.startsWith("reply:")) {
       const emailId =
         draft.replyToEmailId ?? draft.contextKey.slice("reply:".length);
@@ -286,6 +294,7 @@ export default function MailPage() {
     try {
       await deleteDraft(draft.contextKey);
       setDrafts((current) => current.filter((item) => item.id !== draft.id));
+      setPreviewDraft((current) => (current?.id === draft.id ? null : current));
     } catch (error) {
       showToast({
         kind: "error",
@@ -625,14 +634,23 @@ export default function MailPage() {
           />
 
           {systemFolder === "drafts" ? (
-            <MailDraftList
-              visible={mobilePane === "list"}
-              drafts={drafts}
-              loading={draftsLoading}
-              onBackToFolders={() => setMobilePane("folders")}
-              onOpenDraft={openDraft}
-              onDeleteDraft={(draft) => void removeDraft(draft)}
-            />
+            <>
+              <MailDraftList
+                visible={mobilePane === "list"}
+                drafts={drafts}
+                loading={draftsLoading}
+                onBackToFolders={() => setMobilePane("folders")}
+                onOpenDraft={openDraft}
+                onDeleteDraft={(draft) => void removeDraft(draft)}
+              />
+              <JmapDraftPreviewDialog
+                contextKey={previewDraft?.contextKey ?? null}
+                onClose={() => setPreviewDraft(null)}
+                onDelete={() => {
+                  if (previewDraft) void removeDraft(previewDraft);
+                }}
+              />
+            </>
           ) : (
             <MailMessageList
               visible={mobilePane === "list"}

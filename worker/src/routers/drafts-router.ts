@@ -3,7 +3,13 @@ import { MAX_CC_ENTRIES } from "../lib/send-limits";
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { drafts } from "../db/drafts.schema";
 import { upsertDraft } from "../lib/drafts";
-import { destroyLinkedJmapDraft, publishWebDraft } from "../jmap/web-drafts";
+import {
+  destroyJmapDraftFromWeb,
+  destroyLinkedJmapDraft,
+  listJmapOnlyDrafts,
+  previewJmapDraft,
+  publishWebDraft,
+} from "../jmap/web-drafts";
 import { json200Response } from "../lib/helpers";
 import { bearerSecurity } from "../lib/openapi-auth";
 import type { Variables } from "../variables";
@@ -120,7 +126,20 @@ draftsRouter.openapi(listDraftsRoute, async (c) => {
     .limit(limit)
     .offset(offset);
 
-  return c.json({ drafts: rows }, 200);
+  // Drafts made in a mail client are listed too (read-only, first page).
+  const jmapOnly =
+    offset === 0
+      ? await listJmapOnlyDrafts(
+          db,
+          c.get("allowedInboxes")!,
+          user.id,
+          normalizedInbox,
+        )
+      : [];
+  const merged = [...rows, ...jmapOnly]
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, limit);
+  return c.json({ drafts: merged }, 200);
 });
 
 const ContextQuery = z.object({
@@ -220,7 +239,76 @@ draftsRouter.openapi(deleteDraftRoute, async (c) => {
   for (const row of deleted) {
     await destroyLinkedJmapDraft(db, c.env, row);
   }
+  // A draft made in a mail client, listed here read-only.
+  if (deleted.length === 0 && contextKey.startsWith("jmap:")) {
+    await destroyJmapDraftFromWeb(
+      db,
+      c.env,
+      c.get("allowedInboxes")!,
+      user.id,
+      contextKey.slice("jmap:".length),
+    );
+  }
   return c.json({ success: true }, 200);
+});
+
+// GET /api/drafts/jmap-preview?contextKey=jmap:<id> — a mail-client draft.
+const AddressSchema = z.object({
+  email: z.string(),
+  name: z.string().nullable(),
+});
+const JmapPreviewSchema = z.object({
+  contextKey: z.string(),
+  from: AddressSchema.nullable(),
+  to: z.array(AddressSchema),
+  cc: z.array(AddressSchema),
+  bcc: z.array(AddressSchema),
+  subject: z.string(),
+  html: z.string().nullable(),
+  text: z.string().nullable(),
+  attachments: z.array(
+    z.object({
+      name: z.string().nullable(),
+      type: z.string(),
+      size: z.number(),
+    }),
+  ),
+  updatedAt: z.number(),
+});
+
+const jmapPreviewRoute = createRoute({
+  method: "get",
+  path: "/jmap-preview",
+  tags: ["Drafts"],
+  security: bearerSecurity,
+  description:
+    "A draft made in a mail client (listed with contextKey `jmap:<id>`), read-only: the web shows it and leaves editing and sending to the mail client.",
+  request: { query: ContextQuery },
+  responses: {
+    200: {
+      description: "The draft",
+      content: {
+        "application/json": {
+          schema: z.object({ draft: JmapPreviewSchema }),
+        },
+      },
+    },
+    404: { description: "No such draft" },
+  },
+});
+
+draftsRouter.openapi(jmapPreviewRoute, async (c) => {
+  const { contextKey } = c.req.valid("query");
+  const draft = contextKey.startsWith("jmap:")
+    ? await previewJmapDraft(
+        c.get("db"),
+        c.get("allowedInboxes")!,
+        c.get("user").id,
+        contextKey.slice("jmap:".length),
+      )
+    : null;
+  if (!draft) return c.json({ error: "Not found" }, 404);
+  return c.json({ draft }, 200);
 });
 
 // POST /api/drafts/publish — publish a compose surface's draft to JMAP.
