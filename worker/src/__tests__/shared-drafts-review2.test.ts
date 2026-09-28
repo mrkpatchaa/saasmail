@@ -404,4 +404,99 @@ describe("shared drafts: second review regressions", () => {
       expect((await publish(contextKey)).body.status).toBe("unchanged");
     }
   });
+
+  it("K1: a save to a mail-client draft's surface that has no draft is refused", async () => {
+    const internal = await clientDraft();
+    const { draft } = await openDraft(internal);
+    const moved = await composerSave(draft, { subject: "Copy", fresh: true });
+    expect(moved.body.draft.contextKey).toMatch(/^draft:/);
+    // A late save from the composer that handed over, on the old surface.
+    const late = await composerSave(draft, { subject: "Copy" });
+    expect(late.status).toBe(409);
+    expect(
+      (await getDb().select().from(drafts)).map((r) => r.contextKey),
+    ).toEqual([moved.body.draft.contextKey]);
+  });
+
+  it("R-b: a send whose attachment choice was made on another revision is refused, not sent", async () => {
+    (env as any).DEMO_MODE = "1";
+    try {
+      const blob = await uploadBlob(
+        authorId,
+        apiKey,
+        new TextEncoder().encode("secret"),
+        "text/csv",
+      );
+      const internal = await clientDraft({
+        attachments: [
+          { blobId: blob, type: "text/csv", name: "secret.csv" },
+          { blobId: blob, type: "text/csv", name: "ok.csv" },
+        ],
+      });
+      const { contextKey, draft } = await openDraft(internal);
+      const oldRev = draft.storedAttachmentsRev;
+      // A publish lands (another instance's flush): part ids renumber.
+      await composerSave(draft, { subject: "Edited" });
+      await publish(contextKey);
+      const okPart = draft.storedAttachments.find(
+        (p: any) => p.name === "ok.csv",
+      ).partId;
+      const fd = new FormData();
+      fd.append(
+        "payload",
+        JSON.stringify({
+          contextKey,
+          fromAddress: INBOX,
+          to: "alice@example.com",
+          subject: "Edited",
+          bodyHtml: draft.bodyHtml,
+          keptAttachments: [okPart],
+          keptAttachmentsRev: oldRev,
+        }),
+      );
+      const res = await authFetch("/api/drafts/send", {
+        apiKey,
+        method: "POST",
+        body: fd,
+      });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as any;
+      expect(body.draft.storedAttachmentsRev).not.toBe(oldRev);
+      const subs = (await jmapCall(authorId, [
+        ["EmailSubmission/get", { accountId: acct(authorId) }, "s"],
+      ])) as Responses;
+      expect(subs[0][1].list).toEqual([]);
+    } finally {
+      (env as any).DEMO_MODE = "0";
+    }
+  });
+
+  it("deleting the web copy of a draft trashed in a mail client keeps the original", async () => {
+    const internal = await clientDraft();
+    const { contextKey } = await openDraft(internal);
+    await jmapCall(authorId, [
+      [
+        "Email/set",
+        {
+          accountId: acct(authorId),
+          update: {
+            [publicDraftEmailId(internal)]: {
+              mailboxIds: { [sys(INBOX, "trash")]: true },
+            },
+          },
+        },
+        "t",
+      ],
+    ]);
+    const res = await authFetch(
+      `/api/drafts?contextKey=${encodeURIComponent(contextKey)}`,
+      { apiKey, method: "DELETE" },
+    );
+    expect(res.status).toBe(200);
+    const [original] = await getDb()
+      .select()
+      .from(jmapDrafts)
+      .where(eq(jmapDrafts.id, internal));
+    expect(original?.mailboxRole).toBe("trash");
+  });
 });

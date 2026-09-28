@@ -28,9 +28,8 @@ export type DraftUpsertInput = {
   /** The JMAP revision (`jmap_draft_id`) `keptAttachments` was chosen on. */
   keptAttachmentsRev?: string | null;
   /**
-   * Start a new draft: unlink from the JMAP draft (it stays where it is) and
-   * clear a gone state. Sent by a composer that didn't restore this draft, and
-   * by the user's "keep as a new draft".
+   * "Keep as a new draft": start over, unlinked from the JMAP draft (which
+   * stays where it is); on a `jmap:` surface the copy also moves to its own.
    */
   fresh?: boolean;
 };
@@ -97,9 +96,8 @@ export async function upsertDraft(
   // - `dirty` only when a field really changed (opening and closing a draft
   //   without editing makes no new JMAP revision);
   // - a Bcc or kept choice the caller omits stays as it is;
-  // - `fresh` (a composer that didn't restore this draft, or the user's "keep
-  //   as a new draft") starts a new draft: the link, the gone state and the
-  //   old choices go, and the previous JMAP draft stays where it is.
+  // - `fresh` (the user's "keep as a new draft") starts a new draft: the link
+  //   and the old choices go, and the previous JMAP draft stays where it is.
   const bccNext = input.bcc !== undefined ? sql`excluded.bcc` : sql`drafts.bcc`;
   const keptNext =
     input.keptAttachments !== undefined && kept !== null

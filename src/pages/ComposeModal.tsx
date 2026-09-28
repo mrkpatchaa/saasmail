@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { PenSquare, Send, X } from "lucide-react";
 import TiptapEditor from "@/components/TiptapEditor";
@@ -52,8 +52,15 @@ interface ComposeModalProps {
   onClose: () => void;
   prefill?: ComposePrefill | null;
   contextKey?: string;
-  /** The draft moved to another surface ("Keep as a new draft"). */
-  onContextKeyChange?: (contextKey: string) => void;
+  /**
+   * The draft moved to another surface ("Keep as a new draft"); `files` are
+   * the ones attached here, for the composer that takes over.
+   */
+  onContextKeyChange?: (contextKey: string, carry: { files: File[] }) => void;
+  /** Files to start with (carried over from the previous surface). */
+  initialFiles?: File[];
+  /** A send started or ended: nothing else may take the tray meanwhile. */
+  onSendingChange?: (sending: boolean) => void;
 }
 
 /**
@@ -67,6 +74,8 @@ export default function ComposeModal({
   prefill,
   contextKey = "compose",
   onContextKeyChange,
+  initialFiles,
+  onSendingChange,
 }: ComposeModalProps) {
   const [to, setTo] = useState("");
   const [fromAddress, setFromAddress] = useState("");
@@ -91,7 +100,15 @@ export default function ComposeModal({
   const [signatureHtml, setSignatureHtml] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>(initialFiles ?? []);
+  // Tell the layout while a send is in progress (it won't open another draft
+  // over it), and that it's over when this composer goes away.
+  const onSendingChangeRef = useRef(onSendingChange);
+  onSendingChangeRef.current = onSendingChange;
+  useEffect(() => {
+    onSendingChangeRef.current?.(sending);
+  }, [sending]);
+  useEffect(() => () => onSendingChangeRef.current?.(false), []);
   // Shared drafts: parts of a mail-client draft this composer can't show yet,
   // and whether the draft was sent or deleted from a mail client.
   const [jmapExtras, setJmapExtras] = useState<string[]>([]);
@@ -225,6 +242,16 @@ export default function ComposeModal({
     !bodyText.trim() &&
     cc.length === 0 &&
     bcc.length === 0;
+  // A prefilled message nobody touched isn't a draft yet: closing it leaves
+  // nothing behind (an agent or chat hand-off opens one per request).
+  const prefillUntouched =
+    !!prefill &&
+    files.length === 0 &&
+    bcc.length === 0 &&
+    to === (prefill.to ?? "") &&
+    subject === (prefill.subject ?? "") &&
+    bodyHtml === (prefill.bodyHtml ?? "") &&
+    JSON.stringify(cc) === JSON.stringify(prefill.cc ?? []);
   // A draft opened from a mail client carries its own signature, if any.
   const fromMailClient = contextKey.startsWith("jmap:");
   const effectiveSignatureHtml = fromMailClient ? null : safeSignatureHtml;
@@ -246,6 +273,9 @@ export default function ComposeModal({
   /** "Keep as a new draft": start over from what's on screen. */
   async function keepAsNewDraft() {
     setKeepingNew(true);
+    // Nothing of this composer may write to the old surface again (a pending
+    // save, the idle publish, the close flush when it hands over).
+    await releaseDraft();
     try {
       const saved = await saveDraft({
         contextKey,
@@ -263,11 +293,15 @@ export default function ComposeModal({
       setServerStored([]);
       setStoredRev(null);
       setRemovedSigs([]);
-      // A mail-client draft's copy moved to a surface of its own.
+      // A mail-client draft's copy moved to a surface of its own: the
+      // composer there takes over, with the files attached here.
       if (saved.contextKey !== contextKey) {
-        onContextKeyChange?.(saved.contextKey);
+        onContextKeyChange?.(saved.contextKey, { files });
+      } else {
+        resumeDraft();
       }
     } catch {
+      resumeDraft();
       setError("Couldn't keep this as a new draft");
     } finally {
       setKeepingNew(false);
@@ -280,10 +314,15 @@ export default function ComposeModal({
       prefill.bodyHtml ||
       (prefill.cc && prefill.cc.length > 0))
   );
-  const { clear: clearDraft, settle: settleDraft } = useDraftAutosave({
+  const {
+    clear: clearDraft,
+    settle: settleDraft,
+    release: releaseDraft,
+    resume: resumeDraft,
+  } = useDraftAutosave({
     contextKey,
     enabled: open,
-    isEmpty: composeIsEmpty,
+    isEmpty: composeIsEmpty || prefillUntouched,
     restore: open && !hasPrefill,
     values: {
       fromAddress,

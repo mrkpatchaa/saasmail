@@ -252,7 +252,10 @@ describe("shared drafts: sending a web draft through the submission path", () =>
       body: JSON.stringify({ ...again, fresh: true }),
     });
     expect(kept.status).toBe(200);
-    const res = await send(again);
+    // The copy moved to a surface of its own; the composer sends from there.
+    const moved = ((await kept.json()) as any).draft.contextKey as string;
+    expect(moved).toMatch(/^draft:/);
+    const res = await send({ ...again, contextKey: moved });
     expect(res.status).toBe(200);
     const { emails, submissions } = await sentEmails();
     expect(submissions).toHaveLength(2);

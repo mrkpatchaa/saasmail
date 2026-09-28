@@ -266,17 +266,38 @@ const SaveDraftBody = z.object({
   /** The `storedAttachmentsRev` the kept list was chosen on. */
   keptAttachmentsRev: z.string().max(64).nullable().optional(),
   /**
-   * Start a new draft: unlink from the mail-client draft (which stays where it
-   * is) and clear a gone state. A composer that didn't restore this surface's
-   * draft sends it on its first save; so does "keep as a new draft".
+   * "Keep as a new draft": start over, unlinked from the mail-client draft
+   * (which stays where it is). On a `jmap:` surface the draft also moves to a
+   * surface of its own (see the response's `contextKey`).
    */
   fresh: z.boolean().optional(),
 });
 
 /** A send also carries the signature, added to the sent revision only. */
-const SendDraftBody = SaveDraftBody.extend({
+const SendDraftBody = SaveDraftBody.omit({ fresh: true }).extend({
   signatureHtml: z.string().max(100_000).optional(),
 });
+
+/**
+ * A mail-client draft's surface (`jmap:<id>`) is only ever created by opening
+ * it (POST /api/drafts/open-jmap). A save to one that has no working copy
+ * (it moved with "Keep as a new draft", or a late save from another tab)
+ * would create a stray copy under a key the mail-client draft owns.
+ */
+async function strayJmapSurface(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  userId: string,
+  contextKey: string,
+): Promise<boolean> {
+  if (!contextKey.startsWith("jmap:")) return false;
+  const [row] = await db
+    .select({ id: drafts.id })
+    .from(drafts)
+    .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)))
+    .limit(1);
+  return !row;
+}
 
 const saveDraftRoute = createRoute({
   method: "put",
@@ -284,7 +305,7 @@ const saveDraftRoute = createRoute({
   tags: ["Drafts"],
   security: bearerSecurity,
   description:
-    "Create or update (upsert) the autosaved draft for a compose surface.",
+    "Create or update (upsert) the autosaved draft for a compose surface. With `fresh: true` the draft starts over as a new one; on a mail-client draft's surface (`jmap:<id>`) it also moves to a surface of its own, returned as `draft.contextKey`. A save to a `jmap:` surface that has no draft (it moved) is refused with 409.",
   request: {
     body: {
       content: { "application/json": { schema: SaveDraftBody } },
@@ -292,6 +313,7 @@ const saveDraftRoute = createRoute({
   },
   responses: {
     ...json200Response(z.object({ draft: DraftSchema }), "The saved draft"),
+    409: { description: "A mail-client draft's surface that has no draft" },
   },
 });
 
@@ -299,6 +321,12 @@ draftsRouter.openapi(saveDraftRoute, async (c) => {
   const db = c.get("db");
   const user = c.get("user");
   const body = c.req.valid("json");
+  if (!body.fresh && (await strayJmapSurface(db, user.id, body.contextKey))) {
+    return c.json(
+      { error: "This draft moved; open it again from Drafts" },
+      409,
+    );
+  }
   const draft = await upsertDraft(db, user.id, body);
   return c.json({ draft: await present(db, draft) }, 200);
 });
@@ -458,7 +486,42 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
   }
   const { payload, files } = parsed.value;
   const { signatureHtml, ...fields } = payload;
+  if (await strayJmapSurface(db, user.id, fields.contextKey)) {
+    return c.json(
+      { error: "This draft moved; open it again from Drafts", draft: null },
+      409,
+    );
+  }
   await upsertDraft(db, user.id, fields);
+  // An attachment choice made on another revision (a publish landed since)
+  // can't be applied: part ids renumbered. Ask the composer to look again
+  // rather than send a file the user removed.
+  if (fields.keptAttachments !== undefined) {
+    const [current] = await db
+      .select()
+      .from(drafts)
+      .where(
+        and(
+          eq(drafts.userId, user.id),
+          eq(drafts.contextKey, fields.contextKey),
+        ),
+      )
+      .limit(1);
+    if (
+      current &&
+      current.jmapDraftId !== (fields.keptAttachmentsRev ?? null)
+    ) {
+      return c.json(
+        {
+          error:
+            "The draft's attachments changed while sending; check them and send again",
+          draft: await present(db, current),
+          filesStored: false,
+        },
+        409,
+      );
+    }
+  }
   const extraAttachments: ExtraAttachment[] = [];
   for (const file of files) {
     const stored = await storeUpload(db, c.env, {

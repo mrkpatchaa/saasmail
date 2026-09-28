@@ -112,7 +112,7 @@ A draft written in the saasmail web composer also appears in JMAP, as an ordinar
 - A draft is published once it has a From that is one of your identities and a complete To address; until then it stays web-only.
 - A web reply draft carries `inReplyTo` and `references` of the message it answers, so it joins that thread.
 - Deleting the draft in the web deletes it in JMAP. While a client has the published draft destroyed, being sent or in Trash, the composer says so and the web copy neither publishes nor sends (moved back to Drafts, it is a draft again); "Keep as a new draft" starts a separate new draft from what's on screen, and the client's draft stays where it is.
-- A message opened with prefilled content (an agent or a chat hand-off) is a new draft of its own, never the draft saved in the compose window's slot.
+- A message opened with prefilled content (an agent or a chat hand-off) is a new draft of its own, never the draft saved in the compose window's slot; closed untouched, it leaves no draft.
 - Opening and closing a draft without editing it creates no revision.
 - Files added in the web composer become part of the draft when it is sent (a refused send keeps them in the draft, once).
 

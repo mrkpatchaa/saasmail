@@ -52,7 +52,7 @@
   "worker/src/routers/campaigns-router.ts": 15,
   "worker/src/routers/contacts-router.ts": 2,
   "worker/src/routers/conversations-router.ts": 4,
-  "worker/src/routers/drafts-router.ts": 4,
+  "worker/src/routers/drafts-router.ts": 3,
   "worker/src/routers/email-templates-router.ts": 17,
   "worker/src/routers/emails-router.ts": 7,
   "worker/src/routers/invites-router.ts": 3,

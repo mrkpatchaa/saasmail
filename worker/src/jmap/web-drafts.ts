@@ -325,8 +325,8 @@ function isGoneDraft(
 }
 
 /**
- * Destroy a JMAP draft only while no submission holds it: the check and the
- * delete are one statement, so a client claiming it to send always wins.
+ * Destroy a JMAP draft only while it is an idle draft in Drafts: the check and
+ * the delete are one statement, so a client claiming it to send always wins.
  */
 async function destroyIfIdle(
   db: Db,
@@ -334,7 +334,9 @@ async function destroyIfIdle(
   jmapDraftId: string,
 ): Promise<void> {
   const deleted = await env.DB.prepare(
-    `DELETE FROM jmap_drafts WHERE id = ? AND submit_state IS NULL RETURNING content_id`,
+    // Never one a client is sending, nor one it moved to Trash (deleting the
+    // web copy of a trashed draft must not destroy the original).
+    `DELETE FROM jmap_drafts WHERE id = ? AND submit_state IS NULL AND mailbox_role = 'drafts' RETURNING content_id`,
   )
     .bind(jmapDraftId)
     .first<{ content_id: string }>();

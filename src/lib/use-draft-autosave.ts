@@ -14,6 +14,13 @@ import {
  */
 export const PUBLISH_IDLE_MS = 60_000;
 
+/**
+ * The close flush still running per surface. A composer reopened on the same
+ * surface waits for it before restoring, so it never restores (and then saves
+ * back) the state from before the previous instance's last edits.
+ */
+const flushing = new Map<string, Promise<unknown>>();
+
 export interface DraftValues {
   fromAddress?: string;
   to?: string;
@@ -136,7 +143,8 @@ export function useDraftAutosave({
     savedRef.current = false;
     let cancelled = false;
     if (restore) {
-      fetchDraft(contextKey)
+      (flushing.get(contextKey) ?? Promise.resolve())
+        .then(() => fetchDraft(contextKey))
         .then((draft) => {
           if (cancelled || !draft) return;
           savedRef.current = true;
@@ -217,9 +225,13 @@ export function useDraftAutosave({
         // Save the last edits, then publish them to JMAP (for this session:
         // the result never reaches a composer opened meanwhile).
         const session = generation.current;
-        save()
+        const flush = save()
           .then(() => publish(session))
-          .catch(() => {});
+          .catch(() => {})
+          .finally(() => {
+            if (flushing.get(contextKey) === flush) flushing.delete(contextKey);
+          });
+        flushing.set(contextKey, flush);
       } else if (savedRef.current) {
         savedRef.current = false;
         deleteDraft(contextKey).catch(() => {});
@@ -249,5 +261,22 @@ export function useDraftAutosave({
     await pendingSave.current;
   }
 
-  return { clear, settle };
+  /**
+   * Hand the surface over without deleting its draft ("Keep as a new draft"
+   * moves it elsewhere): stop the timers, wait for a save in flight, and skip
+   * the close flush, which would write to the old surface again. `resume()`
+   * undoes it if the handover fails.
+   */
+  async function release() {
+    if (timer.current) clearTimeout(timer.current);
+    if (publishTimer.current) clearTimeout(publishTimer.current);
+    clearedRef.current = true;
+    await pendingSave.current;
+  }
+
+  function resume() {
+    clearedRef.current = false;
+  }
+
+  return { clear, settle, release, resume };
 }

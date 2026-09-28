@@ -34,11 +34,13 @@ vi.mock("@/pages/ComposeModal", () => ({
   }: {
     contextKey: string;
     onClose: () => void;
-    onContextKeyChange: (key: string) => void;
+    onContextKeyChange: (key: string, carry: { files: File[] }) => void;
   }) => (
     <div data-testid="composer" data-context={contextKey}>
       <button onClick={onClose}>Close composer</button>
-      <button onClick={() => onContextKeyChange("draft:moved")}>Move</button>
+      <button onClick={() => onContextKeyChange("draft:moved", { files: [] })}>
+        Move
+      </button>
     </div>
   ),
 }));

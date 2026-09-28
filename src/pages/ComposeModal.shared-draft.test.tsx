@@ -356,4 +356,20 @@ describe("ComposeModal with a shared draft", () => {
       "keptAttachments",
     );
   });
+
+  it("an untouched prefilled message leaves no draft behind", async () => {
+    const { unmount } = render(
+      <ComposeModal
+        open
+        onClose={() => {}}
+        contextKey="draft:prefill"
+        prefill={{ to: "bob@example.test", subject: "From the agent" }}
+      />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1800));
+    unmount();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    expect(api.publishDraft).not.toHaveBeenCalled();
+  });
 });

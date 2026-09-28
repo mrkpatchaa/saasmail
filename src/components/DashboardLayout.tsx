@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import { nanoid } from "nanoid";
+import { showToast } from "@/lib/toast";
 import TopNav from "@/components/TopNav";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import Footer from "@/components/Footer";
@@ -33,6 +34,14 @@ export default function DashboardLayout() {
   // One composer instance per open (and per draft): nothing of one draft's
   // state, or a late save or publish result, can reach another.
   const [composeSession, setComposeSession] = useState(0);
+  // Files carried to the composer that takes over a moved draft.
+  const [composeFiles, setComposeFiles] = useState<File[] | undefined>();
+  // Read by openCompose without re-creating it.
+  const composeState = useRef({
+    open: false,
+    contextKey: "compose",
+    sending: false,
+  });
   // Optional seed values for the compose drawer — populated when the user
   // opts into the "full compose" flow from inside a chat thread.
   const [composePrefill, setComposePrefill] = useState<ComposePrefill | null>(
@@ -42,13 +51,33 @@ export default function DashboardLayout() {
 
   const openCompose = useCallback(
     (prefill?: ComposePrefill, contextKey?: string) => {
+      const current = composeState.current;
+      // A send in progress keeps the tray: opening another draft now would
+      // lose its outcome (an error, files not yet saved).
+      if (current.open && current.sending) {
+        showToast({
+          kind: "info",
+          message: "Finish sending this message first",
+        });
+        return;
+      }
+      // Re-opening the draft that is already open changes nothing (a remount
+      // would race its own save and drop files attached in it).
+      if (
+        current.open &&
+        !prefill &&
+        (contextKey ?? "compose") === current.contextKey
+      ) {
+        return;
+      }
+      setComposeFiles(undefined);
       setComposePrefill(prefill ?? null);
       // A prefilled message is a new draft of its own, never the one saved
       // in the shared "compose" slot (whose Bcc or attachments it would pick
       // up when shared with a mail client).
-      setComposeContextKey(
-        contextKey ?? (prefill ? `draft:${nanoid()}` : "compose"),
-      );
+      const next = contextKey ?? (prefill ? `draft:${nanoid()}` : "compose");
+      composeState.current = { open: true, contextKey: next, sending: false };
+      setComposeContextKey(next);
       setComposeSession((session) => session + 1);
       setComposeOpen(true);
     },
@@ -78,6 +107,11 @@ export default function DashboardLayout() {
   }, []);
 
   const closeCompose = useCallback(() => {
+    composeState.current = {
+      open: false,
+      contextKey: "compose",
+      sending: false,
+    };
     setComposeOpen(false);
     setComposePrefill(null);
     setComposeContextKey("compose");
@@ -131,9 +165,16 @@ export default function DashboardLayout() {
               onClose={closeCompose}
               prefill={composePrefill}
               contextKey={composeContextKey}
-              onContextKeyChange={(next) => {
-                // "Keep as a new draft" moved the draft to its own surface.
+              initialFiles={composeFiles}
+              onSendingChange={(sending) => {
+                composeState.current.sending = sending;
+              }}
+              onContextKeyChange={(next, { files }) => {
+                // "Keep as a new draft" moved the draft to its own surface; the
+                // composer there takes over, with the files attached here.
+                composeState.current.contextKey = next;
                 setComposePrefill(null);
+                setComposeFiles(files);
                 setComposeContextKey(next);
               }}
             />

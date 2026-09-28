@@ -222,3 +222,27 @@ describe("useDraftAutosave: publish feedback and pausing", () => {
     expect(mPublish).not.toHaveBeenCalled();
   });
 });
+
+describe("useDraftAutosave: reopening a surface", () => {
+  it("restores only after the previous instance's close flush has saved", async () => {
+    let finishSave: (() => void) | undefined;
+    mSave.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishSave = () => resolve({} as Draft);
+        }),
+    );
+    const first = renderHook((p: Props) => useDraftAutosave(p), {
+      initialProps: baseProps({ contextKey: "draft:k" }),
+    });
+    first.unmount(); // the close flush starts saving
+    expect(mSave).toHaveBeenCalledTimes(1);
+    renderHook((p: Props) => useDraftAutosave(p), {
+      initialProps: baseProps({ contextKey: "draft:k", restore: true }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mFetch).not.toHaveBeenCalled();
+    finishSave!();
+    await waitFor(() => expect(mFetch).toHaveBeenCalledWith("draft:k"));
+  });
+});
