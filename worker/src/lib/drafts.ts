@@ -133,12 +133,23 @@ export async function upsertDraft(
       dirty = CASE WHEN ${fresh} = 1 OR ${changed} THEN 1 ELSE drafts.dirty END,
       updated_at = excluded.updated_at
   `);
+  // "Keep as a new draft" on a mail-client draft's surface (jmap:<id>) moves
+  // the copy to a surface of its own, so the mail-client draft, if it comes
+  // back, is listed under its own key and never shares one with the copy.
+  let contextKey = input.contextKey;
+  if (input.fresh === true && contextKey.startsWith("jmap:")) {
+    const moved = `draft:${nanoid()}`;
+    await db
+      .update(drafts)
+      .set({ contextKey: moved })
+      .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)));
+    contextKey = moved;
+  }
+
   const [row] = await db
     .select()
     .from(drafts)
-    .where(
-      and(eq(drafts.userId, userId), eq(drafts.contextKey, input.contextKey)),
-    )
+    .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)))
     .limit(1);
 
   if (!row) {

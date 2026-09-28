@@ -137,7 +137,11 @@ describe("shared drafts: second review regressions", () => {
     await composerSave(draft);
     expect((await publish(contextKey)).body.status).toBe("gone");
     expect(await getDb().select().from(jmapDrafts)).toEqual([]);
-    expect((await row(contextKey)).jmapState).toBe("gone");
+    // Gone is read live, never stored.
+    const again = (
+      await api(`/api/drafts?contextKey=${encodeURIComponent(contextKey)}`)
+    ).body.draft;
+    expect(again.jmapState).toBe("gone");
   });
 
   it("#4: a draft a mail client is still sending is never sent again from the web", async () => {
@@ -248,16 +252,156 @@ describe("shared drafts: second review regressions", () => {
     expect(res[0][1].list[0].emailId).toBe(publicDraftEmailId(internal));
   });
 
-  it("fresh starts a new draft and leaves the mail-client draft where it is", async () => {
+  it("keep as a new draft moves a mail-client draft's copy to its own surface", async () => {
     const internal = await clientDraft();
     const { contextKey, draft } = await openDraft(internal);
-    await composerSave(draft, { subject: "Something new", fresh: true });
-    const copy = await row(contextKey);
+    const saved = await composerSave(draft, {
+      subject: "Something new",
+      fresh: true,
+    });
+    const moved = saved.body.draft.contextKey as string;
+    expect(moved).toMatch(/^draft:/);
+    expect(await row(contextKey)).toBeUndefined();
+    const copy = await row(moved);
     expect(copy.jmapDraftId).toBeNull();
     expect(copy.dirty).toBe(1);
-    expect((await publish(contextKey)).body.status).toBe("published");
+    expect((await publish(moved)).body.status).toBe("published");
     const all = await getDb().select().from(jmapDrafts);
     expect(all.map((d) => d.id)).toContain(internal);
     expect(all).toHaveLength(2);
+    // Two drafts, two distinct entries: the mail-client one and the copy.
+    const list = (
+      await api(`/api/drafts/list?inbox=${encodeURIComponent(INBOX)}`)
+    ).body.drafts.map((item: any) => item.contextKey);
+    expect(new Set(list).size).toBe(list.length);
+    expect(list).toEqual(expect.arrayContaining([moved, `jmap:${internal}`]));
+  });
+
+  it("R5: an unedited copy of a draft trashed or deleted in a mail client is gone, not sent", async () => {
+    const trashed = await clientDraft();
+    const a = await openDraft(trashed);
+    await composerSave(a.draft);
+    await jmapCall(authorId, [
+      [
+        "Email/set",
+        {
+          accountId: acct(authorId),
+          update: {
+            [publicDraftEmailId(trashed)]: {
+              mailboxIds: { [sys(INBOX, "trash")]: true },
+            },
+          },
+        },
+        "t",
+      ],
+    ]);
+    const db = getDb();
+    const [user] = await db.select().from(users).where(eq(users.id, authorId));
+    const allowed = await resolveAllowedInboxes(db, user);
+    const { sender, calls } = recordingSender();
+    expect(
+      (await sendWebDraft(db, env, allowed, user, a.contextKey, [], sender))
+        .status,
+    ).toBe("gone");
+
+    const deleted = await clientDraft({ subject: "Other" });
+    const b = await openDraft(deleted);
+    await composerSave(b.draft);
+    await jmapCall(authorId, [
+      [
+        "Email/set",
+        {
+          accountId: acct(authorId),
+          destroy: [publicDraftEmailId(deleted)],
+        },
+        "x",
+      ],
+    ]);
+    expect(
+      (await sendWebDraft(db, env, allowed, user, b.contextKey, [], sender))
+        .status,
+    ).toBe("gone");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a draft moved back out of Trash in a mail client is a draft again", async () => {
+    const internal = await clientDraft();
+    const { contextKey } = await openDraft(internal);
+    const move = (role: "trash" | "drafts") =>
+      jmapCall(authorId, [
+        [
+          "Email/set",
+          {
+            accountId: acct(authorId),
+            update: {
+              [publicDraftEmailId(internal)]: {
+                mailboxIds: { [sys(INBOX, role)]: true },
+              },
+            },
+          },
+          "m",
+        ],
+      ]);
+    const state = async () =>
+      (await api(`/api/drafts?contextKey=${encodeURIComponent(contextKey)}`))
+        .body.draft.jmapState;
+    await move("trash");
+    expect(await state()).toBe("gone");
+    await move("drafts");
+    expect(await state()).toBeNull();
+  });
+
+  it("R6: an attachment with a Content-ID is a chip, not a hidden inline part", async () => {
+    const blob = await uploadBlob(
+      authorId,
+      apiKey,
+      new TextEncoder().encode("pdf"),
+      "application/pdf",
+    );
+    const internal = await clientDraft({
+      attachments: [
+        {
+          blobId: blob,
+          type: "application/pdf",
+          name: "contract.pdf",
+          disposition: "attachment",
+          cid: "contract@x",
+        },
+      ],
+    });
+    const { draft } = await openDraft(internal);
+    expect(draft.storedAttachments.map((p: any) => p.name)).toEqual([
+      "contract.pdf",
+    ]);
+  });
+
+  it("R1: once a publish applied a removal, a plain save doesn't republish", async () => {
+    const blob = await uploadBlob(
+      authorId,
+      apiKey,
+      new TextEncoder().encode("x"),
+      "text/plain",
+    );
+    const internal = await clientDraft({
+      attachments: [
+        { blobId: blob, type: "text/plain", name: "a.txt" },
+        { blobId: blob, type: "text/plain", name: "b.txt" },
+      ],
+    });
+    const { contextKey, draft } = await openDraft(internal);
+    const keep = draft.storedAttachments[0].partId;
+    await composerSave(draft, {
+      keptAttachments: [keep],
+      keptAttachmentsRev: draft.storedAttachmentsRev,
+    });
+    const published = await publish(contextKey);
+    expect(published.body.status).toBe("published");
+    const after = published.body.draft;
+    expect(after.storedAttachments.map((p: any) => p.name)).toEqual(["a.txt"]);
+    // The composer forgets the applied removal: its saves carry no kept list.
+    for (let i = 0; i < 2; i++) {
+      await composerSave(after);
+      expect((await publish(contextKey)).body.status).toBe("unchanged");
+    }
   });
 });

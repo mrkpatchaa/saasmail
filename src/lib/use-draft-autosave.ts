@@ -25,8 +25,6 @@ export interface DraftValues {
   bcc?: CcEntry[];
   keptAttachments?: string[];
   keptAttachmentsRev?: string | null;
-  /** Start a new draft on this save (sent once per session, see below). */
-  fresh?: boolean;
 }
 
 interface UseDraftAutosaveOptions {
@@ -93,27 +91,16 @@ export function useDraftAutosave({
   // One generation per open session: a publish that resolves after the
   // composer closed (or moved to another draft) must not touch the next one.
   const generation = useRef(0);
-  // A session that didn't restore this surface's draft starts a new one: its
-  // first save carries `fresh`, so it never patches a mail-client draft it
-  // didn't show (its Bcc or attachments) nor revives a gone one.
-  const freshRef = useRef(false);
   // The save in flight, so a send can wait for it (settle()).
   const pendingSave = useRef<Promise<unknown> | null>(null);
   const save = () => {
-    const payload = {
-      contextKey,
-      ...valuesRef.current,
-      ...(freshRef.current ? { fresh: true } : {}),
-    };
-    const request = saveDraft(payload).then((result) => {
-      freshRef.current = false;
-      return result;
-    });
+    const request = saveDraft({ contextKey, ...valuesRef.current });
     pendingSave.current = request.catch(() => {});
     return request;
   };
-  const publish = () => {
-    const session = generation.current;
+  // `session` is taken when the publish is decided (before any save it waits
+  // on), so a result for a session that has since ended is dropped.
+  const publish = (session = generation.current) => {
     return publishDraft(contextKey)
       .then((result) => {
         if (
@@ -147,7 +134,6 @@ export function useDraftAutosave({
     generation.current += 1;
     clearedRef.current = false;
     savedRef.current = false;
-    freshRef.current = !restore;
     let cancelled = false;
     if (restore) {
       fetchDraft(contextKey)
@@ -228,9 +214,11 @@ export function useDraftAutosave({
       if (clearedRef.current || pausedRef.current) return;
       if (!isEmptyRef.current) {
         savedRef.current = true;
-        // Save the last edits, then publish them to JMAP.
+        // Save the last edits, then publish them to JMAP (for this session:
+        // the result never reaches a composer opened meanwhile).
+        const session = generation.current;
         save()
-          .then(() => publish())
+          .then(() => publish(session))
           .catch(() => {});
       } else if (savedRef.current) {
         savedRef.current = false;
@@ -251,7 +239,11 @@ export function useDraftAutosave({
     }
   }
 
-  /** Wait for a save in flight, so a send never races an older save. */
+  /**
+   * Before a send: cancel a pending debounced save (the send saves the same
+   * values itself) and wait for a save already in flight, so an older save
+   * can't land after the send's.
+   */
   async function settle() {
     if (timer.current) clearTimeout(timer.current);
     await pendingSave.current;

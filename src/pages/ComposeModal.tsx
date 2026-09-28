@@ -52,6 +52,8 @@ interface ComposeModalProps {
   onClose: () => void;
   prefill?: ComposePrefill | null;
   contextKey?: string;
+  /** The draft moved to another surface ("Keep as a new draft"). */
+  onContextKeyChange?: (contextKey: string) => void;
 }
 
 /**
@@ -64,6 +66,7 @@ export default function ComposeModal({
   onClose,
   prefill,
   contextKey = "compose",
+  onContextKeyChange,
 }: ComposeModalProps) {
   const [to, setTo] = useState("");
   const [fromAddress, setFromAddress] = useState("");
@@ -94,7 +97,7 @@ export default function ComposeModal({
   const [jmapExtras, setJmapExtras] = useState<string[]>([]);
   const [jmapGone, setJmapGone] = useState(false);
   // Shared drafts: Bcc, and the attachments a mail-client draft already
-  // carries (null until a saved draft says; then the ones kept).
+  // carries.
   const [bcc, setBcc] = useState<CcEntry[]>([]);
   const [showBcc, setShowBcc] = useState(false);
   // The draft's stored attachments as the server last listed them, and the
@@ -221,22 +224,30 @@ export default function ComposeModal({
     bodyIsEmpty &&
     !bodyText.trim() &&
     cc.length === 0 &&
-    bcc.length === 0 &&
-    true;
+    bcc.length === 0;
   // A draft opened from a mail client carries its own signature, if any.
   const fromMailClient = contextKey.startsWith("jmap:");
   const effectiveSignatureHtml = fromMailClient ? null : safeSignatureHtml;
   function applyDraftState(draft: Draft) {
     setJmapExtras(draft.jmapExtras ?? []);
     setJmapGone(draft.jmapState === "gone");
-    setServerStored(draft.storedAttachments ?? []);
+    const listed = draft.storedAttachments ?? [];
+    setServerStored(listed);
     setStoredRev(draft.storedAttachmentsRev ?? null);
+    // A removal the latest revision already applied is done: forget it, so
+    // later saves don't keep re-sending the choice (and republishing).
+    setRemovedSigs((removed) =>
+      removed.filter((sig) => listed.some((part) => sigOf(part) === sig)),
+    );
   }
+
+  const [keepingNew, setKeepingNew] = useState(false);
 
   /** "Keep as a new draft": start over from what's on screen. */
   async function keepAsNewDraft() {
+    setKeepingNew(true);
     try {
-      await saveDraft({
+      const saved = await saveDraft({
         contextKey,
         fromAddress,
         to,
@@ -252,8 +263,14 @@ export default function ComposeModal({
       setServerStored([]);
       setStoredRev(null);
       setRemovedSigs([]);
+      // A mail-client draft's copy moved to a surface of its own.
+      if (saved.contextKey !== contextKey) {
+        onContextKeyChange?.(saved.contextKey);
+      }
     } catch {
       setError("Couldn't keep this as a new draft");
+    } finally {
+      setKeepingNew(false);
     }
   }
   const hasPrefill = !!(
@@ -284,17 +301,19 @@ export default function ComposeModal({
       applyDraftState(draft);
       setBcc(draft.bcc ?? []);
       setShowBcc((draft.bcc?.length ?? 0) > 0);
-      if (draft.toAddress) setTo(draft.toAddress);
-      if (draft.cc) setCc(draft.cc);
-      if (draft.subject) setSubject(draft.subject);
-      if (draft.bodyHtml) setBodyHtml(draft.bodyHtml);
-      if (draft.bodyText) setBodyText(draft.bodyText);
+      // Every field, empty ones too: nothing else's content may remain.
+      setTo(draft.toAddress ?? "");
+      setCc(draft.cc ?? []);
+      setSubject(draft.subject ?? "");
+      setBodyHtml(draft.bodyHtml ?? "");
+      setBodyText(draft.bodyText ?? "");
       if (draft.fromAddress) setFromAddress(draft.fromAddress);
     },
   });
 
   async function handleSend() {
-    if (!to || bodyIsEmpty) return;
+    // Also the keyboard shortcut: a gone draft isn't sent from here.
+    if (!to || bodyIsEmpty || jmapGone) return;
     setSending(true);
     setError("");
     try {
@@ -579,13 +598,14 @@ export default function ComposeModal({
             >
               <span className="min-w-0 flex-1">
                 {jmapGone
-                  ? "This draft was sent, deleted or moved to Trash from a mail client, so changes here aren't saved there."
+                  ? "This draft was sent, deleted or moved to Trash from a mail client, so changes here aren't saved there. Keeping it as a new draft starts over from what's on screen; any attachments stay with the original."
                   : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it, and sent with it.`}
               </span>
               {jmapGone && (
                 <button
                   type="button"
                   data-testid="compose-keep-as-new"
+                  disabled={keepingNew}
                   onClick={() => void keepAsNewDraft()}
                   className="shrink-0 rounded-[6px] border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
                 >

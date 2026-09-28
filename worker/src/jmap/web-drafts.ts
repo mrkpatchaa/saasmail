@@ -284,7 +284,9 @@ async function createInput(
  * with the HTML, whatever its disposition says.
  */
 function isInlinePart(leaf: ContentLeaf): boolean {
-  return leaf.cid !== null;
+  // Some mailers give every attachment a Content-ID: one marked as an
+  // attachment is a real attachment (a chip), whatever its Content-ID.
+  return leaf.cid !== null && leaf.disposition !== "attachment";
 }
 
 /**
@@ -370,16 +372,10 @@ export async function publishWebDraft(
     .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)))
     .limit(1);
   if (!row) return { status: "notFound" };
-  if (row.jmapState === "gone") return { status: "gone" };
-  if (
-    !row.dirty &&
-    row.jmapDraftId &&
-    extraAttachments.length === 0 &&
-    !appendHtml
-  ) {
-    return { status: "unchanged", jmapDraftId: row.jmapDraftId, clean: true };
-  }
 
+  // Spec S6, read live every time (never stored: a draft moved back out of
+  // Trash, or whose send was undone, is a draft again): sent (claimed or
+  // filed into Sent), deleted or trashed in a mail client.
   let previous: typeof jmapDrafts.$inferSelect | null = null;
   if (row.jmapDraftId) {
     [previous] = await db
@@ -389,14 +385,15 @@ export async function publishWebDraft(
         and(eq(jmapDrafts.id, row.jmapDraftId), eq(jmapDrafts.userId, userId)),
       )
       .limit(1);
-    // Spec S6: sent (claimed or filed into Sent), deleted or trashed elsewhere.
-    if (isGoneDraft(previous)) {
-      await db
-        .update(drafts)
-        .set({ jmapState: "gone" })
-        .where(eq(drafts.id, row.id));
-      return { status: "gone" };
-    }
+    if (isGoneDraft(previous)) return { status: "gone" };
+  }
+  if (
+    !row.dirty &&
+    row.jmapDraftId &&
+    extraAttachments.length === 0 &&
+    !appendHtml
+  ) {
+    return { status: "unchanged", jmapDraftId: row.jmapDraftId, clean: true };
   }
 
   const { input, reason, code } = await createInput(
@@ -441,7 +438,7 @@ export async function publishWebDraft(
                          THEN 0 ELSE 1 END,
             -- The new revision holds exactly the kept attachments.
             attachments_json = CASE WHEN attachments_json IS ? THEN NULL ELSE attachments_json END
-      WHERE id = ? AND jmap_draft_id IS ? AND jmap_state IS NULL`,
+      WHERE id = ? AND jmap_draft_id IS ?`,
   )
     .bind(
       newId,
@@ -491,10 +488,7 @@ export async function publishWebDraft(
       .where(eq(jmapDrafts.id, previous.id))
       .limit(1);
     if (still && still.submitState !== null) {
-      await db
-        .update(drafts)
-        .set({ jmapState: "gone" })
-        .where(eq(drafts.id, row.id));
+      // The copy now links to a destroyed revision: it reads as gone.
       if (fresh) await destroyIfIdle(db, env, fresh.id);
       return { status: "gone" };
     }
@@ -712,14 +706,15 @@ export async function linkedDraftInfo(
 }
 
 /**
- * Spec S6 on read: a copy whose JMAP draft was sent (claimed) or deleted in a
- * mail client is marked gone, so the composer says so on open.
+ * Spec S6 on read, computed from the linked draft every time (a stored flag
+ * would outlive a draft restored from Trash or a send that was undone): the
+ * copy reads as gone while its JMAP draft is missing, being sent or trashed.
  */
 export async function refreshGone(
   db: Db,
   row: WorkingCopy,
 ): Promise<WorkingCopy> {
-  if (!row.jmapDraftId || row.jmapState !== null) return row;
+  if (!row.jmapDraftId) return { ...row, jmapState: null };
   const [draft] = await db
     .select({
       submitState: jmapDrafts.submitState,
@@ -728,12 +723,7 @@ export async function refreshGone(
     .from(jmapDrafts)
     .where(eq(jmapDrafts.id, row.jmapDraftId))
     .limit(1);
-  if (!isGoneDraft(draft)) return row;
-  await db
-    .update(drafts)
-    .set({ jmapState: "gone" })
-    .where(eq(drafts.id, row.id));
-  return { ...row, jmapState: "gone" };
+  return { ...row, jmapState: isGoneDraft(draft) ? "gone" : null };
 }
 
 export type JmapDraftListItem = {

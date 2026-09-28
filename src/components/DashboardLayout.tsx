@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
+import { nanoid } from "nanoid";
 import TopNav from "@/components/TopNav";
 import Breadcrumbs from "@/components/Breadcrumbs";
 import Footer from "@/components/Footer";
@@ -29,6 +30,9 @@ export default function DashboardLayout() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [agentOpen, setAgentOpen] = useState(initialAgentPanelOpen);
   const [composeContextKey, setComposeContextKey] = useState("compose");
+  // One composer instance per open (and per draft): nothing of one draft's
+  // state, or a late save or publish result, can reach another.
+  const [composeSession, setComposeSession] = useState(0);
   // Optional seed values for the compose drawer — populated when the user
   // opts into the "full compose" flow from inside a chat thread.
   const [composePrefill, setComposePrefill] = useState<ComposePrefill | null>(
@@ -37,9 +41,15 @@ export default function DashboardLayout() {
   const reduced = useReducedAnimations();
 
   const openCompose = useCallback(
-    (prefill?: ComposePrefill, contextKey = "compose") => {
+    (prefill?: ComposePrefill, contextKey?: string) => {
       setComposePrefill(prefill ?? null);
-      setComposeContextKey(contextKey);
+      // A prefilled message is a new draft of its own, never the one saved
+      // in the shared "compose" slot (whose Bcc or attachments it would pick
+      // up when shared with a mail client).
+      setComposeContextKey(
+        contextKey ?? (prefill ? `draft:${nanoid()}` : "compose"),
+      );
+      setComposeSession((session) => session + 1);
       setComposeOpen(true);
     },
     [],
@@ -114,12 +124,20 @@ export default function DashboardLayout() {
 
           <ComposeFab onClick={() => openCompose()} />
 
-          <ComposeModal
-            open={composeOpen}
-            onClose={closeCompose}
-            prefill={composePrefill}
-            contextKey={composeContextKey}
-          />
+          {composeOpen && (
+            <ComposeModal
+              key={`${composeContextKey}#${composeSession}`}
+              open
+              onClose={closeCompose}
+              prefill={composePrefill}
+              contextKey={composeContextKey}
+              onContextKeyChange={(next) => {
+                // "Keep as a new draft" moved the draft to its own surface.
+                setComposePrefill(null);
+                setComposeContextKey(next);
+              }}
+            />
+          )}
 
           <Toaster />
         </div>

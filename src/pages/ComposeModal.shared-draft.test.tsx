@@ -304,4 +304,56 @@ describe("ComposeModal with a shared draft", () => {
     expect(screen.queryByTestId("compose-stored-attachment")).toBeNull();
     expect(screen.queryByTestId("compose-shared-draft-notice")).toBeNull();
   });
+
+  it("forgets a removal once the draft no longer has that attachment", async () => {
+    const both = [
+      { partId: "3", name: "figures.csv", type: "text/csv", size: 12 },
+      { partId: "4", name: "notes.txt", type: "text/plain", size: 5 },
+    ];
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: null,
+      storedAttachments: both,
+      storedAttachmentsRev: "rev1",
+    });
+    // A refused send hands back the draft as it is now: the removal applied.
+    api.sendDraft.mockRejectedValue(
+      new api.SendDraftError(
+        "Refused",
+        {
+          ...DRAFT,
+          jmapExtras: [],
+          jmapState: null,
+          storedAttachments: [both[0]],
+          storedAttachmentsRev: "rev2",
+        },
+        false,
+        false,
+      ),
+    );
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    await screen.findAllByTestId("compose-stored-attachment");
+    fireEvent.click(screen.getByLabelText("Remove notes.txt"));
+    const send = screen.getByTestId("compose-send-button") as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(api.sendDraft).toHaveBeenCalled());
+    expect(api.sendDraft.mock.calls[0]?.[0]).toMatchObject({
+      keptAttachments: ["3"],
+      keptAttachmentsRev: "rev1",
+    });
+    await screen.findByText("Refused");
+    // The next save carries no kept list: nothing left to choose.
+    api.saveDraft.mockClear();
+    fireEvent.change(screen.getByLabelText("Subject"), {
+      target: { value: "Changed" },
+    });
+    await waitFor(() => expect(api.saveDraft).toHaveBeenCalled(), {
+      timeout: 4000,
+    });
+    expect(api.saveDraft.mock.calls.at(-1)?.[0]).not.toHaveProperty(
+      "keptAttachments",
+    );
+  });
 });

@@ -76,6 +76,16 @@ const DraftSchema = z.object({
 
 type DraftRow = typeof drafts.$inferSelect;
 
+/** A working copy as the API shows it: gone read live, linked parts loaded. */
+async function present(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  row: DraftRow,
+): Promise<z.infer<typeof DraftSchema>> {
+  const current = await refreshGone(db, row);
+  return toDraft(current, await linkedDraftInfo(db, current));
+}
+
 function toDraft(
   row: DraftRow,
   linked: LinkedDraftInfo = { extras: [], stored: [], rev: null },
@@ -226,11 +236,8 @@ draftsRouter.openapi(getDraftRoute, async (c) => {
     .where(and(eq(drafts.userId, user.id), eq(drafts.contextKey, contextKey)))
     .limit(1);
   // A copy whose JMAP draft was sent or deleted elsewhere says so on open.
-  const row = rows[0] ? await refreshGone(db, rows[0]) : null;
-  return c.json(
-    { draft: row ? toDraft(row, await linkedDraftInfo(db, row)) : null },
-    200,
-  );
+  const row = rows[0];
+  return c.json({ draft: row ? await present(db, row) : null }, 200);
 });
 
 // PUT /api/drafts — upsert the draft for a compose surface.
@@ -293,10 +300,7 @@ draftsRouter.openapi(saveDraftRoute, async (c) => {
   const user = c.get("user");
   const body = c.req.valid("json");
   const draft = await upsertDraft(db, user.id, body);
-  return c.json(
-    { draft: toDraft(draft, await linkedDraftInfo(db, draft)) },
-    200,
-  );
+  return c.json({ draft: await present(db, draft) }, 200);
 });
 
 // DELETE /api/drafts?contextKey=… — discard a draft (on send or clear).
@@ -503,7 +507,7 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
       and(eq(drafts.userId, user.id), eq(drafts.contextKey, fields.contextKey)),
     )
     .limit(1);
-  const draft = row ? toDraft(row, await linkedDraftInfo(db, row)) : null;
+  const draft = row ? await present(db, row) : null;
   const status =
     outcome.status === "invalid"
       ? 400
@@ -591,7 +595,7 @@ draftsRouter.openapi(publishDraftRoute, async (c) => {
     {
       status: outcome.status,
       ...(outcome.status === "skipped" ? { reason: outcome.reason } : {}),
-      draft: row ? toDraft(row, await linkedDraftInfo(db, row)) : null,
+      draft: row ? await present(db, row) : null,
     },
     200,
   );
