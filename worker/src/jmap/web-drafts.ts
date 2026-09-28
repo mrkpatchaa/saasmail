@@ -12,17 +12,21 @@ import { emails } from "../db/emails.schema";
 import { jmapDrafts } from "../db/jmap-drafts.schema";
 import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { sentEmails } from "../db/sent-emails.schema";
-import { createEmailSender } from "../lib/email-sender";
+import { createEmailSender, type EmailSender } from "../lib/email-sender";
 import { isInboxAllowed, type AllowedInboxes } from "../lib/inbox-permissions";
 import { contentLeaves, type ContentLeaf, type ContentPart } from "./content";
 import { createDraftEmail, Rejection } from "./email-create";
 import { destroyDraft } from "./drafts";
 import { listUsableIdentities } from "./mailboxes";
+import { isMethodError } from "./on-success";
+import { emailSubmissionSet } from "./submission";
 import {
   parseDraftEmailId,
   publicBodyPartBlobId,
   publicCustomMailboxId,
+  publicAccountId,
   publicDraftEmailId,
+  publicIdentityId,
   publicSystemMailboxId,
 } from "./public-ids";
 
@@ -83,6 +87,9 @@ function parseCc(
   }
 }
 
+/** A stored upload the next revision attaches. */
+export type ExtraAttachment = { blobId: string; type: string; name: string };
+
 /** Comma- or semicolon-separated addresses, as the web To field holds them. */
 function splitAddresses(value: string | null): string[] {
   return (value ?? "")
@@ -106,6 +113,7 @@ async function createInput(
   allowed: AllowedInboxes,
   row: WorkingCopy,
   previous: typeof jmapDrafts.$inferSelect | null,
+  extraAttachments: ExtraAttachment[] = [],
 ): Promise<{ input: Record<string, unknown> | null; reason: string | null }> {
   const from = row.fromAddress?.trim().toLowerCase();
   // Spec S7: a draft with no From isn't published until it has one.
@@ -195,6 +203,13 @@ async function createInput(
       }));
     if (attachments.length > 0) carried.attachments = attachments;
   }
+  // Files the web composer added (slice 4: uploaded at send time).
+  if (extraAttachments.length > 0) {
+    carried.attachments = [
+      ...((carried.attachments as unknown[] | undefined) ?? []),
+      ...extraAttachments,
+    ];
+  }
   return {
     input: {
       mailboxIds,
@@ -229,7 +244,9 @@ export async function publishWebDraft(
   allowed: AllowedInboxes,
   userId: string,
   contextKey: string,
+  options: { extraAttachments?: ExtraAttachment[] } = {},
 ): Promise<PublishOutcome> {
+  const extraAttachments = options.extraAttachments ?? [];
   const [row] = await db
     .select()
     .from(drafts)
@@ -237,7 +254,7 @@ export async function publishWebDraft(
     .limit(1);
   if (!row) return { status: "notFound" };
   if (row.jmapState === "gone") return { status: "gone" };
-  if (!row.dirty && row.jmapDraftId) {
+  if (!row.dirty && row.jmapDraftId && extraAttachments.length === 0) {
     return { status: "unchanged", jmapDraftId: row.jmapDraftId };
   }
 
@@ -260,7 +277,13 @@ export async function publishWebDraft(
     }
   }
 
-  const { input, reason } = await createInput(db, allowed, row, previous);
+  const { input, reason } = await createInput(
+    db,
+    allowed,
+    row,
+    previous,
+    extraAttachments,
+  );
   if (!input) return { status: "skipped", reason: reason! };
   const now = Math.floor(Date.now() / 1000);
   const created = await createDraftEmail(
@@ -561,4 +584,124 @@ export async function destroyJmapDraftFromWeb(
 ): Promise<void> {
   const draft = await openableJmapDraft(db, allowed, userId, jmapDraftId);
   if (draft) await destroyDraft(db, env, draft);
+}
+
+export type WebSendOutcome = {
+  /** `sent`, or why not: the caller maps these to HTTP answers. */
+  status: "sent" | "fallback" | "invalid" | "gone" | "refused";
+  /** A human-readable reason for everything but `sent`. */
+  reason: string | null;
+  /** The accepted submission's public id, when sent. */
+  submissionId: string | null;
+};
+
+/**
+ * Send a web draft through the JMAP submission path (spec S4, slice 4): publish
+ * its final revision (with any new files as attachments), then submit it with
+ * the draft filed into Sent (the alias), exactly as a JMAP client would. The
+ * working copy goes once the submission is created. An inbox without a sender
+ * identity can't send through JMAP: `fallback` tells the caller to use the
+ * legacy send route instead.
+ */
+export async function sendWebDraft(
+  db: Db,
+  env: CloudflareBindings,
+  allowed: AllowedInboxes,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  user: any,
+  contextKey: string,
+  extraAttachments: ExtraAttachment[],
+  sender?: EmailSender,
+): Promise<WebSendOutcome> {
+  const published = await publishWebDraft(
+    db,
+    env,
+    allowed,
+    user.id,
+    contextKey,
+    { extraAttachments },
+  );
+  if (published.status === "gone") {
+    return {
+      status: "gone",
+      reason: "This draft was sent or deleted from a mail client",
+      submissionId: null,
+    };
+  }
+  if (published.status === "skipped") {
+    return {
+      status:
+        published.reason === "From isn't a usable identity" ||
+        published.reason === "no From yet"
+          ? "fallback"
+          : "invalid",
+      reason: published.reason,
+      submissionId: null,
+    };
+  }
+  if (published.status === "notFound") {
+    return {
+      status: "invalid",
+      reason: "No draft to send",
+      submissionId: null,
+    };
+  }
+  const jmapDraftId = published.jmapDraftId!;
+  const [draft] = await db
+    .select()
+    .from(jmapDrafts)
+    .where(eq(jmapDrafts.id, jmapDraftId))
+    .limit(1);
+  if (!draft) {
+    return { status: "gone", reason: "The draft is gone", submissionId: null };
+  }
+  const drafts_ = publicSystemMailboxId(draft.inbox, "drafts");
+  const sent = publicSystemMailboxId(draft.inbox, "sent");
+  const outcome = await emailSubmissionSet(
+    db,
+    allowed,
+    user,
+    {
+      accountId: publicAccountId(user.id),
+      create: {
+        s: {
+          identityId: publicIdentityId(draft.inbox),
+          emailId: publicDraftEmailId(jmapDraftId),
+        },
+      },
+      onSuccessUpdateEmail: {
+        "#s": {
+          "keywords/$draft": null,
+          [`mailboxIds/${drafts_}`]: null,
+          [`mailboxIds/${sent}`]: true,
+        },
+      },
+    },
+    { env, createdIds: new Map(), sender },
+  );
+  if (isMethodError(outcome)) {
+    return {
+      status: "refused",
+      reason: outcome.description ?? outcome.type,
+      submissionId: null,
+    };
+  }
+  const response = outcome.response as {
+    created: Record<string, { id: string }> | null;
+    notCreated: Record<string, { type: string; description?: string }> | null;
+  };
+  const created = response.created?.s;
+  if (!created) {
+    const error = response.notCreated?.s;
+    return {
+      status: "refused",
+      reason: error?.description ?? error?.type ?? "The message wasn't sent",
+      submissionId: null,
+    };
+  }
+  // Sent: the working copy is done (its JMAP draft is the Sent Email now).
+  await db
+    .delete(drafts)
+    .where(and(eq(drafts.userId, user.id), eq(drafts.contextKey, contextKey)));
+  return { status: "sent", reason: null, submissionId: created.id };
 }

@@ -41,10 +41,10 @@ test.describe.serial("reply to own sent message", () => {
     await composeProseMirror.click();
     await page.keyboard.type("Hello Alice, this is our first contact.");
 
+    // The composer sends through the JMAP submission path (shared drafts).
     const sendResponsePromise = page.waitForResponse(
       (res) =>
-        res.url().includes("/api/send") &&
-        !res.url().includes("/reply/") &&
+        res.url().includes("/api/drafts/send") &&
         res.request().method() === "POST",
     );
 

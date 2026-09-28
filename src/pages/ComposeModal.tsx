@@ -8,7 +8,7 @@ import {
   TrayMetaRow,
   trayContentClass,
 } from "@/components/Tray";
-import { sendEmail, fetchStats, type CcEntry } from "@/lib/api";
+import { sendDraft, sendEmail, fetchStats, type CcEntry } from "@/lib/api";
 import { useDraftAutosave } from "@/lib/use-draft-autosave";
 import { dispatchEmailSent } from "@/lib/email-events";
 import { getFromLabel } from "@/lib/format";
@@ -205,22 +205,46 @@ export default function ComposeModal({
       const finalBody = safeSignatureHtml
         ? `${bodyHtml}<div data-signature>${safeSignatureHtml}</div>`
         : bodyHtml;
-      await sendEmail({
-        to,
-        fromAddress,
-        ...(cc.length > 0 ? { cc } : {}),
-        subject,
-        bodyHtml: finalBody,
-        ...(bodyText.trim() ? { bodyText } : {}),
-        ...(files.length > 0 ? { files: files.map((file) => ({ file })) } : {}),
-      });
+      // Shared drafts: send the draft the way a mail client would, so the
+      // same Email is filed into Sent and everything it carries goes out.
+      const attached = files.map((file) => ({ file }));
+      const { fallback } = await sendDraft(
+        {
+          contextKey,
+          fromAddress,
+          to,
+          ...(cc.length > 0 ? { cc } : {}),
+          subject,
+          bodyHtml: finalBody,
+          ...(bodyText.trim() ? { bodyText } : {}),
+        },
+        attached,
+      );
+      if (fallback) {
+        // This inbox can't send through JMAP: the direct route.
+        await sendEmail({
+          to,
+          fromAddress,
+          ...(cc.length > 0 ? { cc } : {}),
+          subject,
+          bodyHtml: finalBody,
+          ...(bodyText.trim() ? { bodyText } : {}),
+          ...(files.length > 0 ? { files: attached } : {}),
+        });
+      }
       dispatchEmailSent({ fromAddress, to, origin: "compose" });
       // The message went out — discard its draft so it doesn't reappear.
       clearDraft();
       setFiles([]);
       onClose();
-    } catch {
-      setError("Failed to send email");
+    } catch (err) {
+      setError(
+        err instanceof Error &&
+          err.message &&
+          !err.message.startsWith("API error")
+          ? err.message
+          : "Failed to send email",
+      );
     } finally {
       setSending(false);
     }
@@ -379,7 +403,7 @@ export default function ComposeModal({
             >
               {jmapGone
                 ? "This draft was sent or deleted from a mail client. Changes here are no longer saved there."
-                : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it; send it from your mail client.`}
+                : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it, and sent with it.`}
             </div>
           )}
 
@@ -425,8 +449,7 @@ export default function ComposeModal({
                   bodyIsEmpty ||
                   !to ||
                   totalAttachmentBytes > ATTACHMENT_CAP_BYTES ||
-                  // Sending here would drop what the composer can't show.
-                  jmapExtras.length > 0
+                  jmapGone
                 }
                 className="inline-flex items-center gap-1.5 rounded-[6px] bg-text-primary px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-text-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >

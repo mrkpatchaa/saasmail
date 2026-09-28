@@ -16,7 +16,7 @@ test.describe.serial("compose & send", () => {
 
   // ── 1. Compose modal: sends email in DEMO_MODE, records demo_ resendId ──────
 
-  test("compose modal sends email in DEMO_MODE, resendId starts with demo_", async ({
+  test("compose modal sends through the JMAP submission path in DEMO_MODE", async ({
     page,
     api,
   }) => {
@@ -48,11 +48,11 @@ test.describe.serial("compose & send", () => {
     await proseMirror.click();
     await page.keyboard.type("Hello from E2E compose test");
 
-    // Capture the send response before clicking
+    // Capture the send response before clicking. The composer sends its
+    // draft the way a mail client does (shared drafts): POST /api/drafts/send.
     const sendResponsePromise = page.waitForResponse(
       (res) =>
-        res.url().includes("/api/send") &&
-        !res.url().includes("/reply/") &&
+        res.url().includes("/api/drafts/send") &&
         res.request().method() === "POST",
     );
 
@@ -65,12 +65,12 @@ test.describe.serial("compose & send", () => {
     expect(sendResponse.ok()).toBeTruthy();
 
     const body = (await sendResponse.json()) as {
-      id: string;
-      resendId: string | null;
       status: string;
+      submissionId: string;
     };
-    expect(body.resendId).toMatch(/^demo_/);
     expect(body.status).toBe("sent");
+    // A JMAP EmailSubmission id.
+    expect(body.submissionId).toMatch(/^E/);
 
     // Dialog should close after successful send
     await expect(dialog).not.toBeVisible();

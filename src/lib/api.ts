@@ -798,6 +798,40 @@ export async function sendEmail(data: {
   });
 }
 
+/**
+ * Shared drafts (slice 4): send the composer's draft through the JMAP
+ * submission path. Resolves `{ fallback: true }` when the inbox can't send
+ * through JMAP (no sender identity); the caller then uses `sendEmail`.
+ */
+export async function sendDraft(
+  data: {
+    contextKey: string;
+    fromAddress: string;
+    to: string;
+    cc?: CcEntry[];
+    subject: string;
+    bodyHtml: string;
+    bodyText?: string;
+  },
+  files: AttachedFile[] = [],
+): Promise<{ fallback: boolean }> {
+  const fd = new FormData();
+  fd.append("payload", JSON.stringify(data));
+  for (const af of files) fd.append("files", af.file, af.file.name);
+  const res = await fetch("/api/drafts/send", {
+    method: "POST",
+    credentials: "include",
+    body: fd,
+  });
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    fallback?: boolean;
+  };
+  if (res.status === 409 && body.fallback) return { fallback: true };
+  if (!res.ok) throw new Error(body.error || `API error: ${res.status}`);
+  return { fallback: false };
+}
+
 export async function replyToEmail(
   emailId: string,
   data: {

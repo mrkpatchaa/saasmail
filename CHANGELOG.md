@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The web composer sends through the JMAP submission path.** Sending from the compose window publishes the draft's final revision (signature and new files included) and submits it the way a mail client does, so the same Email is filed into Sent and a mail-client draft goes out with its Bcc, every To, Reply-To and attachments. An inbox without a sender identity falls back to the direct send route. `POST /api/drafts/send`.
+
 - **JMAP drafts appear in the web.** Drafts made in a mail client are listed in the web Drafts folder and open in the web composer. A web edit is published as a patch on the draft's last revision: Bcc, Reply-To, threading, attachments, recipient names and the Message-ID carry over unchanged. While a draft has something the composer can't show yet (several To, Bcc, Reply-To, attachments) the composer lists it and Send is off. Deleting such a draft in the web deletes it in JMAP.
 
 - **Web drafts appear in JMAP.** A draft written in the web composer is published to JMAP as a draft in its inbox's Drafts mailbox when the composer closes and after a minute idle; each publish is a new revision (the previous `D…` Email is destroyed), keeping the folders and flag a JMAP client gave it. Deleting the web draft deletes it in JMAP; a draft sent or deleted from a JMAP client stops publishing. First slice of shared drafts: JMAP drafts in the web UI and attachments follow. Migration 0073 (`drafts.jmap_draft_id`, `dirty`, `jmap_state`).

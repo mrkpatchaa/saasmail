@@ -3,7 +3,17 @@ import { MAX_CC_ENTRIES } from "../lib/send-limits";
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { drafts } from "../db/drafts.schema";
 import { upsertDraft } from "../lib/drafts";
+import { createEmailSender } from "../lib/email-sender";
 import {
+  parseSendBody,
+  sendParseErrorResponse,
+  type SendParseError,
+} from "../lib/multipart-send";
+import { storeUpload } from "../jmap/upload";
+import { publicAccountId } from "../jmap/public-ids";
+import {
+  type ExtraAttachment,
+  sendWebDraft,
   destroyJmapDraftFromWeb,
   destroyLinkedJmapDraft,
   jmapDraftExtras,
@@ -318,6 +328,112 @@ draftsRouter.openapi(openJmapRoute, async (c) => {
     : null;
   if (!opened) return c.json({ error: "Not found" }, 404);
   return c.json({ contextKey: opened }, 200);
+});
+
+// POST /api/drafts/send — send a draft through the JMAP submission path.
+const sendDraftRoute = createRoute({
+  method: "post",
+  path: "/send",
+  tags: ["Drafts"],
+  security: bearerSecurity,
+  description:
+    "Send the composer's draft the way a JMAP client does: its final values and any new files become the draft's last revision, which is submitted and filed into Sent under the same JMAP Email id. multipart/form-data with a JSON `payload` (the draft fields, as PUT /api/drafts, with the final body) and zero or more `files`. A 409 with `fallback: true` means this inbox can't send through JMAP (no sender identity); use POST /api/send instead.",
+  request: {
+    body: {
+      content: {
+        "multipart/form-data": {
+          schema: z.object({
+            payload: z.string().openapi({
+              description: "JSON: the draft fields (see PUT /api/drafts)",
+            }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Sent (or queued for retry by the outbox)",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.literal("sent"),
+            submissionId: z.string(),
+          }),
+        },
+      },
+    },
+    400: { description: "The draft can't be sent as it is" },
+    409: {
+      description:
+        "Sent or deleted from a mail client, or `fallback: true`: this inbox can't send through JMAP",
+    },
+    413: { description: "Attachments too large" },
+    422: { description: "The provider or the submission rules refused it" },
+  },
+});
+
+draftsRouter.openapi(sendDraftRoute, async (c) => {
+  const db = c.get("db");
+  const user = c.get("user");
+  const allowed = c.get("allowedInboxes")!;
+  const sender = createEmailSender(c.env);
+  const parsed = await parseSendBody(
+    c,
+    SaveDraftBody,
+    sender.maxAttachmentBytes(),
+  );
+  // Worker strict mode is off, so the union doesn't narrow on `ok`.
+  if (!parsed.ok) {
+    const { status, body } = sendParseErrorResponse(
+      (parsed as { err: SendParseError }).err,
+    );
+    return c.json(body, status);
+  }
+  const { payload, files } = parsed.value;
+  await upsertDraft(db, user.id, payload);
+  const extraAttachments: ExtraAttachment[] = [];
+  for (const file of files) {
+    const stored = await storeUpload(db, c.env, {
+      userId: user.id,
+      accountId: publicAccountId(user.id),
+      contentType: file.contentType,
+      declaredLength: file.size,
+      // Uint8Array is not a BodyInit in the Workers types.
+      body: new Response(file.bytes as BodyInit).body,
+      maxBytes: sender.maxAttachmentBytes(),
+    });
+    if (!stored.blob) {
+      return c.json({ error: "Attachments too large" }, 413);
+    }
+    extraAttachments.push({
+      blobId: stored.blob.blobId,
+      type: stored.blob.type,
+      name: file.filename,
+    });
+  }
+  const outcome = await sendWebDraft(
+    db,
+    c.env,
+    allowed,
+    user,
+    payload.contextKey,
+    extraAttachments,
+  );
+  if (outcome.status === "sent") {
+    return c.json(
+      { status: "sent" as const, submissionId: outcome.submissionId! },
+      200,
+    );
+  }
+  if (outcome.status === "fallback") {
+    return c.json({ error: outcome.reason, fallback: true }, 409);
+  }
+  if (outcome.status === "gone") return c.json({ error: outcome.reason }, 409);
+  if (outcome.status === "invalid") {
+    return c.json({ error: outcome.reason }, 400);
+  }
+  return c.json({ error: outcome.reason }, 422);
 });
 
 // POST /api/drafts/publish — publish a compose surface's draft to JMAP.

@@ -114,7 +114,9 @@ A draft written in the saasmail web composer also appears in JMAP, as an ordinar
 - Deleting the draft in the web deletes it in JMAP. If a client destroys or sends the published draft, the web draft stops publishing.
 - Attachments added in the web composer aren't part of the published draft yet.
 
-Drafts made in a JMAP client appear in the web UI's Drafts list too, and open in the web composer. An edit made there is published the same way, as a patch on the draft's last revision: only From, To, Cc, subject and the text and HTML bodies come from the web, and everything else — Bcc, Reply-To, `inReplyTo` and `references`, attachments and inline parts, the recipients' names and the draft's `messageId` — carries over unchanged. While a draft has something the web composer can't show yet (several To, Bcc, Reply-To, attachments), the composer lists it and its Send button is off, so the draft is sent from the mail client.
+Drafts made in a JMAP client appear in the web UI's Drafts list too, and open in the web composer. An edit made there is published the same way, as a patch on the draft's last revision: only From, To, Cc, subject and the text and HTML bodies come from the web, and everything else — Bcc, Reply-To, `inReplyTo` and `references`, attachments and inline parts, the recipients' names and the draft's `messageId` — carries over unchanged. While a draft has something the web composer can't show yet (several To, Bcc, Reply-To, attachments), the composer lists it, and it is sent along.
+
+**Sending from the web composer** goes through the same submission path as a JMAP client: the draft's final values (with the signature) and any files added in the composer become its last revision, which is submitted and filed into Sent under the same `D…` id, with everything it carries. An inbox without a sender identity can't send through JMAP; the composer then sends through the direct route as before. Replies from the reading pane still use the direct reply route.
 
 ## Sending
 
@@ -254,7 +256,7 @@ To check a deployment end to end, run `yarn jmap:e2e` (`scripts/jmap-send-e2e.mj
 - Delayed send beyond 24 hours, changing a scheduled send's time, and scheduling from the web composer. Recalling a message that was sent.
 - A canceled delayed send whose Sent copy is a separate `S…` Email (the submission didn't file the draft into Sent) can't be destroyed over JMAP; move it to Trash.
 - Raw-message `blobId` for sent mail that wasn't created through JMAP, and for mail received before the raw message was kept (it stays `null`).
-- The web composer can't yet show or send a draft's Bcc, several To, Reply-To or attachments, and a web draft's own attachments aren't published to JMAP ([Drafts shared with the web UI](#drafts-shared-with-the-web-ui)).
+- The web composer can't yet show or edit a draft's Bcc, several To, Reply-To or stored attachments (they are kept and sent), and files added in the composer reach JMAP only when the draft is sent ([Drafts shared with the web UI](#drafts-shared-with-the-web-ui)).
 - A send whose Worker stopped after the provider accepted it but before saasmail wrote the provider's answer down records the Message-ID saasmail submitted, since the delivered one was never saved. Crash recovery and the campaign sweep otherwise use the delivered id kept on the held outbox row.
 - Mailbox thread counts group JMAP-sent mail by its saasmail conversation, not by its JMAP `threadId`.
 - EventSource push, search snippets, mailbox mutation, `Email/import` and `Email/copy`.
