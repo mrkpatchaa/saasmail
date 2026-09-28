@@ -52,11 +52,13 @@ describe("useDraftAutosave", () => {
     });
     expect(mSave).not.toHaveBeenCalled(); // not until the debounce elapses
     act(() => vi.advanceTimersByTime(1000));
+    // The first save of a session that didn't restore starts a new draft.
     expect(mSave).toHaveBeenCalledWith({
       contextKey: "compose",
       to: "a@b.com",
       subject: "Hi",
       bodyHtml: "<p>x</p>",
+      fresh: true,
     });
   });
 
@@ -99,11 +101,13 @@ describe("useDraftAutosave", () => {
     mSave.mockClear();
     // Close: enabled → false. The final state is flushed, not discarded.
     act(() => rerender(baseProps({ enabled: false })));
+    // The first save of a session that didn't restore starts a new draft.
     expect(mSave).toHaveBeenCalledWith({
       contextKey: "compose",
       to: "a@b.com",
       subject: "Hi",
       bodyHtml: "<p>x</p>",
+      fresh: true,
     });
     expect(mDelete).not.toHaveBeenCalled();
   });
@@ -185,15 +189,46 @@ describe("useDraftAutosave", () => {
 });
 
 describe("useDraftAutosave: publish feedback and pausing", () => {
-  it("hands the published draft to onPublished", async () => {
+  it("hands an idle publish's draft to onPublished, but not one landing after close", async () => {
+    vi.useFakeTimers();
     const draft = { contextKey: "compose" } as Draft;
     mPublish.mockResolvedValue({ status: "published", draft });
     const onPublished = vi.fn();
     const { rerender } = renderHook((p: Props) => useDraftAutosave(p), {
-      initialProps: baseProps({ onPublished }),
+      initialProps: baseProps({ onPublished, publishIdleMs: 1000 }),
     });
-    rerender(baseProps({ enabled: false, onPublished }));
-    await waitFor(() => expect(onPublished).toHaveBeenCalledWith(draft));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(onPublished).toHaveBeenCalledTimes(1);
+    // The close flush publishes too; its result belongs to a closed session.
+    rerender(baseProps({ enabled: false, onPublished, publishIdleMs: 1000 }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2500);
+    });
+    expect(mPublish).toHaveBeenCalledTimes(2);
+    expect(onPublished).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the first save of a session that didn't restore as fresh", async () => {
+    vi.useFakeTimers();
+    const { rerender } = renderHook((p: Props) => useDraftAutosave(p), {
+      initialProps: baseProps({ restore: false }),
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(mSave.mock.calls[0][0]).toMatchObject({ fresh: true });
+    rerender(
+      baseProps({
+        restore: false,
+        values: { to: "a@b.com", subject: "Hi 2", bodyHtml: "<p>x</p>" },
+      }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(mSave.mock.calls[1][0]).not.toHaveProperty("fresh");
   });
 
   it("saves, publishes and flushes nothing while paused (a send owns the draft)", async () => {

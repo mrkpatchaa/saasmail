@@ -18,9 +18,13 @@ import {
   isInboxAllowed,
   type AllowedInboxes,
 } from "../lib/inbox-permissions";
-import { contentLeaves, type ContentLeaf, type ContentPart } from "./content";
+import {
+  contentLeaves,
+  deleteContentIfUnreferenced,
+  type ContentLeaf,
+  type ContentPart,
+} from "./content";
 import { createDraftEmail, Rejection } from "./email-create";
-import { destroyDraft } from "./drafts";
 import { listUsableIdentities } from "./mailboxes";
 import { isMethodError } from "./on-success";
 import { emailSubmissionSet } from "./submission";
@@ -41,8 +45,11 @@ type WorkingCopy = typeof drafts.$inferSelect;
 export type PublishOutcome =
   /** A new revision is the JMAP draft now. */
   | { status: "published"; jmapDraftId: string }
-  /** Nothing changed since the last publish. */
-  | { status: "unchanged"; jmapDraftId: string | null }
+  /**
+   * No new revision: `clean` when nothing changed since the last publish,
+   * otherwise another publish linked first (the copy is still dirty).
+   */
+  | { status: "unchanged"; jmapDraftId: string | null; clean: boolean }
   /** Not publishable yet (no From, an incomplete To, …); stays dirty. */
   | { status: "skipped"; reason: string; code: SkipCode }
   /** Its JMAP draft was sent or deleted elsewhere; publishing stopped. */
@@ -216,10 +223,7 @@ async function createInput(
       ]),
     );
     // The stored attachments the composer kept (all, until it chose).
-    const kept =
-      row.attachmentsJson !== null
-        ? new Set(JSON.parse(row.attachmentsJson) as string[])
-        : null;
+    const kept = keptParts(row);
     const attachments = (JSON.parse(prior.attachmentsJson) as string[])
       .map((partId) => leaves.get(partId))
       .filter((leaf): leaf is ContentLeaf => leaf !== undefined)
@@ -275,9 +279,70 @@ async function createInput(
   };
 }
 
-/** An inline part the HTML body refers to by Content-ID. */
+/**
+ * A part the HTML body may refer to by Content-ID (inline image): it stays
+ * with the HTML, whatever its disposition says.
+ */
 function isInlinePart(leaf: ContentLeaf): boolean {
-  return leaf.disposition === "inline" && leaf.cid !== null;
+  return leaf.cid !== null;
+}
+
+/**
+ * The part ids a working copy keeps, if it chose on the revision it is linked
+ * to; null keeps them all. A choice made on another revision is ignored: part
+ * ids renumber on every publish.
+ */
+function keptParts(
+  row: Pick<WorkingCopy, "attachmentsJson" | "jmapDraftId">,
+): Set<string> | null {
+  if (!row.attachmentsJson || !row.jmapDraftId) return null;
+  try {
+    const choice = JSON.parse(row.attachmentsJson) as {
+      rev?: unknown;
+      ids?: unknown;
+    };
+    if (choice.rev !== row.jmapDraftId || !Array.isArray(choice.ids)) {
+      return null;
+    }
+    return new Set(
+      choice.ids.filter((id): id is string => typeof id === "string"),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** A JMAP draft that is no longer a draft the web may replace. */
+function isGoneDraft(
+  draft:
+    | Pick<typeof jmapDrafts.$inferSelect, "submitState" | "mailboxRole">
+    | undefined,
+): boolean {
+  // Deleted, being sent (claimed or queued) or moved to Trash in a client.
+  return !draft || draft.submitState !== null || draft.mailboxRole !== "drafts";
+}
+
+/**
+ * Destroy a JMAP draft only while no submission holds it: the check and the
+ * delete are one statement, so a client claiming it to send always wins.
+ */
+async function destroyIfIdle(
+  db: Db,
+  env: CloudflareBindings,
+  jmapDraftId: string,
+): Promise<void> {
+  const deleted = await env.DB.prepare(
+    `DELETE FROM jmap_drafts WHERE id = ? AND submit_state IS NULL RETURNING content_id`,
+  )
+    .bind(jmapDraftId)
+    .first<{ content_id: string }>();
+  if (!deleted) return;
+  try {
+    await deleteContentIfUnreferenced(db, env, deleted.content_id);
+  } catch (error) {
+    // The draft is gone either way; content GC retries the cleanup.
+    console.error(`[drafts] content cleanup for ${jmapDraftId} failed:`, error);
+  }
 }
 
 /**
@@ -312,7 +377,7 @@ export async function publishWebDraft(
     extraAttachments.length === 0 &&
     !appendHtml
   ) {
-    return { status: "unchanged", jmapDraftId: row.jmapDraftId };
+    return { status: "unchanged", jmapDraftId: row.jmapDraftId, clean: true };
   }
 
   let previous: typeof jmapDrafts.$inferSelect | null = null;
@@ -324,8 +389,8 @@ export async function publishWebDraft(
         and(eq(jmapDrafts.id, row.jmapDraftId), eq(jmapDrafts.userId, userId)),
       )
       .limit(1);
-    // Spec S6: sent (it was claimed or filed into Sent) or deleted elsewhere.
-    if (!previous || previous.submitState !== null) {
+    // Spec S6: sent (claimed or filed into Sent), deleted or trashed elsewhere.
+    if (isGoneDraft(previous)) {
       await db
         .update(drafts)
         .set({ jmapState: "gone" })
@@ -404,13 +469,17 @@ export async function publishWebDraft(
     .limit(1);
   if ((result.meta.changes ?? 0) === 0) {
     // Another publish linked first: ours is a duplicate.
-    if (fresh) await destroyDraft(db, env, fresh);
+    if (fresh) await destroyIfIdle(db, env, fresh.id);
     const [current] = await db
       .select({ jmapDraftId: drafts.jmapDraftId })
       .from(drafts)
       .where(eq(drafts.id, row.id))
       .limit(1);
-    return { status: "unchanged", jmapDraftId: current?.jmapDraftId ?? null };
+    return {
+      status: "unchanged",
+      jmapDraftId: current?.jmapDraftId ?? null,
+      clean: false,
+    };
   }
   // The previous revision goes. If a mail client claimed it to send meanwhile,
   // that send wins: ours would repeat its Message-ID, so it goes instead and
@@ -426,10 +495,10 @@ export async function publishWebDraft(
         .update(drafts)
         .set({ jmapState: "gone" })
         .where(eq(drafts.id, row.id));
-      if (fresh) await destroyDraft(db, env, fresh);
+      if (fresh) await destroyIfIdle(db, env, fresh.id);
       return { status: "gone" };
     }
-    if (still) await destroyDraft(db, env, still);
+    if (still) await destroyIfIdle(db, env, still.id);
   }
   return { status: "published", jmapDraftId: newId };
 }
@@ -454,9 +523,7 @@ export async function destroyLinkedJmapDraft(
       ),
     )
     .limit(1);
-  if (linked && linked.submitState === null) {
-    await destroyDraft(db, env, linked);
-  }
+  if (linked) await destroyIfIdle(db, env, linked.id);
 }
 
 /** The web context key of a JMAP draft that has no working copy yet. */
@@ -577,12 +644,14 @@ export async function openJmapDraft(
       userId,
       contextKey,
       fromAddress: from?.email.toLowerCase() ?? null,
+      // Normalised as upsertDraft stores them ('' and [] are null), so saving
+      // the draft back unchanged changes nothing.
       toAddress: to.map((address) => address.email).join(", ") || null,
       cc: cc.length > 0 ? JSON.stringify(cc) : null,
-      bcc: JSON.stringify(bcc),
-      subject: content.subject,
-      bodyHtml: html,
-      bodyText: text,
+      bcc: bcc.length > 0 ? JSON.stringify(bcc) : null,
+      subject: content.subject || null,
+      bodyHtml: html || null,
+      bodyText: text || null,
       replyToEmailId: null,
       jmapDraftId,
       dirty: 0,
@@ -616,10 +685,7 @@ export async function linkedDraftInfo(
     .limit(1);
   const content = draft ? await loadContent(db, draft.contentId) : null;
   if (!content) return none;
-  const kept =
-    row.attachmentsJson !== null
-      ? new Set(JSON.parse(row.attachmentsJson) as string[])
-      : null;
+  const kept = keptParts(row);
   const leaves = new Map(
     contentLeaves(JSON.parse(content.partsJson) as ContentPart).map((leaf) => [
       leaf.partId,
@@ -655,11 +721,14 @@ export async function refreshGone(
 ): Promise<WorkingCopy> {
   if (!row.jmapDraftId || row.jmapState !== null) return row;
   const [draft] = await db
-    .select({ submitState: jmapDrafts.submitState })
+    .select({
+      submitState: jmapDrafts.submitState,
+      mailboxRole: jmapDrafts.mailboxRole,
+    })
     .from(jmapDrafts)
     .where(eq(jmapDrafts.id, row.jmapDraftId))
     .limit(1);
-  if (draft && draft.submitState === null) return row;
+  if (!isGoneDraft(draft)) return row;
   await db
     .update(drafts)
     .set({ jmapState: "gone" })
@@ -734,30 +803,17 @@ export async function destroyJmapDraftFromWeb(
   jmapDraftId: string,
 ): Promise<void> {
   const draft = await openableJmapDraft(db, allowed, userId, jmapDraftId);
-  if (draft) await destroyDraft(db, env, draft);
+  if (draft) await destroyIfIdle(db, env, draft.id);
 }
 
 export type WebSendOutcome = {
   /** `sent`, or why not: the caller maps these to HTTP answers. */
-  status: "sent" | "fallback" | "invalid" | "busy" | "refused";
+  status: "sent" | "fallback" | "invalid" | "busy" | "gone" | "refused";
   /** A human-readable reason for everything but `sent`. */
   reason: string | null;
   /** The accepted submission's public id, when sent. */
   submissionId: string | null;
 };
-
-/** Drop a gone link: the copy becomes a new draft (the user pressed Send). */
-async function unlink(db: Db, userId: string, contextKey: string) {
-  await db
-    .update(drafts)
-    .set({
-      jmapDraftId: null,
-      jmapState: null,
-      attachmentsJson: null,
-      dirty: 1,
-    })
-    .where(and(eq(drafts.userId, userId), eq(drafts.contextKey, contextKey)));
-}
 
 /**
  * Send a web draft through the JMAP submission path (spec S4, slice 4): publish
@@ -767,9 +823,10 @@ async function unlink(db: Db, userId: string, contextKey: string) {
  *
  * Only the revision this send built is submitted: a concurrent publish (the
  * idle timer, a second tab) that wins the link makes the send publish again.
- * A copy whose JMAP draft was sent or deleted elsewhere is sent as a new draft,
- * since the user pressed Send with its content in front of them. An inbox
- * without a sender identity can't send through JMAP: `fallback`.
+ * A copy whose JMAP draft was sent, deleted or trashed elsewhere is `gone`:
+ * never sent again from here (a client may still be sending it); the user
+ * keeps it as a new draft first. An unedited draft is submitted as it is.
+ * An inbox without a sender identity can't send through JMAP: `fallback`.
  */
 export async function sendWebDraft(
   db: Db,
@@ -795,7 +852,20 @@ export async function sendWebDraft(
     if (published.status === "published") {
       jmapDraftId = published.jmapDraftId;
     } else if (published.status === "gone") {
-      await unlink(db, user.id, contextKey);
+      return {
+        status: "gone",
+        reason:
+          "This draft was sent, deleted or moved to Trash from a mail client",
+        submissionId: null,
+      };
+    } else if (
+      published.status === "unchanged" &&
+      published.clean &&
+      published.jmapDraftId
+    ) {
+      // Nothing to add: send the revision as it is (a mail-client draft keeps
+      // its exact body structure).
+      jmapDraftId = published.jmapDraftId;
     } else if (published.status === "skipped") {
       return {
         status:

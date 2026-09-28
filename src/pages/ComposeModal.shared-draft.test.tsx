@@ -13,6 +13,8 @@ const api = vi.hoisted(() => ({
     constructor(
       message: string,
       readonly draft: unknown,
+      readonly gone: boolean = false,
+      readonly filesStored: boolean = false,
     ) {
       super(message);
     }
@@ -106,7 +108,9 @@ describe("ComposeModal with a shared draft", () => {
     });
     render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
     const notice = await screen.findByTestId("compose-shared-draft-notice");
-    expect(notice.textContent).toContain("sent or deleted from a mail client");
+    expect(notice.textContent).toContain(
+      "sent, deleted or moved to Trash from a mail client",
+    );
   });
 
   it("shows no notice for an ordinary draft", async () => {
@@ -130,6 +134,7 @@ describe("ComposeModal with a shared draft", () => {
         { partId: "3", name: "figures.csv", type: "text/csv", size: 12 },
         { partId: "4", name: "notes.txt", type: "text/plain", size: 5 },
       ],
+      storedAttachmentsRev: "rev1",
     });
     render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
     const chips = await screen.findAllByTestId("compose-stored-attachment");
@@ -147,6 +152,7 @@ describe("ComposeModal with a shared draft", () => {
           expect.objectContaining({
             contextKey: "jmap:abc",
             keptAttachments: ["3"],
+            keptAttachmentsRev: "rev1",
             bcc: [{ email: "boss@example.test", name: null }],
           }),
         ),
@@ -222,15 +228,20 @@ describe("ComposeModal with a shared draft", () => {
       storedAttachmentsRev: "rev1",
     });
     api.sendDraft.mockRejectedValue(
-      new api.SendDraftError("Too many recipients", {
-        ...DRAFT,
-        jmapExtras: [],
-        jmapState: null,
-        storedAttachments: [
-          { partId: "3", name: "notes.txt", type: "text/plain", size: 3 },
-        ],
-        storedAttachmentsRev: "rev2",
-      }),
+      new api.SendDraftError(
+        "Too many recipients",
+        {
+          ...DRAFT,
+          jmapExtras: [],
+          jmapState: null,
+          storedAttachments: [
+            { partId: "3", name: "notes.txt", type: "text/plain", size: 3 },
+          ],
+          storedAttachmentsRev: "rev2",
+        },
+        false,
+        true,
+      ),
     );
     render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
     const send = (await screen.findByTestId(
@@ -241,5 +252,56 @@ describe("ComposeModal with a shared draft", () => {
     expect(await screen.findByText("Too many recipients")).toBeTruthy();
     const chips = await screen.findAllByTestId("compose-stored-attachment");
     expect(chips.map((chip) => chip.textContent)).toEqual(["notes.txt"]);
+  });
+
+  it("says a gone draft wasn't sent and offers to keep it as a new draft", async () => {
+    api.fetchDraft.mockResolvedValue({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: null,
+      storedAttachmentsRev: "rev1",
+    });
+    api.sendDraft.mockRejectedValue(
+      new api.SendDraftError("Sent elsewhere", null, true, false),
+    );
+    render(<ComposeModal open onClose={() => {}} contextKey="jmap:abc" />);
+    const send = (await screen.findByTestId(
+      "compose-send-button",
+    )) as HTMLButtonElement;
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    fireEvent.click(await screen.findByTestId("compose-keep-as-new"));
+    await waitFor(() =>
+      expect(api.saveDraft).toHaveBeenCalledWith(
+        expect.objectContaining({ contextKey: "jmap:abc", fresh: true }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId("compose-shared-draft-notice")).toBeNull(),
+    );
+  });
+
+  it("a new message never inherits the previous draft's chips or notice", async () => {
+    api.fetchDraft.mockResolvedValueOnce({
+      ...DRAFT,
+      jmapExtras: [],
+      jmapState: "gone",
+      storedAttachments: [
+        { partId: "2", name: "scan.pdf", type: "application/pdf", size: 9 },
+      ],
+      storedAttachmentsRev: "rev1",
+    });
+    const { rerender } = render(
+      <ComposeModal open onClose={() => {}} contextKey="jmap:abc" />,
+    );
+    await screen.findByTestId("compose-stored-attachment");
+    rerender(
+      <ComposeModal open={false} onClose={() => {}} contextKey="jmap:abc" />,
+    );
+    api.fetchDraft.mockResolvedValue(null);
+    rerender(<ComposeModal open onClose={() => {}} contextKey="compose" />);
+    await waitFor(() => expect(api.fetchDraft).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("compose-stored-attachment")).toBeNull();
+    expect(screen.queryByTestId("compose-shared-draft-notice")).toBeNull();
   });
 });

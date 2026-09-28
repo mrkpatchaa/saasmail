@@ -25,6 +25,8 @@ export interface DraftValues {
   bcc?: CcEntry[];
   keptAttachments?: string[];
   keptAttachmentsRev?: string | null;
+  /** Start a new draft on this save (sent once per session, see below). */
+  fresh?: boolean;
 }
 
 interface UseDraftAutosaveOptions {
@@ -86,12 +88,44 @@ export function useDraftAutosave({
   onPublishedRef.current = onPublished;
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
-  const publish = () =>
-    publishDraft(contextKey)
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
+  // One generation per open session: a publish that resolves after the
+  // composer closed (or moved to another draft) must not touch the next one.
+  const generation = useRef(0);
+  // A session that didn't restore this surface's draft starts a new one: its
+  // first save carries `fresh`, so it never patches a mail-client draft it
+  // didn't show (its Bcc or attachments) nor revives a gone one.
+  const freshRef = useRef(false);
+  // The save in flight, so a send can wait for it (settle()).
+  const pendingSave = useRef<Promise<unknown> | null>(null);
+  const save = () => {
+    const payload = {
+      contextKey,
+      ...valuesRef.current,
+      ...(freshRef.current ? { fresh: true } : {}),
+    };
+    const request = saveDraft(payload).then((result) => {
+      freshRef.current = false;
+      return result;
+    });
+    pendingSave.current = request.catch(() => {});
+    return request;
+  };
+  const publish = () => {
+    const session = generation.current;
+    return publishDraft(contextKey)
       .then((result) => {
-        if (result?.draft) onPublishedRef.current?.(result.draft);
+        if (
+          result?.draft &&
+          session === generation.current &&
+          enabledRef.current
+        ) {
+          onPublishedRef.current?.(result.draft);
+        }
       })
       .catch(() => {});
+  };
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const publishTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest render values/flags, read inside async + cleanup callbacks so they
@@ -110,8 +144,10 @@ export function useDraftAutosave({
   // Open: optionally restore, and reset the per-open flags.
   useEffect(() => {
     if (!enabled) return;
+    generation.current += 1;
     clearedRef.current = false;
     savedRef.current = false;
+    freshRef.current = !restore;
     let cancelled = false;
     if (restore) {
       fetchDraft(contextKey)
@@ -146,7 +182,7 @@ export function useDraftAutosave({
         return;
       }
       savedRef.current = true;
-      saveDraft({ contextKey, ...valuesRef.current })
+      save()
         .then(() => {
           // Publish once the user has stopped editing for a while.
           if (publishTimer.current) clearTimeout(publishTimer.current);
@@ -193,7 +229,7 @@ export function useDraftAutosave({
       if (!isEmptyRef.current) {
         savedRef.current = true;
         // Save the last edits, then publish them to JMAP.
-        saveDraft({ contextKey, ...valuesRef.current })
+        save()
           .then(() => publish())
           .catch(() => {});
       } else if (savedRef.current) {
@@ -215,5 +251,11 @@ export function useDraftAutosave({
     }
   }
 
-  return { clear };
+  /** Wait for a save in flight, so a send never races an older save. */
+  async function settle() {
+    if (timer.current) clearTimeout(timer.current);
+    await pendingSave.current;
+  }
+
+  return { clear, settle };
 }

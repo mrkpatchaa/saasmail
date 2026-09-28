@@ -832,12 +832,16 @@ export async function sendDraft(
     error?: string;
     fallback?: boolean;
     draft?: Draft | null;
+    gone?: boolean;
+    filesStored?: boolean;
   };
   if (res.status === 409 && body.fallback) return { fallback: true };
   if (!res.ok) {
     throw new SendDraftError(
       body.error || `API error: ${res.status}`,
       body.draft ?? null,
+      body.gone === true,
+      body.filesStored === true,
     );
   }
   return { fallback: false };
@@ -848,6 +852,10 @@ export class SendDraftError extends Error {
   constructor(
     message: string,
     readonly draft: Draft | null,
+    /** Sent, deleted or trashed from a mail client: nothing was sent. */
+    readonly gone: boolean = false,
+    /** The new files are in the draft now (shown as stored attachments). */
+    readonly filesStored: boolean = false,
   ) {
     super(message);
   }
@@ -1005,6 +1013,8 @@ export interface DraftInput {
   keptAttachments?: string[];
   /** The `storedAttachmentsRev` those part ids came from. */
   keptAttachmentsRev?: string | null;
+  /** Start a new draft (unlink from a mail-client draft; clear "gone"). */
+  fresh?: boolean;
 }
 
 export async function fetchDraftList(params?: {

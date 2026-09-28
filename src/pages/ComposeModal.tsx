@@ -10,6 +10,7 @@ import {
 } from "@/components/Tray";
 import {
   SendDraftError,
+  saveDraft,
   sendDraft,
   sendEmail,
   fetchStats,
@@ -96,9 +97,26 @@ export default function ComposeModal({
   // carries (null until a saved draft says; then the ones kept).
   const [bcc, setBcc] = useState<CcEntry[]>([]);
   const [showBcc, setShowBcc] = useState(false);
-  const [stored, setStored] = useState<StoredAttachment[] | null>(null);
-  // The JMAP revision `stored` part ids belong to (they renumber on publish).
+  // The draft's stored attachments as the server last listed them, and the
+  // revision their part ids belong to (they renumber on every publish).
+  const [serverStored, setServerStored] = useState<StoredAttachment[]>([]);
   const [storedRev, setStoredRev] = useState<string | null>(null);
+  // Attachments the user removed, by name/type/size: that survives the part
+  // ids renumbering when a publish lands while the composer is open.
+  const [removedSigs, setRemovedSigs] = useState<string[]>([]);
+  const sigOf = (part: StoredAttachment) =>
+    `${part.name ?? ""}|${part.type}|${part.size}`;
+  const stored = serverStored.filter(
+    (part) => !removedSigs.includes(sigOf(part)),
+  );
+  // A kept list is sent only once the user removed something.
+  const keptChoice =
+    removedSigs.length > 0 && storedRev
+      ? {
+          keptAttachments: stored.map((part) => part.partId),
+          keptAttachmentsRev: storedRev,
+        }
+      : {};
   // Compact tray vs. full-viewport. Toggled by the maximize button in
   // the header; reset every time the drawer reopens.
   const [fullscreen, setFullscreen] = useState(false);
@@ -127,8 +145,20 @@ export default function ComposeModal({
     [signatureHtml],
   );
 
+  function resetSharedDraftState() {
+    setJmapExtras([]);
+    setJmapGone(false);
+    setBcc([]);
+    setShowBcc(false);
+    setServerStored([]);
+    setStoredRev(null);
+    setRemovedSigs([]);
+  }
+
   useEffect(() => {
     if (open) {
+      // Nothing of a previously open draft carries into this one.
+      resetSharedDraftState();
       fetchStats().then((stats) => {
         setRecipients(stats.recipients);
         setSenderIdentities(stats.senderIdentities ?? []);
@@ -137,8 +167,9 @@ export default function ComposeModal({
         const want = prefill?.from;
         if (want && stats.recipients.includes(want)) {
           setFromAddress(want);
-        } else if (!fromAddress && stats.recipients.length > 0) {
-          setFromAddress(stats.recipients[0]);
+        } else if (stats.recipients.length > 0) {
+          // Functional: a draft restored meanwhile keeps its own From.
+          setFromAddress((current) => current || stats.recipients[0]);
         }
       });
       // Apply any seeded values up front. Fields the caller didn't
@@ -157,12 +188,7 @@ export default function ComposeModal({
       setSignatureHtml(null);
       setError("");
       setFullscreen(false);
-      setJmapExtras([]);
-      setJmapGone(false);
-      setBcc([]);
-      setShowBcc(false);
-      setStored(null);
-      setStoredRev(null);
+      resetSharedDraftState();
       setFiles([]);
     }
     // We intentionally don't track `fromAddress` here — it's only used
@@ -188,22 +214,47 @@ export default function ComposeModal({
   // A draft linked to a mail-client draft is never "empty": only an explicit
   // delete may remove it (an attachment-only draft has no To or body).
   const composeIsEmpty =
-    storedRev === null &&
+    !contextKey.startsWith("jmap:") &&
+    serverStored.length === 0 &&
     !to.trim() &&
     !subject.trim() &&
     bodyIsEmpty &&
     !bodyText.trim() &&
     cc.length === 0 &&
     bcc.length === 0 &&
-    (stored?.length ?? 0) === 0;
+    true;
   // A draft opened from a mail client carries its own signature, if any.
   const fromMailClient = contextKey.startsWith("jmap:");
   const effectiveSignatureHtml = fromMailClient ? null : safeSignatureHtml;
   function applyDraftState(draft: Draft) {
     setJmapExtras(draft.jmapExtras ?? []);
     setJmapGone(draft.jmapState === "gone");
-    setStored(draft.storedAttachments ?? []);
+    setServerStored(draft.storedAttachments ?? []);
     setStoredRev(draft.storedAttachmentsRev ?? null);
+  }
+
+  /** "Keep as a new draft": start over from what's on screen. */
+  async function keepAsNewDraft() {
+    try {
+      await saveDraft({
+        contextKey,
+        fromAddress,
+        to,
+        cc,
+        subject,
+        bodyHtml,
+        bodyText,
+        bcc,
+        fresh: true,
+      });
+      // The new draft has none of the old one's stored attachments.
+      setJmapGone(false);
+      setServerStored([]);
+      setStoredRev(null);
+      setRemovedSigs([]);
+    } catch {
+      setError("Couldn't keep this as a new draft");
+    }
   }
   const hasPrefill = !!(
     prefill &&
@@ -212,7 +263,7 @@ export default function ComposeModal({
       prefill.bodyHtml ||
       (prefill.cc && prefill.cc.length > 0))
   );
-  const { clear: clearDraft } = useDraftAutosave({
+  const { clear: clearDraft, settle: settleDraft } = useDraftAutosave({
     contextKey,
     enabled: open,
     isEmpty: composeIsEmpty,
@@ -225,12 +276,7 @@ export default function ComposeModal({
       bodyHtml,
       bodyText,
       bcc,
-      ...(stored
-        ? {
-            keptAttachments: stored.map((part) => part.partId),
-            keptAttachmentsRev: storedRev,
-          }
-        : {}),
+      ...keptChoice,
     },
     paused: sending,
     onPublished: applyDraftState,
@@ -252,6 +298,8 @@ export default function ComposeModal({
     setSending(true);
     setError("");
     try {
+      // An autosave still in flight must land before the send's own save.
+      await settleDraft();
       // Concatenate the typed body + auto-attached signature on send.
       // The signature is wrapped in `data-signature` so the chat-feed
       // toggle can strip it back out cleanly.
@@ -270,12 +318,7 @@ export default function ComposeModal({
           to,
           ...(cc.length > 0 ? { cc } : {}),
           bcc,
-          ...(stored
-            ? {
-                keptAttachments: stored.map((part) => part.partId),
-                keptAttachmentsRev: storedRev,
-              }
-            : {}),
+          ...keptChoice,
           subject,
           // The draft keeps the body as typed; the signature goes on the sent
           // message only.
@@ -288,11 +331,7 @@ export default function ComposeModal({
         attached,
       );
       if (fallback) {
-        if (
-          bcc.length > 0 ||
-          (stored?.length ?? 0) > 0 ||
-          /[,;]/.test(to.trim())
-        ) {
+        if (bcc.length > 0 || stored.length > 0 || /[,;]/.test(to.trim())) {
           throw new Error(
             "This inbox can only send through the direct route, which sends to one To address without Bcc or stored attachments",
           );
@@ -316,9 +355,12 @@ export default function ComposeModal({
     } catch (err) {
       // A refused send may have saved the new files into the draft: show them
       // as stored and don't attach them again.
-      if (err instanceof SendDraftError && err.draft) {
-        applyDraftState(err.draft);
-        setFiles([]);
+      if (err instanceof SendDraftError) {
+        if (err.gone) setJmapGone(true);
+        if (err.draft) applyDraftState(err.draft);
+        // Only when the server says the files are in the draft now; otherwise
+        // they stay attached here.
+        if (err.filesStored) setFiles([]);
       }
       setError(
         err instanceof Error &&
@@ -483,7 +525,7 @@ export default function ComposeModal({
                   setBodyText(text);
                 }}
               />
-              {stored && stored.length > 0 && (
+              {stored.length > 0 && (
                 <div
                   className="flex flex-wrap items-center gap-1.5 px-2 pt-1.5"
                   data-testid="compose-stored-attachments"
@@ -499,11 +541,7 @@ export default function ComposeModal({
                         type="button"
                         aria-label={`Remove ${part.name ?? part.type}`}
                         onClick={() =>
-                          setStored((prev) =>
-                            (prev ?? []).filter(
-                              (item) => item.partId !== part.partId,
-                            ),
-                          )
+                          setRemovedSigs((prev) => [...prev, sigOf(part)])
                         }
                         className="rounded-full p-0.5 hover:bg-gray-200"
                       >
@@ -537,11 +575,23 @@ export default function ComposeModal({
           {(jmapExtras.length > 0 || jmapGone) && (
             <div
               data-testid="compose-shared-draft-notice"
-              className="shrink-0 border-t border-border bg-amber-50 px-4 py-2 text-[11px] text-amber-800 sm:px-5"
+              className="flex shrink-0 items-center gap-3 border-t border-border bg-amber-50 px-4 py-2 text-[11px] text-amber-800 sm:px-5"
             >
-              {jmapGone
-                ? "This draft was sent or deleted from a mail client. Changes here are no longer saved there."
-                : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it, and sent with it.`}
+              <span className="min-w-0 flex-1">
+                {jmapGone
+                  ? "This draft was sent, deleted or moved to Trash from a mail client, so changes here aren't saved there."
+                  : `This draft also has ${jmapExtras.join(", ")}, which this composer can't show yet. They are kept when you edit it, and sent with it.`}
+              </span>
+              {jmapGone && (
+                <button
+                  type="button"
+                  data-testid="compose-keep-as-new"
+                  onClick={() => void keepAsNewDraft()}
+                  className="shrink-0 rounded-[6px] border border-amber-300 bg-white px-2 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100"
+                >
+                  Keep as a new draft
+                </button>
+              )}
             </div>
           )}
 

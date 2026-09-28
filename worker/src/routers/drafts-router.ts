@@ -258,6 +258,12 @@ const SaveDraftBody = z.object({
   keptAttachments: z.array(z.string().max(20)).max(64).optional(),
   /** The `storedAttachmentsRev` the kept list was chosen on. */
   keptAttachmentsRev: z.string().max(64).nullable().optional(),
+  /**
+   * Start a new draft: unlink from the mail-client draft (which stays where it
+   * is) and clear a gone state. A composer that didn't restore this surface's
+   * draft sends it on its first save; so does "keep as a new draft".
+   */
+  fresh: z.boolean().optional(),
 });
 
 /** A send also carries the signature, added to the sent revision only. */
@@ -499,8 +505,22 @@ draftsRouter.openapi(sendDraftRoute, async (c) => {
     .limit(1);
   const draft = row ? toDraft(row, await linkedDraftInfo(db, row)) : null;
   const status =
-    outcome.status === "invalid" ? 400 : outcome.status === "busy" ? 409 : 422;
-  return c.json({ error: friendlyReason(outcome.reason), draft }, status);
+    outcome.status === "invalid"
+      ? 400
+      : outcome.status === "busy" || outcome.status === "gone"
+        ? 409
+        : 422;
+  return c.json(
+    {
+      error: friendlyReason(outcome.reason),
+      draft,
+      // The new files are in the draft now (the revision was published and
+      // only the submission refused): the composer shows them as stored.
+      filesStored: outcome.status === "refused" && extraAttachments.length > 0,
+      ...(outcome.status === "gone" ? { gone: true } : {}),
+    },
+    status,
+  );
 });
 
 // POST /api/drafts/publish — publish a compose surface's draft to JMAP.

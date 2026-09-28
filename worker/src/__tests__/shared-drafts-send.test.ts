@@ -199,7 +199,7 @@ describe("shared drafts: sending a web draft through the submission path", () =>
     expect((await sentEmails()).submissions).toEqual([]);
   });
 
-  it("a copy whose draft was deleted in a mail client is sent as a new draft when the user presses Send", async () => {
+  it("a copy whose draft was deleted in a mail client isn't sent until the user keeps it as a new draft", async () => {
     await send({
       contextKey: "draft:s4",
       fromAddress: INBOX,
@@ -233,15 +233,26 @@ describe("shared drafts: sending a web draft through the submission path", () =>
         "x",
       ],
     ]);
-    const res = await send({
+    const again = {
       contextKey,
       fromAddress: INBOX,
       to: "alice@example.com",
       subject: "Again",
       bodyHtml: "<p>2</p>",
+    };
+    const refused = await send(again);
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ gone: true });
+    expect((await sentEmails()).submissions).toHaveLength(1);
+
+    // "Keep as a new draft": the composer saves with fresh: true.
+    const kept = await authFetch("/api/drafts", {
+      apiKey,
+      method: "PUT",
+      body: JSON.stringify({ ...again, fresh: true }),
     });
-    // The user pressed Send with the content in front of them: it goes out,
-    // as a new draft, and a stale link never blocks the compose slot.
+    expect(kept.status).toBe(200);
+    const res = await send(again);
     expect(res.status).toBe(200);
     const { emails, submissions } = await sentEmails();
     expect(submissions).toHaveLength(2);

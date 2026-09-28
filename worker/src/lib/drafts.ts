@@ -27,6 +27,12 @@ export type DraftUpsertInput = {
   keptAttachments?: string[];
   /** The JMAP revision (`jmap_draft_id`) `keptAttachments` was chosen on. */
   keptAttachmentsRev?: string | null;
+  /**
+   * Start a new draft: unlink from the JMAP draft (it stays where it is) and
+   * clear a gone state. Sent by a composer that didn't restore this draft, and
+   * by the user's "keep as a new draft".
+   */
+  fresh?: boolean;
 };
 
 export async function getDraft(
@@ -42,50 +48,76 @@ export async function getDraft(
   return row ?? null;
 }
 
+/** Empty text is no value: '' and null compare equal after this. */
+function textOrNull(value: string | null | undefined): string | null {
+  return value === undefined || value === null || value === "" ? null : value;
+}
+
+/** An empty recipient list is no value, like a missing one. */
+function listOrNull(value: DraftCcEntry[] | null | undefined): string | null {
+  return value && value.length > 0 ? JSON.stringify(value) : null;
+}
+
+/**
+ * The kept-attachments choice, stored with the JMAP revision it was made on:
+ * part ids renumber on every publish, so a choice for another revision is
+ * ignored by its readers (web-drafts `keptParts`).
+ */
+export function keptChoiceJson(
+  ids: string[],
+  rev: string | null | undefined,
+): string | null {
+  return rev ? JSON.stringify({ rev, ids }) : null;
+}
+
 export async function upsertDraft(
   db: DrizzleD1Database<any>,
   userId: string,
   input: DraftUpsertInput,
 ): Promise<typeof drafts.$inferSelect> {
   const now = Math.floor(Date.now() / 1000);
-  const cc = input.cc ? JSON.stringify(input.cc) : null;
-  const fromAddress = input.fromAddress?.trim().toLowerCase() ?? null;
-  const bcc = input.bcc !== undefined ? JSON.stringify(input.bcc) : null;
+  // Normalised, so a save that repeats what the draft holds changes nothing:
+  // the composer sends '' and [] where a seeded draft holds null.
+  const fromAddress = textOrNull(input.fromAddress?.trim().toLowerCase());
+  const to = textOrNull(input.to?.trim());
+  const cc = listOrNull(input.cc);
+  const subject = textOrNull(input.subject);
+  const bodyHtml = textOrNull(input.bodyHtml);
+  const bodyText = textOrNull(input.bodyText);
+  const replyToEmailId = textOrNull(input.replyToEmailId);
+  const bcc = input.bcc !== undefined ? listOrNull(input.bcc) : null;
+  // Sent only once the user removed a chip, with the revision it saw.
   const kept =
     input.keptAttachments !== undefined
-      ? JSON.stringify(input.keptAttachments)
+      ? keptChoiceJson(input.keptAttachments, input.keptAttachmentsRev)
       : null;
+  const fresh = input.fresh === true ? 1 : 0;
 
   // Shared drafts. One statement, so every expression reads the old row:
   // - `dirty` only when a field really changed (opening and closing a draft
   //   without editing makes no new JMAP revision);
-  // - a Bcc or kept-attachments list the caller omits stays as it is;
-  // - a kept list applies only to the revision it was chosen on (part ids
-  //   renumber on every publish), otherwise it is ignored;
-  // - editing a copy whose JMAP draft is gone (sent or deleted in a mail
-  //   client) starts a new draft: the link and the old choices go.
-  const bccSet = input.bcc !== undefined;
-  const keptSet = input.keptAttachments !== undefined;
-  const bccNext = bccSet ? sql`excluded.bcc` : sql`drafts.bcc`;
-  const keptNext = keptSet
-    ? sql`CASE WHEN drafts.jmap_draft_id IS ${input.keptAttachmentsRev ?? null}
-            THEN excluded.attachments_json ELSE drafts.attachments_json END`
-    : sql`drafts.attachments_json`;
+  // - a Bcc or kept choice the caller omits stays as it is;
+  // - `fresh` (a composer that didn't restore this draft, or the user's "keep
+  //   as a new draft") starts a new draft: the link, the gone state and the
+  //   old choices go, and the previous JMAP draft stays where it is.
+  const bccNext = input.bcc !== undefined ? sql`excluded.bcc` : sql`drafts.bcc`;
+  const keptNext =
+    input.keptAttachments !== undefined && kept !== null
+      ? sql`excluded.attachments_json`
+      : sql`drafts.attachments_json`;
   const changed = sql`NOT (drafts.from_address IS excluded.from_address
       AND drafts.to_address IS excluded.to_address AND drafts.cc IS excluded.cc
       AND drafts.subject IS excluded.subject AND drafts.body_html IS excluded.body_html
       AND drafts.body_text IS excluded.body_text
       AND drafts.reply_to_email_id IS excluded.reply_to_email_id
       AND drafts.bcc IS ${bccNext} AND drafts.attachments_json IS ${keptNext})`;
-  const restart = sql`(drafts.jmap_state = 'gone' AND ${changed})`;
   await db.run(sql`
     INSERT INTO drafts (id, user_id, context_key, from_address, to_address, cc, subject,
                         body_html, body_text, reply_to_email_id, bcc, attachments_json,
                         dirty, created_at, updated_at)
     VALUES (${input.id ?? nanoid()}, ${userId}, ${input.contextKey}, ${fromAddress},
-            ${input.to ?? null}, ${cc}, ${input.subject ?? null}, ${input.bodyHtml ?? null},
-            ${input.bodyText ?? null}, ${input.replyToEmailId ?? null}, ${bcc}, ${kept},
-            1, ${now}, ${now})
+            ${to}, ${cc}, ${subject}, ${bodyHtml}, ${bodyText}, ${replyToEmailId},
+            ${bcc}, ${kept}, 1, ${now}, ${now})
     ON CONFLICT (user_id, context_key) DO UPDATE SET
       from_address = excluded.from_address,
       to_address = excluded.to_address,
@@ -95,13 +127,12 @@ export async function upsertDraft(
       body_text = excluded.body_text,
       reply_to_email_id = excluded.reply_to_email_id,
       bcc = ${bccNext},
-      attachments_json = CASE WHEN ${restart} THEN NULL ELSE ${keptNext} END,
-      jmap_draft_id = CASE WHEN ${restart} THEN NULL ELSE drafts.jmap_draft_id END,
-      jmap_state = CASE WHEN ${restart} THEN NULL ELSE drafts.jmap_state END,
-      dirty = CASE WHEN ${changed} THEN 1 ELSE drafts.dirty END,
+      attachments_json = CASE WHEN ${fresh} = 1 THEN NULL ELSE ${keptNext} END,
+      jmap_draft_id = CASE WHEN ${fresh} = 1 THEN NULL ELSE drafts.jmap_draft_id END,
+      jmap_state = CASE WHEN ${fresh} = 1 THEN NULL ELSE drafts.jmap_state END,
+      dirty = CASE WHEN ${fresh} = 1 OR ${changed} THEN 1 ELSE drafts.dirty END,
       updated_at = excluded.updated_at
   `);
-
   const [row] = await db
     .select()
     .from(drafts)
