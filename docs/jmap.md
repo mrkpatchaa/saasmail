@@ -126,16 +126,17 @@ The message is not stored as uploaded. It is parsed into saasmail's own draft st
 
 An import is refused, with nothing stored, when:
 
-| Condition                                                                                                                                   | SetError                                                    |
-| ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| An unknown property, a wrong type, a `null`, or a `receivedAt` that isn't a UTCDate                                                         | `invalidProperties` naming the properties                   |
-| `blobId` is not a blob you can read (your uploads, and the attachments, parts and raw messages of Emails you can read)                      | `invalidProperties`, `properties: ["blobId"]`               |
-| Not a draft target (see above)                                                                                                              | `forbidden`                                                 |
-| The message is larger than `maxSizeUpload`, has more than 32 attachments and inline parts, or its parts exceed `maxSizeAttachmentsPerEmail` | `tooLarge`                                                  |
-| A signed or encrypted part at any depth (`multipart/signed`, `multipart/encrypted`, `application/pkcs7-mime`, `application/pgp-encrypted`)  | `invalidEmail`                                              |
-| More than one inline `text/plain` or `text/html` body part (a draft keeps one of each), more than 100 MIME parts, or nesting deeper than 10 | `invalidEmail`                                              |
-| A header saasmail can't store as a draft (for example a subject over 900 characters or a malformed address)                                 | `invalidEmail` naming the header                            |
-| The From isn't one of your usable identities                                                                                                | `invalidProperties`, `properties: ["from"]`, as `Email/set` |
+| Condition                                                                                                                                                | SetError                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| An unknown property, a wrong type, a `null`, or a `receivedAt` that isn't a UTCDate                                                                      | `invalidProperties` naming the properties                   |
+| `blobId` is not a blob you can read (your uploads, and the attachments, parts and raw messages of Emails you can read)                                   | `invalidProperties`, `properties: ["blobId"]`               |
+| Not a draft target (see above)                                                                                                                           | `forbidden`                                                 |
+| The message is larger than `maxSizeUpload`, has more than 32 attachments and inline parts, or its parts exceed `maxSizeAttachmentsPerEmail`              | `tooLarge`                                                  |
+| A signed or encrypted part at any depth (`multipart/signed`, `multipart/encrypted`, `application/pkcs7-mime`, `application/pgp-encrypted`)               | `invalidEmail`                                              |
+| More than one inline `text/plain` or `text/html` body part (a draft keeps one of each), more than 100 MIME parts, or nesting deeper than 10              | `invalidEmail`                                              |
+| A part (or the message itself) with more than one `Content-Type`, `Content-Transfer-Encoding` or `Content-Disposition` header (RFC 2045 allows one each) | `invalidEmail`                                              |
+| A header saasmail can't store as a draft (for example a subject over 900 characters or a malformed address)                                              | `invalidEmail` naming the header                            |
+| The From isn't one of your usable identities                                                                                                             | `invalidProperties`, `properties: ["from"]`, as `Email/set` |
 
 Signed and encrypted mail is refused because rebuilding the message would break its signature or lose its content. The parts of an attached `message/rfc822` are not inspected.
 

@@ -13,8 +13,10 @@ import { readBlobBytes, resolveReadableBlob } from "../jmap/blobs";
 import { MAX_OBJECTS_IN_SET } from "../jmap/constants";
 import {
   decodeLeafBody,
+  parseHeaderValue,
   parseMessageIdList,
   scanMimeStructure,
+  stripComments,
 } from "../jmap/email-import";
 import { storeUpload } from "../jmap/upload";
 import { listJmapOnlyDrafts } from "../jmap/web-drafts";
@@ -836,6 +838,47 @@ describe("Email/import", () => {
           "--two--",
         ),
       ],
+      [
+        "multipart/signed with a comment after the type",
+        signedBody.replace("multipart/signed;", "multipart/signed (detached);"),
+      ],
+      [
+        "a repeated Content-Type at the top",
+        lines("Content-Type: text/plain", "Content-Type: text/html", "", "x"),
+      ],
+      [
+        "a repeated Content-Transfer-Encoding in a nested part",
+        lines(
+          'Content-Type: multipart/mixed; boundary="rep"',
+          "",
+          "--rep",
+          "Content-Type: text/plain",
+          "",
+          "Body.",
+          "--rep",
+          "Content-Type: application/octet-stream",
+          "Content-Transfer-Encoding: base64",
+          "Content-Transfer-Encoding: 7bit",
+          "Content-Disposition: attachment",
+          "",
+          "AAAA",
+          "--rep--",
+        ),
+      ],
+      [
+        "a repeated Content-Disposition in a nested part",
+        lines(
+          'Content-Type: multipart/mixed; boundary="rep"',
+          "",
+          "--rep",
+          "Content-Type: text/plain",
+          "Content-Disposition: inline",
+          "Content-Disposition: attachment",
+          "",
+          "Body.",
+          "--rep--",
+        ),
+      ],
     ])("refuses %s with invalidEmail", async (_label, body) => {
       const { authorId } = await seedAccount();
       const raw = lines(...headers(), body, "");
@@ -1186,6 +1229,17 @@ describe("raw MIME scan", () => {
     expect(Array.from(decodeLeafBody(bytes, scan.attachmentLeaves[0]))).toEqual(
       [0x61, 0x3d, 0x62, 0x63, 0xff],
     );
+  });
+
+  it("strips RFC 822 comments from a Content-Type, but not inside quotes", () => {
+    expect(stripComments('multipart/signed(x (nested)); boundary="a(b)"')).toBe(
+      'multipart/signed; boundary="a(b)"',
+    );
+    const parsed = parseHeaderValue(
+      'multipart/signed (detached) ; boundary="a(b)"',
+    );
+    expect(parsed.value).toBe("multipart/signed");
+    expect(parsed.params.get("boundary")).toBe("a(b)");
   });
 
   it("parses Message-ID lists", () => {

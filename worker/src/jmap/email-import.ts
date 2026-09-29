@@ -66,6 +66,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 type ScannedHeaders = {
   /** Lowercased name -> first value, unfolded. */
   fields: Map<string, string>;
+  /** Lowercased names that appear more than once. */
+  repeated: Set<string>;
   bodyStart: number;
 };
 
@@ -114,13 +116,54 @@ function binaryString(bytes: Uint8Array): string {
   return chunks.join("");
 }
 
+/**
+ * Headers an entity may carry once. Content-Disposition is included because
+ * it decides body versus attachment here and in postal-mime alike.
+ */
+const SINGLE_HEADERS = [
+  "content-type",
+  "content-transfer-encoding",
+  "content-disposition",
+] as const;
+const HEADER_LABELS: Record<(typeof SINGLE_HEADERS)[number], string> = {
+  "content-type": "Content-Type",
+  "content-transfer-encoding": "Content-Transfer-Encoding",
+  "content-disposition": "Content-Disposition",
+};
+
+/** Drop RFC 822 comments, "(…)" with nesting, outside quoted strings. */
+export function stripComments(value: string): string {
+  let out = "";
+  let depth = 0;
+  let quoted = false;
+  for (let i = 0; i < value.length; i += 1) {
+    const char = value[i];
+    if (char === "\\" && (quoted || depth > 0)) {
+      if (depth === 0) out += char + (value[i + 1] ?? "");
+      i += 1;
+      continue;
+    }
+    if (depth === 0 && char === '"') quoted = !quoted;
+    if (!quoted && char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (!quoted && char === ")" && depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    if (depth === 0) out += char;
+  }
+  return out;
+}
+
 function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
   const fields = new Map<string, string>();
+  const repeated = new Set<string>();
   let current: { name: string; value: string } | null = null;
   const commit = () => {
-    if (current && !fields.has(current.name)) {
-      fields.set(current.name, current.value.trim());
-    }
+    if (current && fields.has(current.name)) repeated.add(current.name);
+    else if (current) fields.set(current.name, current.value.trim());
     current = null;
   };
   let pos = start;
@@ -132,7 +175,7 @@ function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
     const next = Math.min(newline + 1, end);
     if (line.length === 0) {
       commit();
-      return { fields, bodyStart: next };
+      return { fields, repeated, bodyStart: next };
     }
     if ((line[0] === " " || line[0] === "\t") && current) {
       (current as { value: string }).value += ` ${line.trim()}`;
@@ -149,14 +192,16 @@ function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
     pos = next;
   }
   commit();
-  return { fields, bodyStart: end };
+  return { fields, repeated, bodyStart: end };
 }
 
 /** "type/subtype; a=b; c="d"" -> the lowercased value and its parameters. */
-export function parseHeaderValue(value: string): {
+export function parseHeaderValue(raw: string): {
   value: string;
   params: Map<string, string>;
 } {
+  // "multipart/signed(x); …" is multipart/signed (RFC 2045 §5.1 allows comments).
+  const value = stripComments(raw);
   const params = new Map<string, string>();
   const semicolon = value.indexOf(";");
   const head = (semicolon === -1 ? value : value.slice(0, semicolon))
@@ -263,6 +308,14 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
     }
     const headers = scanHeaders(text, start, end);
     if (depth === 1) scan.headerEnd = headers.bodyStart;
+    // RFC 2045 allows one of each. This scanner and postal-mime would pick
+    // different copies, so the structure checked here could differ from the
+    // one converted: refuse rather than choose.
+    for (const name of SINGLE_HEADERS) {
+      if (headers.repeated.has(name)) {
+        return `A MIME part has more than one ${HEADER_LABELS[name]} header`;
+      }
+    }
     const contentType = headers.fields.get("content-type");
     const parsedType = contentType ? parseHeaderValue(contentType) : null;
     const digestDefault =
