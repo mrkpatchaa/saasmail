@@ -802,6 +802,22 @@ export type CreatedDraft = {
   size: number;
 };
 
+/**
+ * A part held in memory rather than in a blob store: `Email/import` passes the
+ * parts it decoded from the imported message under synthetic blob ids, so a
+ * rejected import stores nothing. Only server code builds this map; a client's
+ * blob id is never looked up in it.
+ */
+export type InternalBlob = {
+  bytes: Uint8Array;
+  type: string;
+  name: string | null;
+};
+
+export type DraftCreateOptions = {
+  internalBlobs?: Map<string, InternalBlob>;
+};
+
 function rfc3339Utc(seconds: number): string {
   return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
 }
@@ -814,6 +830,7 @@ function rfc3339Utc(seconds: number): string {
 export async function createDraftEmail(
   ctx: DraftCreateContext,
   input: unknown,
+  options: DraftCreateOptions = {},
 ): Promise<CreatedDraft | Rejection> {
   const parsed = parseEmailCreate(input);
   if (parsed instanceof Rejection) return parsed;
@@ -842,6 +859,17 @@ export async function createDraftEmail(
   const notFound: string[] = [];
   for (const leaf of blobLeaves) {
     if (blobs.has(leaf.blobId) || notFound.includes(leaf.blobId)) continue;
+    const internal = options.internalBlobs?.get(leaf.blobId);
+    if (internal) {
+      blobs.set(leaf.blobId, {
+        blobId: leaf.blobId,
+        type: internal.type,
+        size: internal.bytes.byteLength,
+        name: internal.name,
+        source: { bytes: internal.bytes },
+      });
+      continue;
+    }
     const blob = await resolveReadableBlob(
       ctx.db,
       ctx.allowed,
