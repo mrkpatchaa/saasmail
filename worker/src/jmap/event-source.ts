@@ -270,16 +270,24 @@ export async function openEventSource(
   let cancelled = false;
   const wakers = new Set<() => void>();
   const encoder = new TextEncoder();
+  const stop = () => {
+    cancelled = true;
+    for (const wake of [...wakers]) wake();
+  };
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const body = new ReadableStream<Uint8Array>({
     start(streamController) {
       controller = streamController;
     },
-    cancel() {
-      cancelled = true;
-      for (const wake of [...wakers]) wake();
-    },
+    // A reader in this isolate cancelling the body.
+    cancel: stop,
   });
+  // A client that disconnects over HTTP never reaches cancel(): the runtime
+  // keeps draining the stream, so enqueue() keeps succeeding. What does reach
+  // the handler is request.signal, which aborts on disconnect with the
+  // enable_request_signal compatibility flag (wrangler.jsonc).
+  request.signal?.addEventListener("abort", stop);
+  if (request.signal?.aborted) stop();
 
   const timerSleep = (ms: number) =>
     new Promise<void>((resolve) => {
@@ -316,13 +324,14 @@ export async function openEventSource(
         controller.enqueue(encoder.encode(chunk));
         return true;
       } catch {
-        cancelled = true;
+        stop();
         return false;
       }
     },
     cancelled: () => cancelled,
   }).finally(() => {
     for (const wake of [...wakers]) wake();
+    request.signal?.removeEventListener("abort", stop);
     if (cancelled) return;
     try {
       controller.close();
