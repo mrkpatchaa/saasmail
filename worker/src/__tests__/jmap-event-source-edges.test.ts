@@ -389,7 +389,7 @@ describe("EventSource push: disconnects, races and the query budget", () => {
     ).toBeGreaterThan(2);
   });
 
-  it("stays within its 40-query budget with a change on every tick: member with 85 inboxes (4 seq queries a tick)", async () => {
+  it("stays within its 40-query budget with a change on every tick: member with 85 inboxes (one seq query a tick)", async () => {
     const { userId, apiKey } = await createTestUser({
       id: "edge-budget-member",
       role: "member",
