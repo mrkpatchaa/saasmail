@@ -783,13 +783,18 @@ async function mergedEmailPage(
 }
 
 /** Strict mode is off: the query, or the method error (`error` null on success). */
+type EmailQueryPlan = {
+  messageQuery: MessageQuery;
+  draftFilter: DraftFilter;
+  messagesImpossible: boolean;
+  draftsImpossible: boolean;
+  /** Mailbox ids the filter names, resolved by `resolveMailboxFilters`. */
+  inMailbox?: string;
+  inMailboxOtherThan?: string[];
+};
+
 type ParsedEmailQuery = {
-  query: {
-    messageQuery: MessageQuery;
-    draftFilter: DraftFilter;
-    messagesImpossible: boolean;
-    draftsImpossible: boolean;
-  } | null;
+  query: EmailQueryPlan | null;
   error: JmapMethodError | null;
 };
 
@@ -799,15 +804,14 @@ function parseFailure(error: JmapMethodError): ParsedEmailQuery {
 
 /**
  * `Email/query` and `Email/queryChanges` arguments other than the window:
- * collapseThreads, calculateTotal, sort and filter, with the mailboxes the
- * filter names resolved.
+ * collapseThreads, calculateTotal, sort and filter. Validation only, no
+ * database: the mailboxes the filter names are resolved by
+ * `resolveMailboxFilters`, after the caller has read its state.
  */
-async function parseEmailQuery(
-  db: DrizzleD1Database<any>,
-  allowed: AllowedInboxes,
+function parseEmailQuery(
   userId: string,
   args: Record<string, unknown>,
-): Promise<ParsedEmailQuery> {
+): ParsedEmailQuery {
   if (args.collapseThreads !== undefined && args.collapseThreads !== false) {
     return parseFailure({
       type: "invalidArguments",
@@ -932,13 +936,41 @@ async function parseEmailQuery(
       : {}),
   };
 
-  const descriptors =
-    typeof filter.inMailbox === "string" || otherThan !== undefined
-      ? await loadMailboxDescriptors(db, allowed)
-      : [];
+  return {
+    query: {
+      messageQuery,
+      draftFilter,
+      messagesImpossible,
+      draftsImpossible,
+      ...(typeof filter.inMailbox === "string"
+        ? { inMailbox: filter.inMailbox }
+        : {}),
+      ...(otherThan !== undefined
+        ? { inMailboxOtherThan: otherThan as string[] }
+        : {}),
+    },
+    error: null,
+  };
+}
 
-  if (typeof filter.inMailbox === "string") {
-    const descriptor = descriptors.find((item) => item.id === filter.inMailbox);
+/**
+ * The plan with the mailboxes its filter names resolved. Read after the
+ * state: a mailbox (and mail in it) created in between is then in the next
+ * call's changes, never folded into a state this answer already reported.
+ */
+async function resolveMailboxFilters(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  plan: EmailQueryPlan,
+): Promise<EmailQueryPlan> {
+  const otherThan = plan.inMailboxOtherThan;
+  if (plan.inMailbox === undefined && otherThan === undefined) return plan;
+  let { messageQuery, messagesImpossible, draftsImpossible } = plan;
+  const draftFilter: DraftFilter = { ...plan.draftFilter };
+  const descriptors = await loadMailboxDescriptors(db, allowed);
+
+  if (plan.inMailbox !== undefined) {
+    const descriptor = descriptors.find((item) => item.id === plan.inMailbox);
     if (!descriptor) {
       messagesImpossible = true;
       draftsImpossible = true;
@@ -962,7 +994,7 @@ async function parseEmailQuery(
 
   if (otherThan !== undefined) {
     // Unknown ids name no mailbox, so they exclude nothing.
-    const excluded = new Set(otherThan as string[]);
+    const excluded = new Set(otherThan);
     const excludeFolders: NonNullable<MessageQuery["excludeFolders"]> = [];
     const exclude: DraftExclusion[] = [];
     for (const descriptor of descriptors) {
@@ -985,10 +1017,7 @@ async function parseEmailQuery(
     if (exclude.length > 0) draftFilter.exclude = exclude;
   }
 
-  return {
-    query: { messageQuery, draftFilter, messagesImpossible, draftsImpossible },
-    error: null,
-  };
+  return { messageQuery, draftFilter, messagesImpossible, draftsImpossible };
 }
 
 /** Ids of the query's results from `position`, at most `limit` of them. */
@@ -996,7 +1025,7 @@ async function emailQueryIds(
   db: DrizzleD1Database<any>,
   allowed: AllowedInboxes,
   userId: string,
-  query: NonNullable<ParsedEmailQuery["query"]>,
+  query: EmailQueryPlan,
   position: number,
   limit: number,
 ): Promise<string[]> {
@@ -1027,9 +1056,8 @@ export async function emailQuery(
   args: Record<string, unknown>,
   ceiling = MAX_QUERY_RESULTS,
 ): Promise<Record<string, unknown> | JmapMethodError> {
-  const parsed = await parseEmailQuery(db, allowed, userId, args);
+  const parsed = parseEmailQuery(userId, args);
   if (parsed.error) return parsed.error;
-  const query = parsed.query as NonNullable<ParsedEmailQuery["query"]>;
 
   const position = args.position ?? 0;
   const requestedLimit = args.limit ?? null;
@@ -1047,7 +1075,13 @@ export async function emailQuery(
     requestedLimit === null || (requestedLimit as number) > ceiling;
   const limit = limitCapped ? ceiling : (requestedLimit as number);
 
+  // The state first, then everything the answer is computed from.
   const queryState = (await currentJmapState(db, allowed, userId)).state;
+  const query = await resolveMailboxFilters(
+    db,
+    allowed,
+    parsed.query as EmailQueryPlan,
+  );
   let total: number | undefined;
   if (position < 0 || args.calculateTotal === true) {
     total =
@@ -1107,9 +1141,8 @@ export async function emailQueryChanges(
   args: Record<string, unknown>,
   ceiling = MAX_QUERY_RESULTS,
 ): Promise<Record<string, unknown> | JmapMethodError> {
-  const parsed = await parseEmailQuery(db, allowed, userId, args);
+  const parsed = parseEmailQuery(userId, args);
   if (parsed.error) return parsed.error;
-  const query = parsed.query as NonNullable<ParsedEmailQuery["query"]>;
 
   const maxChanges = args.maxChanges ?? null;
   if (
@@ -1139,6 +1172,12 @@ export async function emailQueryChanges(
   if (changes.error) return changes.error;
   const since = changes.changes as NonNullable<typeof changes.changes>;
 
+  // Mailboxes resolve after the state (read first, in emailChangesSince).
+  const query = await resolveMailboxFilters(
+    db,
+    allowed,
+    parsed.query as EmailQueryPlan,
+  );
   const ids = await emailQueryIds(db, allowed, userId, query, 0, ceiling + 1);
   if (ids.length > ceiling) return { type: "cannotCalculateChanges" };
 

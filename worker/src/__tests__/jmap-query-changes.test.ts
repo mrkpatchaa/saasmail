@@ -4,10 +4,13 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { users } from "../db/auth.schema";
 import { createDb } from "../db/client";
 import { emails } from "../db/emails.schema";
+import { mailboxes } from "../db/mailboxes.schema";
+import { messageMailboxes } from "../db/message-mailboxes.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
 import { executeJmapCalls } from "../jmap/http";
 import { formatJmapState, parseJmapState } from "../jmap/state";
+import { THREAD_CHANGES_QUERY_BUDGET } from "../jmap/thread-changes";
 import { resolveAllowedInboxes } from "../lib/inbox-permissions";
 import {
   applyMigrations,
@@ -18,7 +21,7 @@ import {
   createTestUser,
   getDb,
 } from "./helpers";
-import { acct, rid, sys } from "./jmap-ids";
+import { acct, mbx, rid, sys } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
 
@@ -82,10 +85,14 @@ function applyQueryChanges(
 }
 
 /**
- * A D1 binding that runs `hook` once, right before the first statement whose
- * SQL matches `pattern` executes.
+ * A D1 binding that runs `hook` once, right before (or right after) the first
+ * statement whose SQL matches `pattern` executes.
  */
-function hookedD1(pattern: RegExp, hook: () => Promise<void>): D1Database {
+function hookedD1(
+  pattern: RegExp,
+  hook: () => Promise<void>,
+  when: "before" | "after" = "before",
+): D1Database {
   const real = env.DB;
   let fired = false;
   const wrap = (statement: any): any =>
@@ -97,11 +104,12 @@ function hookedD1(pattern: RegExp, hook: () => Promise<void>): D1Database {
         }
         if (["all", "raw", "first", "run"].includes(prop as string)) {
           return async (...args: unknown[]) => {
-            if (!fired) {
-              fired = true;
-              await hook();
-            }
-            return value.apply(target, args);
+            const first = !fired;
+            fired = true;
+            if (first && when === "before") await hook();
+            const result = await value.apply(target, args);
+            if (first && when === "after") await hook();
+            return result;
           };
         }
         return typeof value === "function" ? value.bind(target) : value;
@@ -399,6 +407,110 @@ describe("JMAP Email/queryChanges", () => {
     });
     expect(next.added).toEqual([{ id: injected, index: 0 }]);
   });
+
+  /**
+   * A mailbox, and mail filed in it, appearing right after the call resolved
+   * its filter's mailboxes: the state it returns must predate that write.
+   */
+  async function lateMailboxWrite() {
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(mailboxes).values({
+      id: "box-late",
+      inbox: MINE,
+      name: "Late",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const id = await received({ id: "late-1" });
+    await getDb().insert(messageMailboxes).values({
+      messageKind: "received",
+      messageId: "late-1",
+      mailboxId: "box-late",
+      addedAt: now,
+    });
+    return id;
+  }
+
+  async function runHooked(userId: string, hooked: D1Database, call: unknown) {
+    const [user] = await getDb()
+      .select()
+      .from(users)
+      .where(eq(users.id, userId));
+    const allowed = await resolveAllowedInboxes(getDb(), user);
+    const [response] = await executeJmapCalls(
+      createDb({ DB: hooked }),
+      allowed,
+      user,
+      [CORE_CAPABILITY, MAIL_CAPABILITY],
+      [call as [string, Record<string, unknown>, string]],
+      { env: env as unknown as CloudflareBindings, createdIds: new Map() },
+    );
+    return response as [string, Record<string, any>, string];
+  }
+
+  it("Email/queryChanges reads the state before resolving mailboxes: a mailbox and its mail created in between come in the next call", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "qc-late-box" });
+    const filter = { inMailbox: mbx("box-late") };
+    const [, query] = await call(apiKey, "Email/query", {
+      accountId: acct(userId),
+      filter,
+    });
+    expect(query.ids).toEqual([]);
+
+    let late = "";
+    const [name, first] = await runHooked(
+      userId,
+      hookedD1(
+        /from "mailboxes"/,
+        async () => {
+          late = await lateMailboxWrite();
+        },
+        "after",
+      ),
+      [
+        "Email/queryChanges",
+        { accountId: acct(userId), filter, sinceQueryState: query.queryState },
+        "c",
+      ],
+    );
+    expect(late).not.toBe("");
+    expect(name).toBe("Email/queryChanges");
+    expect(first.added).toEqual([]);
+
+    const [, next] = await call(apiKey, "Email/queryChanges", {
+      accountId: acct(userId),
+      filter,
+      sinceQueryState: first.newQueryState,
+    });
+    expect(next.added).toEqual([{ id: late, index: 0 }]);
+  });
+
+  it("Email/query reads its queryState before resolving mailboxes, so the next queryChanges reports what landed in between", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "q-late-box" });
+    const filter = { inMailbox: mbx("box-late") };
+    let late = "";
+    const [name, query] = await runHooked(
+      userId,
+      hookedD1(
+        /from "mailboxes"/,
+        async () => {
+          late = await lateMailboxWrite();
+        },
+        "after",
+      ),
+      ["Email/query", { accountId: acct(userId), filter }, "q"],
+    );
+    expect(late).not.toBe("");
+    expect(name).toBe("Email/query");
+    expect(query.ids).toEqual([]);
+
+    const [, next] = await call(apiKey, "Email/queryChanges", {
+      accountId: acct(userId),
+      filter,
+      sinceQueryState: query.queryState,
+    });
+    expect(next.added).toEqual([{ id: late, index: 0 }]);
+  });
 });
 
 describe("JMAP Thread/changes", () => {
@@ -497,4 +609,99 @@ describe("JMAP Thread/changes", () => {
       }),
     ).toEqual(["error", { type: "cannotCalculateChanges" }, "c"]);
   });
+
+  async function countedThreadChanges(userId: string, sinceState: string) {
+    let count = 0;
+    const counted = new Proxy(env.DB, {
+      get(target, prop) {
+        const value = (target as any)[prop];
+        if (typeof value !== "function") return value;
+        if (prop === "prepare" || prop === "exec") {
+          return (...args: unknown[]) => {
+            count += 1;
+            return value.apply(target, args);
+          };
+        }
+        return value.bind(target);
+      },
+    });
+    const [user] = await getDb()
+      .select()
+      .from(users)
+      .where(eq(users.id, userId));
+    const allowed = await resolveAllowedInboxes(getDb(), user);
+    const [response] = await executeJmapCalls(
+      createDb({ DB: counted }),
+      allowed,
+      user,
+      [CORE_CAPABILITY, MAIL_CAPABILITY],
+      [["Thread/changes", { accountId: acct(userId), sinceState }, "c"]],
+      { env: env as unknown as CloudflareBindings, createdIds: new Map() },
+    );
+    return { response, count };
+  }
+
+  it("600 new Emails in one thread: one created thread within the 30-query budget", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "tc-bulk" });
+    const sinceState = await state(apiKey, userId);
+    const now = Math.floor(Date.now() / 1000);
+    const rows = Array.from({ length: 600 }, (_, index) => ({
+      id: `bulk-${String(index).padStart(3, "0")}`,
+      personId: "qc-person",
+      recipient: MINE,
+      subject: "Bulk",
+      bodyText: "bulk",
+      messageId: `bulk-${index}@example.com`,
+      conversationId: "conv-bulk",
+      receivedAt: now,
+      createdAt: now,
+    }));
+    for (let start = 0; start < rows.length; start += 10) {
+      await getDb()
+        .insert(emails)
+        .values(rows.slice(start, start + 10));
+    }
+
+    const { response, count } = await countedThreadChanges(userId, sinceState);
+    expect(response[0]).toBe("Thread/changes");
+    expect(count).toBeLessThanOrEqual(THREAD_CHANGES_QUERY_BUDGET);
+    const threadId = await threadOf(apiKey, userId, rid("bulk-000"));
+    expect(response[1]).toMatchObject({
+      created: [threadId],
+      updated: [],
+      destroyed: [],
+    });
+  });
+
+  it("answers cannotCalculateChanges rather than exceed the query budget", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "tc-over" });
+    const sinceState = await state(apiKey, userId);
+    const now = Math.floor(Date.now() / 1000);
+    // 2,800 changed Emails in 2,800 threads need more than 30 lookups
+    // (maxChanges allows only 256 threads anyway, but the ids come first).
+    const rows = Array.from({ length: 2800 }, (_, index) => ({
+      id: `many-${String(index).padStart(4, "0")}`,
+      personId: "qc-person",
+      recipient: MINE,
+      subject: "Many",
+      bodyText: "many",
+      messageId: `many-${index}@example.com`,
+      conversationId: `conv-many-${index}`,
+      receivedAt: now,
+      createdAt: now,
+    }));
+    for (let start = 0; start < rows.length; start += 10) {
+      await getDb()
+        .insert(emails)
+        .values(rows.slice(start, start + 10));
+    }
+
+    const { response, count } = await countedThreadChanges(userId, sinceState);
+    expect(response).toEqual([
+      "error",
+      { type: "cannotCalculateChanges" },
+      "c",
+    ]);
+    expect(count).toBeLessThanOrEqual(THREAD_CHANGES_QUERY_BUDGET);
+  }, 60_000);
 });

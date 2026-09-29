@@ -543,30 +543,6 @@ async function threadGet(
   };
 }
 
-/** Thread id -> Email ids through Thread/get, for `Thread/changes`. */
-async function threadEmailIds(
-  db: DrizzleD1Database<any>,
-  allowed: AllowedInboxes,
-  userId: string,
-  threadIds: string[],
-): Promise<Map<string, string[]> | null> {
-  const members = new Map<string, string[]>();
-  for (let start = 0; start < threadIds.length; start += MAX_OBJECTS_IN_GET) {
-    const got = await threadGet(db, allowed, userId, {
-      accountId: publicAccountId(userId),
-      ids: threadIds.slice(start, start + MAX_OBJECTS_IN_GET),
-      properties: ["emailIds"],
-    });
-    if (!got.ok) return null;
-    const list = (got as { result: Record<string, unknown> }).result.list as {
-      id: string;
-      emailIds: string[];
-    }[];
-    for (const thread of list) members.set(thread.id, thread.emailIds);
-  }
-  return members;
-}
-
 /** The Identity objects the user sees; `Identity/get` and the Identity state. */
 async function identityObjects(
   db: DrizzleD1Database<any>,
@@ -885,7 +861,6 @@ export async function executeMethod(
       user.id,
       publicAccountId(user.id),
       args,
-      (threadIds) => threadEmailIds(db, allowed, user.id, threadIds),
     );
     const error = result as JmapMethodError;
     if (typeof error.type === "string") {
