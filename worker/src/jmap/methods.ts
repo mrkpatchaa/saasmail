@@ -22,6 +22,7 @@ import type { CreatedIds } from "./creation-refs";
 import {
   emailGet,
   emailQuery,
+  emailQueryChanges,
   jmapMessageId,
   jmapThreadKey,
   type JmapMethodError,
@@ -30,6 +31,7 @@ import { listJmapMailboxes, listUsableIdentities } from "./mailboxes";
 import { draftThreadMembers, listDraftThreadKeys } from "./drafts";
 import { emailChanges, mailboxChanges, submissionChanges } from "./changes";
 import { emailSet } from "./email-set";
+import { threadChanges } from "./thread-changes";
 import { emailSubmissionSet } from "./submission";
 import { isMethodError } from "./on-success";
 import { emailSubmissionGet, emailSubmissionQuery } from "./submission-read";
@@ -541,6 +543,30 @@ async function threadGet(
   };
 }
 
+/** Thread id -> Email ids through Thread/get, for `Thread/changes`. */
+async function threadEmailIds(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  userId: string,
+  threadIds: string[],
+): Promise<Map<string, string[]> | null> {
+  const members = new Map<string, string[]>();
+  for (let start = 0; start < threadIds.length; start += MAX_OBJECTS_IN_GET) {
+    const got = await threadGet(db, allowed, userId, {
+      accountId: publicAccountId(userId),
+      ids: threadIds.slice(start, start + MAX_OBJECTS_IN_GET),
+      properties: ["emailIds"],
+    });
+    if (!got.ok) return null;
+    const list = (got as { result: Record<string, unknown> }).result.list as {
+      id: string;
+      emailIds: string[];
+    }[];
+    for (const thread of list) members.set(thread.id, thread.emailIds);
+  }
+  return members;
+}
+
 /** The Identity objects the user sees; `Identity/get` and the Identity state. */
 async function identityObjects(
   db: DrizzleD1Database<any>,
@@ -832,6 +858,40 @@ export async function executeMethod(
     const account = accountError(args.accountId, user.id);
     if (account) return account;
     return identitySet(db, allowed, user.id, args);
+  }
+
+  if (name === "Email/queryChanges") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result = await emailQueryChanges(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+    );
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
+  }
+  if (name === "Thread/changes") {
+    const account = accountError(args.accountId, user.id);
+    if (account) return account;
+    const result = await threadChanges(
+      db,
+      allowed,
+      user.id,
+      publicAccountId(user.id),
+      args,
+      (threadIds) => threadEmailIds(db, allowed, user.id, threadIds),
+    );
+    const error = result as JmapMethodError;
+    if (typeof error.type === "string") {
+      return methodError(error.type, error.description, error.properties);
+    }
+    return { ok: true, name, result };
   }
 
   if (/\/(changes|queryChanges)$/.test(name)) {

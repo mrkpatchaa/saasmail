@@ -7,6 +7,14 @@ export const MAX_CALLS_IN_REQUEST = 16;
 export const MAX_OBJECTS_IN_GET = 256;
 export const MAX_OBJECTS_IN_SET = 256;
 
+/**
+ * The largest `Email/query` page (RFC 8620 §5.5 `limit`): a request without a
+ * limit, or with a larger one, gets this many and is told so. It is not a cap
+ * on the result set: `position` beyond it works and `total` counts everything.
+ * `Email/queryChanges` can only diff a result that fits in one such page.
+ */
+export const MAX_QUERY_RESULTS = 10_000;
+
 /** EventSource push (RFC 8620 §7.3): the path the Session advertises. */
 export const EVENT_SOURCE_PATH = "/jmap/eventsource/";
 /** How often an open push stream looks for a new state. */

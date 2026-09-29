@@ -634,7 +634,7 @@ describe("JMAP", () => {
     expect(filtered.methodResponses[0][1]).toMatchObject({
       ids: [rid("alice-mail")],
       total: 1,
-      canCalculateChanges: false,
+      canCalculateChanges: true,
     });
     expect(filtered.methodResponses[1]).toEqual([
       "error",
