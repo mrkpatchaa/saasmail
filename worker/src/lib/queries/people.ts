@@ -158,19 +158,31 @@ export async function getPersonScoped(
     if (allowed.inboxes.length === 0) {
       return null;
     }
-    const match = await db
-      .select({ id: emails.id })
+    // The row's counters span every inbox; a member gets them recomputed
+    // over the mail in their own inboxes, so a sender who also wrote to a
+    // private inbox shows none of that mail's counts or recency.
+    const [scoped] = await db
+      .select({
+        total: sql<number>`COUNT(*)`,
+        unread: sql<number>`COALESCE(SUM(CASE WHEN ${emails.isRead} = 0 THEN 1 ELSE 0 END), 0)`,
+        last: sql<number | null>`MAX(${emails.receivedAt})`,
+      })
       .from(emails)
       .where(
         and(
           eq(emails.personId, id),
           sql`${emails.recipient} IN ${jsonList(allowed.inboxes)}`,
         ),
-      )
-      .limit(1);
-    if (match.length === 0) {
+      );
+    if (!scoped || Number(scoped.total) === 0) {
       return null;
     }
+    return {
+      ...rows[0],
+      lastEmailAt: Number(scoped.last),
+      unreadCount: Number(scoped.unread),
+      totalCount: Number(scoped.total),
+    };
   }
 
   return rows[0];
