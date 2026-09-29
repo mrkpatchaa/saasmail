@@ -220,63 +220,157 @@ function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
   return { fields, repeated, bodyStart: end };
 }
 
-/** "type/subtype; a=b; c="d"" -> the lowercased value and its parameters. */
-export function parseHeaderValue(raw: string): {
+/** RFC 2045 token characters: printable US-ASCII except SPACE and tspecials. */
+const TOKEN_CHAR = /[!#$%&'*+\-.0-9A-Z^_`a-z{|}~]/;
+
+/** The one RFC 2231 parameter each header may carry: a non-ASCII file name. */
+const EXTENDED_PARAMETER: Record<MimeHeaderKind, string> = {
+  "content-type": "name*",
+  "content-disposition": "filename*",
+};
+
+export type MimeHeaderKind = "content-type" | "content-disposition";
+
+export type ParsedHeaderValue = {
+  /** Lowercased `type/subtype` (Content-Type) or disposition type. */
   value: string;
+  /** Lowercased attribute -> value, quoted strings unescaped. */
   params: Map<string, string>;
-  /** Parameter names given more than once (`x` and `x*` count as one). */
-  repeated: string[];
-} {
+  /** Why the value doesn't fit the grammar, or null. */
+  error: string | null;
+};
+
+/**
+ * A Content-Type or Content-Disposition value, in one strict grammar (spec §3):
+ *
+ *   value     = head *( OWS ";" OWS parameter ) OWS [";" OWS]
+ *   head      = token "/" token (Content-Type) / token (Content-Disposition)
+ *   parameter = token "=" ( token / quoted-string )
+ *
+ * after RFC 822 comments are stripped. postal-mime's parameter parser isn't
+ * exported, and it reads a malformed value differently from any other parser
+ * (which of two boundaries wins, what `boundary*0` continues, where a stray
+ * word ends), so anything outside the grammar is refused rather than
+ * interpreted: a duplicate attribute (`x` and `x*` are one), a segment without
+ * `=`, a missing value, an unterminated quote or text after one, and every
+ * RFC 2231 form except `name*` (Content-Type) or `filename*`
+ * (Content-Disposition).
+ */
+export function parseHeaderValue(
+  raw: string,
+  kind: MimeHeaderKind = "content-type",
+): ParsedHeaderValue {
+  const label =
+    kind === "content-type" ? "Content-Type" : "Content-Disposition";
+  const params = new Map<string, string>();
+  const fail = (reason: string): ParsedHeaderValue => ({
+    value: "",
+    params: new Map(),
+    error: `A ${label} header ${reason}`,
+  });
   // "multipart/signed(x); …" is multipart/signed (RFC 2045 §5.1 allows comments).
   const value = stripComments(raw);
-  const params = new Map<string, string>();
-  const seen = new Set<string>();
-  const repeated: string[] = [];
-  const semicolon = value.indexOf(";");
-  const head = (semicolon === -1 ? value : value.slice(0, semicolon))
-    .trim()
-    .toLowerCase();
-  let pos = semicolon === -1 ? value.length : semicolon + 1;
-  while (pos < value.length) {
-    const equals = value.indexOf("=", pos);
-    if (equals === -1) break;
-    const name = value.slice(pos, equals).trim().toLowerCase();
-    pos = equals + 1;
-    while (pos < value.length && (value[pos] === " " || value[pos] === "\t")) {
-      pos += 1;
+  const isSpace = (char: string | undefined) => char === " " || char === "\t";
+  let pos = 0;
+  const skipSpace = () => {
+    while (isSpace(value[pos])) pos += 1;
+  };
+  const readToken = (): string => {
+    const start = pos;
+    while (pos < value.length && TOKEN_CHAR.test(value[pos])) pos += 1;
+    return value.slice(start, pos);
+  };
+
+  skipSpace();
+  let head = readToken();
+  if (kind === "content-type") {
+    if (head.length === 0 || value[pos] !== "/") {
+      return fail("has no type/subtype");
     }
+    pos += 1;
+    const subtype = readToken();
+    if (subtype.length === 0) return fail("has no subtype");
+    head = `${head}/${subtype}`;
+  } else if (head.length === 0) {
+    return fail("has no disposition type");
+  }
+  skipSpace();
+  if (pos < value.length && value[pos] !== ";") {
+    return fail(`has something other than a parameter after ${head}`);
+  }
+
+  const seen = new Set<string>();
+  while (pos < value.length) {
+    // At a ";".
+    pos += 1;
+    skipSpace();
+    if (pos >= value.length) break; // One trailing ";" is allowed.
+    const attribute = readToken().toLowerCase();
+    if (attribute.length === 0) return fail("has an empty parameter");
+    if (value[pos] !== "=") {
+      return fail(`has a parameter without a value (${attribute})`);
+    }
+    pos += 1;
     let paramValue = "";
     if (value[pos] === '"') {
       pos += 1;
-      while (pos < value.length && value[pos] !== '"') {
-        if (value[pos] === "\\" && pos + 1 < value.length) pos += 1;
-        paramValue += value[pos];
+      let closed = false;
+      while (pos < value.length) {
+        const char = value[pos];
+        if (char === "\\" && pos + 1 < value.length) {
+          paramValue += value[pos + 1];
+          pos += 2;
+          continue;
+        }
+        if (char === '"') {
+          closed = true;
+          pos += 1;
+          break;
+        }
+        paramValue += char;
         pos += 1;
       }
-      const after = value.indexOf(";", pos);
-      pos = after === -1 ? value.length : after + 1;
+      if (!closed) return fail(`has an unterminated quoted ${attribute}`);
     } else {
-      const after = value.indexOf(";", pos);
-      paramValue = value.slice(pos, after === -1 ? value.length : after).trim();
-      pos = after === -1 ? value.length : after + 1;
+      paramValue = readToken();
+      if (paramValue.length === 0) return fail(`has no value for ${attribute}`);
     }
-    const base = name.replace(/\*$/, "");
-    if (base.length > 0 && seen.has(base)) repeated.push(base);
+    skipSpace();
+    if (pos < value.length && value[pos] !== ";") {
+      return fail(`has something after the value of ${attribute}`);
+    }
+    if (
+      (attribute.endsWith("*") || /\*\d/.test(attribute)) &&
+      attribute !== EXTENDED_PARAMETER[kind]
+    ) {
+      return fail(`uses an RFC 2231 parameter (${attribute})`);
+    }
+    const base = attribute.replace(/\*$/, "");
+    if (seen.has(base)) return fail(`repeats its ${base} parameter`);
     seen.add(base);
-    if (name.length > 0 && !params.has(name)) params.set(name, paramValue);
+    params.set(attribute, paramValue);
   }
-  return { value: head, params, repeated };
+  return { value: head.toLowerCase(), params, error: null };
 }
 
-/** The body ranges of a multipart's parts, between its boundary lines. */
-function splitMultipart(
+/**
+ * Part ranges yielded by `multipartParts` since the counter was last reset.
+ * Tests read it to check the split stops at the part limit.
+ */
+export const mimeSplitCounter = { ranges: 0 };
+
+/**
+ * The body ranges of a multipart's parts, between its boundary lines, one at a
+ * time: the caller stops pulling at the part limit, so a message of many tiny
+ * parts never has more than that many ranges built.
+ */
+function* multipartParts(
   text: string,
   bodyStart: number,
   end: number,
   boundary: string,
-): [number, number][] {
+): Generator<[number, number]> {
   const delimiter = `--${boundary}`;
-  const parts: [number, number][] = [];
   let partStart = -1;
   let pos = bodyStart;
   while (pos < end) {
@@ -292,16 +386,19 @@ function splitMultipart(
           let partEnd = pos;
           if (partEnd > partStart && text[partEnd - 1] === "\n") partEnd -= 1;
           if (partEnd > partStart && text[partEnd - 1] === "\r") partEnd -= 1;
-          parts.push([partStart, Math.max(partStart, partEnd)]);
+          mimeSplitCounter.ranges += 1;
+          yield [partStart, Math.max(partStart, partEnd)];
         }
-        if (closing) return parts;
+        if (closing) return;
         partStart = Math.min(newline + 1, end);
       }
     }
     pos = newline + 1;
   }
-  if (partStart !== -1) parts.push([partStart, end]);
-  return parts;
+  if (partStart !== -1) {
+    mimeSplitCounter.ranges += 1;
+    yield [partStart, end];
+  }
 }
 
 function isBodyText(leaf: ScannedLeaf, type: string): boolean {
@@ -348,22 +445,18 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
         return `A MIME part has more than one ${HEADER_LABELS[name]} header`;
       }
     }
+    // Both headers must fit one strict grammar (see `parseHeaderValue`), so
+    // this scan and postal-mime can't read a part differently.
     const contentType = headers.fields.get("content-type");
-    const parsedType = contentType ? parseHeaderValue(contentType) : null;
+    const parsedType =
+      contentType === undefined ? null : parseHeaderValue(contentType);
+    if (parsedType?.error) return parsedType.error;
     const disposition = headers.fields.get("content-disposition");
-    const parsedDisposition = disposition
-      ? parseHeaderValue(disposition)
-      : null;
-    // postal-mime keeps the last of a repeated parameter and this parser the
-    // first; a message that depends on which (two boundaries, say) is refused.
-    for (const [label, parsed] of [
-      ["Content-Type", parsedType],
-      ["Content-Disposition", parsedDisposition],
-    ] as const) {
-      if (parsed && parsed.repeated.length > 0) {
-        return `A ${label} header repeats its ${parsed.repeated[0]} parameter`;
-      }
-    }
+    const parsedDisposition =
+      disposition === undefined
+        ? null
+        : parseHeaderValue(disposition, "content-disposition");
+    if (parsedDisposition?.error) return parsedDisposition.error;
     const rawEncoding = headers.fields.get("content-transfer-encoding");
     const encoding = rawEncoding ? transferEncodingToken(rawEncoding) : null;
     if (encoding !== null && !TRANSFER_ENCODINGS.has(encoding)) {
@@ -380,8 +473,14 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
     if (type.startsWith("multipart/")) {
       const boundary = parsedType?.params.get("boundary");
       if (!boundary) return `A ${type} part has no boundary`;
-      const children = splitMultipart(text, headers.bodyStart, end, boundary);
-      for (const [childStart, childEnd] of children) {
+      // Lazily: `walk` counts each child as it goes and fails past the
+      // limit, so the split never runs ahead of it.
+      for (const [childStart, childEnd] of multipartParts(
+        text,
+        headers.bodyStart,
+        end,
+        boundary,
+      )) {
         const error = walk(
           childStart,
           childEnd,
