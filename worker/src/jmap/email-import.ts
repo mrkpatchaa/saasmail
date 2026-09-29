@@ -474,6 +474,15 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
     htmlLeaf: null,
     attachmentLeaves: [],
   };
+  // RFC 5322 forbids a CR that doesn't start a CRLF. postal-mime and this
+  // scanner end lines differently around one (a delimiter line ending
+  // `\r\r\n` is a boundary to postal-mime only), so refuse it outright.
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x0d && bytes[index + 1] !== 0x0a) {
+      scan.error = "The message contains a CR that is not part of a CRLF";
+      return scan;
+    }
+  }
   let parts = 0;
 
   const walk = (

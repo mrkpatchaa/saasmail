@@ -371,6 +371,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
         WHERE d.user_id = ${draftsUserId}
           AND d.context_key LIKE 'reply:%'
           AND e.conversation_id IS NOT NULL
+          ${inboxScopeSql(allowed, sql`e.recipient`)}
       )`,
     );
   }
@@ -867,9 +868,9 @@ peopleRouter.openapi(bulkMarkReadRoute, async (c) => {
   // inboxes; explicit `recipient` narrows further).
   const recipientScope = (() => {
     if (recipient) {
-      if (!isInboxAllowed(allowed, recipient)) {
-        return null; // not permitted
-      }
+      // A recipient the caller can't access matches nothing (never "no
+      // scope", which would reach every inbox).
+      if (!isInboxAllowed(allowed, recipient)) return [];
       return [recipient];
     }
     if (allowed.isAdmin) return null; // no scope needed

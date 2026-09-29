@@ -3,6 +3,7 @@
 // touch only it; an admin still sees and changes both.
 import { eq, inArray } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { drafts } from "../db/drafts.schema";
 import { emails } from "../db/emails.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { people } from "../db/people.schema";
@@ -13,6 +14,7 @@ import {
   createTestAttachment,
   createTestEmail,
   createTestPerson,
+  createTestSentEmail,
   createTestUser,
   getDb,
 } from "./helpers";
@@ -248,6 +250,109 @@ describe("rows shared between a granted and a private inbox", () => {
           "p-secret",
         ]);
       }
+    });
+  });
+
+  describe("people: the last review's findings", () => {
+    it("POST /api/people/mark-read with a private recipient changes nothing", async () => {
+      const { member, admin } = await users();
+      await email("m-granted", GRANTED, T_GRANTED, { personId: "p-both" });
+      await email("m-private", PRIVATE, T_PRIVATE, { personId: "p-both" });
+      const denied = await json("/api/people/mark-read", member, {
+        method: "POST",
+        body: JSON.stringify({ personIds: ["p-both"], recipient: PRIVATE }),
+      });
+      expect(denied).toEqual({ success: true, affected: 0 });
+      expect(await unread(["m-granted", "m-private"])).toEqual({
+        "m-granted": true,
+        "m-private": true,
+      });
+      // Without a recipient a member still reaches only the granted inbox.
+      await json("/api/people/mark-read", member, {
+        method: "POST",
+        body: JSON.stringify({ personIds: ["p-both"] }),
+      });
+      expect(await unread(["m-granted", "m-private"])).toEqual({
+        "m-granted": false,
+        "m-private": true,
+      });
+      await json("/api/people/mark-read", admin, {
+        method: "POST",
+        body: JSON.stringify({ personIds: ["p-both"], recipient: PRIVATE }),
+      });
+      expect(await unread(["m-private"])).toEqual({ "m-private": false });
+    });
+
+    it("GET /api/people/grouped?drafts=1: a draft on a private row doesn't surface a shared conversation", async () => {
+      const { member } = await users();
+      await email("d-granted", GRANTED, T_GRANTED, {
+        personId: "p-both",
+        conversationId: "conv-d",
+      });
+      await email("d-private", PRIVATE, T_PRIVATE, {
+        personId: "p-both",
+        conversationId: "conv-d",
+      });
+      // The member's reply draft on the private row (e.g. written before the
+      // grant was revoked).
+      await getDb().insert(drafts).values({
+        id: "draft-private",
+        userId: "scope-member",
+        contextKey: "reply:d-private",
+        replyToEmailId: "d-private",
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      const body = await json("/api/people/grouped?drafts=1", member);
+      expect(body.data).toEqual([]);
+    });
+
+    it("GET /api/people/{id}: a member gets an explicit projection with timestamps from visible mail only", async () => {
+      const { member } = await users();
+      await email("x-granted", GRANTED, T_GRANTED, { personId: "p-both" });
+      await email("x-private", PRIVATE, T_PRIVATE, { personId: "p-both" });
+      await getDb()
+        .update(people)
+        .set({ createdAt: 1, updatedAt: T_PRIVATE + 99 })
+        .where(eq(people.id, "p-both"));
+      const body = await json("/api/people/p-both", member);
+      expect(body).toEqual({
+        id: "p-both",
+        email: "both@example.com",
+        name: expect.anything(),
+        lastEmailAt: T_GRANTED,
+        unreadCount: 1,
+        totalCount: 1,
+        createdAt: T_GRANTED,
+        updatedAt: T_GRANTED,
+      });
+    });
+
+    it("GET /api/people/{id}: a contact the member only sent mail to is found, as in the grouped list", async () => {
+      const { member } = await users();
+      await createTestPerson({ id: "p-sent", email: "sent-only@example.com" });
+      await createTestSentEmail({
+        id: "s-granted",
+        personId: "p-sent",
+        fromAddress: GRANTED,
+        toAddress: "sent-only@example.com",
+        sentAt: T_GRANTED,
+      });
+      await createTestSentEmail({
+        id: "s-private",
+        personId: "p-sent",
+        fromAddress: PRIVATE,
+        toAddress: "sent-only@example.com",
+        sentAt: T_PRIVATE,
+      });
+      const grouped = await json("/api/people/grouped", member);
+      expect(grouped.data.some((row: any) => row.id === "p-sent")).toBe(true);
+      expect(await json("/api/people/p-sent", member)).toMatchObject({
+        id: "p-sent",
+        totalCount: 1,
+        unreadCount: 0,
+        lastEmailAt: T_GRANTED,
+      });
     });
   });
 });

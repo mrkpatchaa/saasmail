@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { people } from "../../db/people.schema";
 import { emails } from "../../db/emails.schema";
+import { sentEmails } from "../../db/sent-emails.schema";
 import { escapeLike } from "../helpers";
 import {
   inboxScopeSql,
@@ -158,31 +159,43 @@ export async function getPersonScoped(
     if (allowed.inboxes.length === 0) {
       return null;
     }
-    // The row's counters span every inbox; a member gets them recomputed
-    // over the mail in their own inboxes, so a sender who also wrote to a
-    // private inbox shows none of that mail's counts or recency.
-    const [scoped] = await db
-      .select({
-        total: sql<number>`COUNT(*)`,
-        unread: sql<number>`COALESCE(SUM(CASE WHEN ${emails.isRead} = 0 THEN 1 ELSE 0 END), 0)`,
-        last: sql<number | null>`MAX(${emails.receivedAt})`,
-      })
-      .from(emails)
-      .where(
-        and(
-          eq(emails.personId, id),
-          sql`${emails.recipient} IN ${jsonList(allowed.inboxes)}`,
-        ),
-      );
+    // The row's counters and timestamps span every inbox; a member gets them
+    // recomputed over the mail in their own inboxes (received and sent, as
+    // the grouped list counts them), so a sender who also wrote to a private
+    // inbox shows none of that mail's counts or recency.
+    const inboxes = jsonList(allowed.inboxes);
+    const [scoped] = await db.all<{
+      total: number;
+      unread: number;
+      first: number | null;
+      last: number | null;
+    }>(sql`
+      SELECT COUNT(*) AS total,
+             COALESCE(SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END), 0) AS unread,
+             MIN(at) AS first,
+             MAX(at) AS last
+        FROM (
+          SELECT received_at AS at, is_read FROM ${emails}
+           WHERE person_id = ${id} AND recipient IN ${inboxes}
+          UNION ALL
+          SELECT sent_at AS at, 1 AS is_read FROM ${sentEmails}
+           WHERE person_id = ${id} AND from_address IN ${inboxes}
+        )
+    `);
     if (!scoped || Number(scoped.total) === 0) {
       return null;
     }
+    const person = rows[0];
     return {
-      ...rows[0],
+      id: person.id,
+      email: person.email,
+      name: person.name,
       lastEmailAt: Number(scoped.last),
       unreadCount: Number(scoped.unread),
       totalCount: Number(scoped.total),
-    };
+      createdAt: Number(scoped.first),
+      updatedAt: Number(scoped.last),
+    } as PersonRow;
   }
 
   return rows[0];

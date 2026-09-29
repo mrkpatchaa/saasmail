@@ -141,6 +141,35 @@ describe("Email/import: the scanner and postal-mime read each leaf's headers ali
     '\t: multipart/signed; protocol="application/pgp-signature"; boundary=zz',
   ];
 
+  it("refuses a signed part hidden behind a delimiter line ending CR CR LF", async () => {
+    const { authorId } = await seedAccount();
+    // postal-mime reads `--m\r\r\n` as a delimiter; a line-based scan
+    // doesn't. Any CR outside a CRLF is refused before either reads it.
+    const raw =
+      lines(
+        ...headers(),
+        'Content-Type: multipart/mixed; boundary="m"',
+        "",
+        "",
+      ) +
+      "--m\r\r\n" +
+      lines(
+        'Content-Type: multipart/signed; protocol="application/pgp-signature"; boundary=zz',
+        ...SIGNED_BODY,
+        "--m--",
+        "",
+      );
+    const blobId = await uploadRaw(authorId, raw);
+    const before = await stored();
+    const result = await importBlob(authorId, blobId);
+    expect(result.created).toBeNull();
+    expect(result.notCreated?.m1?.type).toBe("invalidEmail");
+    expect(await stored()).toEqual(before);
+    expect(
+      scanMimeStructure(new TextEncoder().encode("A: b\rc\r\n\r\nx")).error,
+    ).toMatch(/CR/);
+  });
+
   it.each([
     ["a Content-Type name ending in a UTF-8 no-break space", nbspName],
     ["a Content-Type name folded before its colon", foldedName],
