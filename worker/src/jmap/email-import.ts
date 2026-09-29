@@ -69,7 +69,12 @@ type ScannedHeaders = {
   /** Lowercased names that appear more than once. */
   repeated: Set<string>;
   bodyStart: number;
+  /** Why the header block isn't strict header lines, or null. */
+  error: string | null;
 };
+
+/** RFC 5322 field-name: printable US-ASCII except ":" and SP. */
+const FIELD_NAME = /^[\x21-\x39\x3b-\x7e]+$/;
 
 /** One leaf of the raw tree, as offsets into the message's bytes. */
 export type ScannedLeaf = {
@@ -182,6 +187,15 @@ export function stripComments(value: string): string {
   return out;
 }
 
+/**
+ * One entity's header block, in a strict line grammar: every line is
+ * `field-name ":" value` (no whitespace or non-ASCII byte before the colon)
+ * or a continuation (starting with SP or HTAB) of the line before it. Any
+ * other line refuses the message: postal-mime reads header lines far more
+ * leniently (a name folded before its colon, a name ending in a UTF-8
+ * no-break space), and a field this scan skipped could be a Content-Type
+ * postal-mime obeys. Values may hold any bytes (8-bit UTF-8, RFC 2047).
+ */
 function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
   const fields = new Map<string, string>();
   const repeated = new Set<string>();
@@ -200,24 +214,31 @@ function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
     const next = Math.min(newline + 1, end);
     if (line.length === 0) {
       commit();
-      return { fields, repeated, bodyStart: next };
+      return { fields, repeated, bodyStart: next, error: null };
     }
-    if ((line[0] === " " || line[0] === "\t") && current) {
+    const fail = (reason: string): ScannedHeaders => ({
+      fields,
+      repeated,
+      bodyStart: next,
+      error: `A MIME header block has ${reason}`,
+    });
+    if (line[0] === " " || line[0] === "\t") {
+      if (!current) return fail("a continuation line with no header before it");
       (current as { value: string }).value += ` ${line.trim()}`;
     } else {
       commit();
       const colon = line.indexOf(":");
-      if (colon > 0) {
-        current = {
-          name: line.slice(0, colon).trim().toLowerCase(),
-          value: line.slice(colon + 1),
-        };
+      if (colon === -1) return fail("a line that is not a header");
+      const name = line.slice(0, colon);
+      if (!FIELD_NAME.test(name)) {
+        return fail("a header name that is not printable US-ASCII");
       }
+      current = { name: name.toLowerCase(), value: line.slice(colon + 1) };
     }
     pos = next;
   }
   commit();
-  return { fields, repeated, bodyStart: end };
+  return { fields, repeated, bodyStart: end, error: null };
 }
 
 /** RFC 2045 token characters: printable US-ASCII except SPACE and tspecials. */
@@ -436,6 +457,7 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
       return `The message's MIME parts nest deeper than ${MAX_IMPORT_DEPTH} levels`;
     }
     const headers = scanHeaders(text, start, end);
+    if (headers.error) return headers.error;
     if (depth === 1) scan.headerEnd = headers.bodyStart;
     // RFC 2045 allows one of each. This scanner and postal-mime would pick
     // different copies, so the structure checked here could differ from the
