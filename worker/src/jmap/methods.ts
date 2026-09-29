@@ -9,6 +9,7 @@ import {
 } from "../lib/messages/query";
 import {
   CORE_CAPABILITY,
+  EVENT_SOURCE_PATH,
   MAIL_CAPABILITY,
   MAX_CALLS_IN_REQUEST,
   MAX_DELAYED_SEND,
@@ -238,7 +239,7 @@ export async function makeSession(
     apiUrl: `${origin}/jmap/api`,
     downloadUrl: `${origin}/jmap/download/{accountId}/{blobId}/{name}?type={type}`,
     uploadUrl: `${origin}/jmap/upload/{accountId}/`,
-    eventSourceUrl: "",
+    eventSourceUrl: `${origin}${EVENT_SOURCE_PATH}?types={types}&closeafter={closeafter}&ping={ping}`,
     state: await sessionState(db, allowed, user, origin),
   };
 }
