@@ -242,8 +242,9 @@ describe("Email/import raw MIME scan: hostile structure", () => {
     }
   });
 
-  it("splits on a very long boundary and ignores boundary look-alikes inside a body", () => {
-    const boundary = "b".repeat(500);
+  it("splits on the longest boundary RFC 2046 allows and ignores boundary look-alikes inside a body", () => {
+    // 70 characters is the RFC 2046 maximum; a longer one is refused.
+    const boundary = "b".repeat(70);
     const raw = lines(
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
       "",

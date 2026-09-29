@@ -541,17 +541,18 @@ describe("Email/import: strict Content-Type grammar", () => {
 
   it("imports a boundary whose quoted value uses a backslash escape", async () => {
     const { authorId } = await seedAccount();
+    // "\=" decodes to "=", an RFC 2046 bchar; a decoded '"' is not one.
     const created = await expectImported(
       authorId,
       lines(
         ...headers(),
-        'Content-Type: multipart/mixed; boundary="a\\"b"',
+        'Content-Type: multipart/mixed; boundary="a\\=b"',
         "",
-        '--a"b',
+        "--a=b",
         "Content-Type: text/plain; charset=utf-8",
         "",
         "Escaped boundary.",
-        '--a"b--',
+        "--a=b--",
         "",
       ),
     );
@@ -633,5 +634,135 @@ describe("Email/import: lazy multipart split", () => {
       `The message has more than ${MAX_IMPORT_PARTS} MIME parts`,
     );
     expect(mimeSplitCounter.ranges).toBeLessThanOrEqual(MAX_IMPORT_PARTS + 1);
+  });
+});
+
+describe("Email/import: boundaries and 8-bit bytes in structural headers", () => {
+  const NBSP = " ";
+
+  /** A multipart/mixed under `boundaryParam` holding a multipart/signed. */
+  function signedUnder(boundaryParam: string, delimiter: string): string[] {
+    return [
+      `Content-Type: multipart/mixed; boundary=${boundaryParam}`,
+      "",
+      `--${delimiter}`,
+      'Content-Type: multipart/signed; protocol="application/pgp-signature"; boundary="s"',
+      "",
+      "--s",
+      "Content-Type: text/plain",
+      "",
+      "Signed text.",
+      "--s",
+      "Content-Type: application/pgp-signature",
+      "",
+      "-----BEGIN PGP SIGNATURE-----",
+      "--s--",
+      `--${delimiter}--`,
+    ];
+  }
+
+  it.each([
+    ["top level", false],
+    ["nested in a multipart/mixed", true],
+  ])(
+    "refuses a quoted boundary holding a no-break space (%s)",
+    async (_label, nested) => {
+      const { authorId } = await seedAccount();
+      const inner = signedUnder(`"a${NBSP}b"`, `a${NBSP}b`);
+      const raw = nested
+        ? lines(
+            ...headers(),
+            'Content-Type: multipart/mixed; boundary="o"',
+            "",
+            "--o",
+            ...inner,
+            "--o--",
+            "",
+          )
+        : lines(...headers(), ...inner, "");
+      const error = await expectRefusal(
+        authorId,
+        importOf(await uploadRaw(authorId, raw)),
+        { type: "invalidEmail" },
+      );
+      expect(error.description).toContain("boundary");
+    },
+  );
+
+  it.each([
+    ["71 characters", `"${"b".repeat(71)}"`],
+    ["a double quote", '"a\\"b"'],
+    ["a trailing space", '"ab "'],
+    ["an empty value", '""'],
+    ["a non-ASCII byte", `"a${NBSP}b"`],
+  ])("refuses a boundary with %s", async (_label, boundaryParam) => {
+    const { authorId } = await seedAccount();
+    const raw = lines(
+      ...headers(),
+      `Content-Type: multipart/mixed; boundary=${boundaryParam}`,
+      "",
+      "--x",
+      "Content-Type: text/plain",
+      "",
+      "Body.",
+      "--x--",
+      "",
+    );
+    const error = await expectRefusal(
+      authorId,
+      importOf(await uploadRaw(authorId, raw)),
+      { type: "invalidEmail" },
+    );
+    expect(error.description).toContain("boundary");
+  });
+
+  it.each([
+    ["a non-ASCII charset", `Content-Type: text/plain; charset="utf${NBSP}8"`],
+    [
+      "a non-ASCII byte in a comment",
+      `Content-Type: text/plain (${NBSP}); charset=utf-8`,
+    ],
+    [
+      "a non-ASCII Content-Transfer-Encoding",
+      `Content-Transfer-Encoding: base64${NBSP}`,
+    ],
+  ])("refuses %s", async (_label, header) => {
+    const { authorId } = await seedAccount();
+    const error = await expectRefusal(
+      authorId,
+      importOf(await uploadRaw(authorId, topLevel([header]))),
+      { type: "invalidEmail" },
+    );
+    expect(error.description).toMatch(/non-ASCII/);
+  });
+
+  it("still imports an 8-bit file name and an 8-bit Subject", async () => {
+    const { authorId } = await seedAccount();
+    const created = await expectImported(
+      authorId,
+      lines(
+        `From: Hello Team <${INBOX}>`,
+        "To: Alice Example <alice@example.com>",
+        "Subject: Café résumé",
+        "Date: Tue, 29 Sep 2026 10:00:00 +0000",
+        "Message-ID: <grammar-8bit@saasmail.test>",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="m"',
+        "",
+        "--m",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Body.",
+        "--m",
+        'Content-Type: application/pdf; name="résumé.pdf"',
+        'Content-Disposition: attachment; filename="résumé.pdf"',
+        "",
+        "%PDF-1.4",
+        "--m--",
+        "",
+      ),
+    );
+    const email = await getEmail(authorId, created.id);
+    expect(email.attachments).toHaveLength(1);
   });
 });

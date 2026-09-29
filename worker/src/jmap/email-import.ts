@@ -252,6 +252,20 @@ const EXTENDED_PARAMETER: Record<MimeHeaderKind, string> = {
 
 export type MimeHeaderKind = "content-type" | "content-disposition";
 
+/** RFC 2046 §5.1.1 boundary: 1–70 bchars, the last not a space. */
+const BOUNDARY = /^[0-9A-Za-z'()+_,\-./:=? ]{0,69}[0-9A-Za-z'()+_,\-./:=?]$/;
+
+/** Any byte outside US-ASCII (the scan reads the message one char per byte). */
+const NON_ASCII = /[^\x00-\x7f]/g;
+
+/**
+ * The only parameters whose (quoted) value may carry raw 8-bit bytes: file
+ * names, which some clients write unencoded. Everywhere else a non-ASCII
+ * byte could be whitespace or a delimiter to postal-mime (it decodes UTF-8
+ * first) and plain data to this scan.
+ */
+const EIGHT_BIT_PARAMETERS = new Set(["name", "filename"]);
+
 export type ParsedHeaderValue = {
   /** Lowercased `type/subtype` (Content-Type) or disposition type. */
   value: string;
@@ -369,7 +383,27 @@ export function parseHeaderValue(
     const base = attribute.replace(/\*$/, "");
     if (seen.has(base)) return fail(`repeats its ${base} parameter`);
     seen.add(base);
+    if (kind === "content-type" && base === "boundary") {
+      if (!BOUNDARY.test(paramValue)) {
+        return fail("has a boundary outside RFC 2046's characters");
+      }
+    }
+    if (/[^\x00-\x7f]/.test(paramValue) && !EIGHT_BIT_PARAMETERS.has(base)) {
+      return fail(`has a non-ASCII ${base}`);
+    }
     params.set(attribute, paramValue);
+  }
+  // Every non-ASCII byte of the raw value must be inside a file name's value:
+  // one anywhere else (a comment, say) is refused.
+  const rawEightBit = (raw.match(NON_ASCII) ?? []).length;
+  let allowedEightBit = 0;
+  for (const [attribute, paramValue] of params) {
+    if (EIGHT_BIT_PARAMETERS.has(attribute.replace(/\*$/, ""))) {
+      allowedEightBit += (paramValue.match(NON_ASCII) ?? []).length;
+    }
+  }
+  if (rawEightBit > allowedEightBit) {
+    return fail("has a non-ASCII byte outside a file name");
   }
   return { value: head.toLowerCase(), params, error: null };
 }
@@ -480,6 +514,9 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
         : parseHeaderValue(disposition, "content-disposition");
     if (parsedDisposition?.error) return parsedDisposition.error;
     const rawEncoding = headers.fields.get("content-transfer-encoding");
+    if (rawEncoding !== undefined && /[^\x00-\x7f]/.test(rawEncoding)) {
+      return "A Content-Transfer-Encoding header has a non-ASCII byte";
+    }
     const encoding = rawEncoding ? transferEncodingToken(rawEncoding) : null;
     if (encoding !== null && !TRANSFER_ENCODINGS.has(encoding)) {
       return `Unsupported Content-Transfer-Encoding: ${rawEncoding}`;
