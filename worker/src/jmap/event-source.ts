@@ -1,4 +1,5 @@
 import { createDb } from "../db/client";
+import type { AllowedInboxes } from "../lib/inbox-permissions";
 import { authenticateJmap, problem } from "./auth";
 import {
   PUSH_KEEPALIVE_SECONDS,
@@ -116,6 +117,11 @@ export type PushLoop = {
   connectState: string;
   /** Queries one `checkSeq` call costs. */
   seqQueryCount: number;
+  /**
+   * Queries one `recheck` is expected to cost (default 0). The loop raises it
+   * to the most any re-check actually used.
+   */
+  recheckQueryCount?: number;
   sleep(ms: number): Promise<void>;
   /** Milliseconds. */
   now(): number;
@@ -146,6 +152,7 @@ export async function runPushLoop(loop: PushLoop): Promise<void> {
   let lastPing = start;
   let lastState = loop.connectState;
   const wantsState = params.types.length > 0;
+  let recheckCost = loop.recheckQueryCount ?? 0;
 
   const send = (chunk: string): boolean => {
     if (loop.cancelled() || !loop.write(chunk)) return false;
@@ -155,7 +162,10 @@ export async function runPushLoop(loop: PushLoop): Promise<void> {
   const sendState = async (state: string): Promise<boolean> => {
     // Access is re-checked before every state event: a revoked key or a
     // removed inbox must not learn that anything changed.
-    if (!(await loop.recheck()) || loop.cancelled()) return false;
+    const before = loop.queriesUsed();
+    const allowed = await loop.recheck();
+    recheckCost = Math.max(recheckCost, loop.queriesUsed() - before);
+    if (!allowed || loop.cancelled()) return false;
     return send(formatStateEvent(loop.accountId, params.types, state));
   };
 
@@ -172,7 +182,12 @@ export async function runPushLoop(loop: PushLoop): Promise<void> {
       if (now - start >= PUSH_LIFETIME_SECONDS * 1000) return;
 
       if (wantsState) {
-        if (loop.queriesUsed() + loop.seqQueryCount > PUSH_QUERY_BUDGET) {
+        // A tick may cost the seq check and, when the state moved, a re-check:
+        // start one only if both fit the budget.
+        if (
+          loop.queriesUsed() + loop.seqQueryCount + recheckCost >
+          PUSH_QUERY_BUDGET
+        ) {
           return;
         }
         const seq = await loop.checkSeq();
@@ -222,6 +237,15 @@ function countingD1(db: D1Database, count: () => void): D1Database {
   });
 }
 
+/** The exact permission scope: admin, or a member of exactly these inboxes. */
+function scopeKey(allowed: AllowedInboxes): string {
+  if (!("inboxes" in allowed)) return allowed.isAdmin ? "admin" : "none";
+  const inboxes = [
+    ...new Set(allowed.inboxes.map((inbox) => inbox.toLowerCase())),
+  ].sort();
+  return `member:${inboxes.join(",")}`;
+}
+
 /**
  * `GET /jmap/eventsource/` (RFC 8620 §7.3): a `text/event-stream` that reports
  * state changes until it closes after `PUSH_LIFETIME_SECONDS` or
@@ -249,6 +273,7 @@ export async function openEventSource(
 
   const auth = await authenticateJmap(request, countedEnv, db);
   if (auth instanceof Response) return auth;
+  const authQueries = queries;
 
   const parsed = parseEventSourceParams(new URL(request.url));
   if (parsed.error !== null) {
@@ -258,12 +283,19 @@ export async function openEventSource(
 
   const userId: string = auth.user.id;
   const allowed = auth.allowed;
+  const seqQueryCount = currentJmapSeqQueries(allowed, userId).length;
+  const beforeState = queries;
   const connect = await currentJmapState(
     db,
     allowed,
     userId,
     Math.floor(now() / 1000),
   );
+  // A re-check is the authentication again plus the fingerprint (what the
+  // connect state cost beyond its seq queries).
+  const recheckQueryCount =
+    authQueries + (queries - beforeState - seqQueryCount);
+  const scope = scopeKey(allowed);
   // Only the headers carry the credential; keep them for the re-checks.
   const credential = new Request(request.url, { headers: request.headers });
 
@@ -306,13 +338,17 @@ export async function openEventSource(
     params,
     fingerprint: connect.parts.fp,
     connectState: connect.state,
-    seqQueryCount: currentJmapSeqQueries(allowed, userId).length,
+    seqQueryCount,
+    recheckQueryCount,
     sleep: options.sleep ?? timerSleep,
     now,
     checkSeq: () => currentJmapSeq(db, allowed, userId),
     recheck: async () => {
       const again = await authenticateJmap(credential, countedEnv, db);
       if (again instanceof Response || again.user.id !== userId) return false;
+      // The seq checks run with the connect-time scope: an admin demoted to a
+      // member (even of the same inboxes) or any grant change ends the stream.
+      if (scopeKey(again.allowed) !== scope) return false;
       return (
         (await stateFingerprint(db, again.allowed, userId)) === connect.parts.fp
       );

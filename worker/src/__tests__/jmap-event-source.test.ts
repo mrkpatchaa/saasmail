@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { apiKeys } from "../db/api-keys.schema";
+import { users } from "../db/auth.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
@@ -374,6 +375,32 @@ describe("JMAP EventSource push", () => {
     expect(stream.stateEvents()).toHaveLength(1);
   });
 
+  it("closes without the state event once an admin is demoted to a member of the same inboxes", async () => {
+    const { userId, apiKey } = await createTestUser({ id: "push-demoted" });
+    await addIdentity(MINE);
+    const stream = await openStream(apiKey, "?types=Email&ping=0");
+    await stream.idle();
+    expect(stream.stateEvents()).toHaveLength(1);
+
+    // Same inbox set, so the same state fingerprint: only the role changed.
+    await getDb()
+      .update(users)
+      .set({ role: "member" })
+      .where(eq(users.id, userId));
+    await getDb()
+      .insert(inboxPermissions)
+      .values({
+        userId,
+        email: MINE,
+        createdAt: Math.floor(Date.now() / 1000),
+        createdBy: null,
+      });
+    await newEmail();
+    await stream.tick();
+    expect(stream.closed()).toBe(true);
+    expect(stream.stateEvents()).toHaveLength(1);
+  });
+
   it("answers 401 without credentials and 400 for bad closeafter or ping", async () => {
     const unauthorized = await authFetch(
       "/jmap/eventsource/?types=*&closeafter=no&ping=0",
@@ -501,6 +528,34 @@ describe("EventSource parameters and loop", () => {
     await runPushLoop(fake.loop);
     expect(checks).toBe(5);
     expect(used).toBe(40);
+    expect(fake.elapsed()).toBe(60_000);
+  });
+
+  it("reserves the re-check with the seq check: a change on every tick never takes it past 40", async () => {
+    let used = 10;
+    let seq = 0;
+    let peak = 0;
+    const fake = fakeLoop({
+      seqQueryCount: 1,
+      // Unknown up front: the loop learns it from the initial event's re-check.
+      recheckQueryCount: 0,
+      queriesUsed: () => used,
+      checkSeq: async () => {
+        used += 1;
+        peak = Math.max(peak, used);
+        seq += 1;
+        return seq;
+      },
+      recheck: async () => {
+        used += 4;
+        peak = Math.max(peak, used);
+        return true;
+      },
+    });
+    await runPushLoop(fake.loop);
+    expect(peak).toBeLessThanOrEqual(40);
+    // 10 at connect + 4 for the initial event, then 5 a tick: 5 ticks fit.
+    expect(used).toBe(39);
     expect(fake.elapsed()).toBe(60_000);
   });
 

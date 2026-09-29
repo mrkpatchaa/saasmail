@@ -8,7 +8,11 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { passkeys, sessions } from "../db/auth.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
-import { CORE_CAPABILITY, MAIL_CAPABILITY } from "../jmap/constants";
+import {
+  CORE_CAPABILITY,
+  MAIL_CAPABILITY,
+  PUSH_QUERY_BUDGET,
+} from "../jmap/constants";
 import {
   KEEPALIVE_COMMENT,
   RETRY_PREAMBLE,
@@ -30,8 +34,6 @@ import {
 import { acct } from "./jmap-ids";
 
 const MINE = "mine@saasmail.test";
-/** The Workers free plan's per-invocation D1 query limit. */
-const FREE_PLAN_QUERY_LIMIT = 50;
 
 // One hour into the current UTC day, so no state crosses a day bucket.
 const START_MS =
@@ -367,7 +369,7 @@ describe("EventSource push: disconnects, races and the query budget", () => {
     expect(events.filter((e) => e.comment === "keepalive")).toHaveLength(9);
   });
 
-  it("never reaches 50 D1 queries with a change on every tick: admin API key", async () => {
+  it("stays within its 40-query budget with a change on every tick: admin API key", async () => {
     const { apiKey } = await createTestUser({ id: "edge-budget-admin" });
     await addIdentity(MINE);
     await addIdentity("second@saasmail.test");
@@ -379,7 +381,7 @@ describe("EventSource push: disconnects, races and the query budget", () => {
       { ...env, DB: counted.db } as unknown as CloudflareBindings,
       MINE,
     );
-    expect(counted.count()).toBeLessThan(FREE_PLAN_QUERY_LIMIT);
+    expect(counted.count()).toBeLessThanOrEqual(PUSH_QUERY_BUDGET);
     // The budget, not the lifetime, closed it.
     expect(elapsedMs).toBeLessThan(5 * 60 * 1000);
     expect(
@@ -387,7 +389,7 @@ describe("EventSource push: disconnects, races and the query budget", () => {
     ).toBeGreaterThan(2);
   });
 
-  it("never reaches 50 D1 queries with a change on every tick: member with 85 inboxes (4 seq queries a tick)", async () => {
+  it("stays within its 40-query budget with a change on every tick: member with 85 inboxes (4 seq queries a tick)", async () => {
     const { userId, apiKey } = await createTestUser({
       id: "edge-budget-member",
       role: "member",
@@ -406,14 +408,14 @@ describe("EventSource push: disconnects, races and the query budget", () => {
       { ...env, DB: counted.db } as unknown as CloudflareBindings,
       inboxes[84],
     );
-    expect(counted.count()).toBeLessThan(FREE_PLAN_QUERY_LIMIT);
+    expect(counted.count()).toBeLessThanOrEqual(PUSH_QUERY_BUDGET);
     expect(elapsedMs).toBeLessThan(5 * 60 * 1000);
     expect(
       parseEvents(text).filter((e) => e.event === "state").length,
     ).toBeGreaterThan(1);
   });
 
-  it("never reaches 50 D1 queries with a change on every tick: member on a session cookie with the passkey gate on", async () => {
+  it("stays within its 40-query budget with a change on every tick: member on a session cookie with the passkey gate on", async () => {
     const { userId } = await createTestUser({
       id: "edge-budget-cookie",
       role: "member",
@@ -465,8 +467,8 @@ describe("EventSource push: disconnects, races and the query budget", () => {
     expect(
       parseEvents(text).filter((e) => e.event === "state").length,
     ).toBeGreaterThan(1);
-    // ... and the most expensive re-check still keeps the stream under 50.
-    expect(counted.count()).toBeLessThan(FREE_PLAN_QUERY_LIMIT);
+    // ... and the most expensive re-check still keeps the stream within 40.
+    expect(counted.count()).toBeLessThanOrEqual(PUSH_QUERY_BUDGET);
     expect(elapsedMs).toBeLessThan(5 * 60 * 1000);
   });
 });
