@@ -3,6 +3,7 @@ import { eq, sql, and, inArray } from "drizzle-orm";
 import { emails } from "../db/emails.schema";
 import { people } from "../db/people.schema";
 import { json200Response } from "../lib/helpers";
+import { jsonList } from "../lib/inbox-permissions";
 import { queryMessages } from "../lib/messages/query";
 import { EmailSchema } from "./emails-router";
 import type { Variables } from "../variables";
@@ -174,8 +175,8 @@ conversationsRouter.openapi(bulkMarkConversationsReadRoute, async (c) => {
       .from(emails)
       .where(
         and(
-          inArray(emails.conversationId, conversationIds),
-          inArray(emails.recipient, allowed.inboxes),
+          sql`${emails.conversationId} IN ${jsonList(conversationIds)}`,
+          sql`${emails.recipient} IN ${jsonList(allowed.inboxes)}`,
         )!,
       )
       .groupBy(emails.conversationId);
@@ -189,7 +190,7 @@ conversationsRouter.openapi(bulkMarkConversationsReadRoute, async (c) => {
 
   // Count + flip unread emails in those conversations.
   const where = and(
-    inArray(emails.conversationId, inScopeIds),
+    sql`${emails.conversationId} IN ${jsonList(inScopeIds)}`,
     eq(emails.isRead, 0),
   )!;
   const countRows = await db

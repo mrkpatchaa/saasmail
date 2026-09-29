@@ -3,7 +3,11 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { people } from "../../db/people.schema";
 import { emails } from "../../db/emails.schema";
 import { escapeLike } from "../helpers";
-import { inboxScopeSql, type AllowedInboxes } from "../inbox-permissions";
+import {
+  inboxScopeSql,
+  jsonList,
+  type AllowedInboxes,
+} from "../inbox-permissions";
 
 export type PersonRow = typeof people.$inferSelect;
 
@@ -44,10 +48,13 @@ export function peopleScopeClause(allowed: AllowedInboxes) {
     return sql`AND s.id IN (SELECT NULL WHERE 0)`;
   // A person is in scope if they emailed one of our allowed inboxes OR if we
   // sent them mail from one of our allowed inboxes.
+  // The grant is bound once, as JSON, and shared by both arms (D1 takes at
+  // most 100 bound parameters per statement).
   return sql`AND s.id IN (
-    SELECT person_id FROM emails WHERE recipient IN ${allowed.inboxes}
+    WITH scope_inboxes(value) AS (SELECT value FROM json_each(${JSON.stringify(allowed.inboxes)}))
+    SELECT person_id FROM emails WHERE recipient IN (SELECT value FROM scope_inboxes)
     UNION
-    SELECT person_id FROM sent_emails WHERE from_address IN ${allowed.inboxes} AND person_id IS NOT NULL
+    SELECT person_id FROM sent_emails WHERE from_address IN (SELECT value FROM scope_inboxes) AND person_id IS NOT NULL
   )`;
 }
 
@@ -157,7 +164,7 @@ export async function getPersonScoped(
       .where(
         and(
           eq(emails.personId, id),
-          inArray(emails.recipient, allowed.inboxes),
+          sql`${emails.recipient} IN ${jsonList(allowed.inboxes)}`,
         ),
       )
       .limit(1);

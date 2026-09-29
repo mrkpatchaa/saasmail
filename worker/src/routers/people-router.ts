@@ -13,7 +13,7 @@ import {
   peopleScopeClause,
 } from "../lib/queries/people";
 import type { Variables } from "../variables";
-import { isInboxAllowed } from "../lib/inbox-permissions";
+import { isInboxAllowed, jsonList } from "../lib/inbox-permissions";
 import { deleteMessageState } from "../lib/messages/state";
 import { cancelScheduledSendsFor } from "../lib/scheduled-sends";
 import {
@@ -218,7 +218,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
       ? sql``
       : allowed.inboxes.length === 0
         ? sql`AND 0`
-        : sql`AND emails.recipient IN ${allowed.inboxes}`;
+        : sql`AND emails.recipient IN ${jsonList(allowed.inboxes)}`;
     personConditions.push(
       sql`(s.email LIKE ${pattern} ESCAPE '\\' OR s.name LIKE ${pattern} ESCAPE '\\'
         OR s.id IN (
@@ -248,10 +248,10 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
     : allowed.inboxes.length === 0
       ? sql`AND 0`
       : sql`AND cp2.person_id IN (
-          SELECT person_id FROM ${emails} WHERE recipient IN ${allowed.inboxes}
+          SELECT person_id FROM ${emails} WHERE recipient IN ${jsonList(allowed.inboxes)}
           UNION
           SELECT person_id FROM ${sentEmails}
-          WHERE from_address IN ${allowed.inboxes} AND person_id IS NOT NULL
+          WHERE from_address IN ${jsonList(allowed.inboxes)} AND person_id IS NOT NULL
         )`;
 
   // Aggregate over both received and sent emails so people we've composed to
@@ -338,7 +338,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
     ? sql``
     : allowed.inboxes.length === 0
       ? sql`AND 0`
-      : sql`AND inbox IN ${allowed.inboxes}`;
+      : sql`AND inbox IN ${jsonList(allowed.inboxes)}`;
 
   const groupConditions: any[] = [];
   if (recipient) {
@@ -372,7 +372,7 @@ peopleRouter.openapi(listGroupedPeopleRoute, async (c) => {
       ? sql``
       : allowed.inboxes.length === 0
         ? sql`AND 0`
-        : sql`AND emails.recipient IN ${allowed.inboxes}`;
+        : sql`AND emails.recipient IN ${jsonList(allowed.inboxes)}`;
     groupConditions.push(sql`(
       g.conversation_id IN (
         SELECT DISTINCT e.conversation_id FROM ${emails} e
@@ -866,11 +866,11 @@ peopleRouter.openapi(bulkMarkReadRoute, async (c) => {
   // Update emails. We compute the affected count via a SELECT first so we
   // can return a useful number to the UI.
   const conditions = [
-    inArray(emails.personId, personIds),
+    sql`${emails.personId} IN ${jsonList(personIds)}`,
     eq(emails.isRead, 0),
   ];
   if (recipientScope) {
-    conditions.push(inArray(emails.recipient, recipientScope));
+    conditions.push(sql`${emails.recipient} IN ${jsonList(recipientScope)}`);
   }
   const where = and(...conditions)!;
 
