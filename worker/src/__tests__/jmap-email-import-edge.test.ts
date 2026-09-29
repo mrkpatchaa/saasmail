@@ -10,7 +10,6 @@ import { jmapMessageContent } from "../db/jmap-message-content.schema";
 import { jmapSubmissions } from "../db/jmap-submissions.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { readBlobBytes, resolveReadableBlob } from "../jmap/blobs";
-import { collectUnreferencedContent } from "../jmap/content";
 import {
   decodeLeafBody,
   scanMimeStructure,
@@ -947,7 +946,7 @@ describe("Email/import edge cases", () => {
       expect(await snapshot(authorId)).toEqual(before);
     });
 
-    it("a failing draft insert answers serverFail; what it wrote is unreferenced and the content GC removes all of it", async () => {
+    it("a failing draft insert answers serverFail and removes what it wrote before answering", async () => {
       const { authorId } = await seedAccount();
       const blobId = await uploadRaw(authorId, withAttachment());
       const before = await snapshot(authorId);
@@ -973,15 +972,7 @@ describe("Email/import edge cases", () => {
       );
       expect(res[0][1].created).toBeNull();
       expect(res[0][1].notCreated.m1.type).toBe("serverFail");
-      expect((await snapshot(authorId)).drafts).toBe(0);
-      // Master plan Decision 6: content first, draft last; the cron collects
-      // what a failed create leaves.
-      await collectUnreferencedContent(
-        realDb,
-        env,
-        Math.floor(Date.now() / 1000) + 10,
-        0,
-      );
+      // No content GC run: the failed create cleans up after itself.
       expect(await snapshot(authorId)).toEqual(before);
     });
   });

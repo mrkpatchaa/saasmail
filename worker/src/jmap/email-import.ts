@@ -131,6 +131,31 @@ const HEADER_LABELS: Record<(typeof SINGLE_HEADERS)[number], string> = {
   "content-disposition": "Content-Disposition",
 };
 
+const TRANSFER_ENCODINGS = new Set([
+  "7bit",
+  "8bit",
+  "binary",
+  "base64",
+  "quoted-printable",
+]);
+
+/**
+ * The Content-Transfer-Encoding token exactly as postal-mime reads it (the
+ * value with whitespace collapsed and trimmed, lowercased, up to the first
+ * character that is neither a word character nor "-"), so both decode a part
+ * the same way: "base64 (x)" is base64.
+ */
+export function transferEncodingToken(value: string): string {
+  return (
+    value
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase()
+      .split(/[^\w-]/)
+      .shift() ?? ""
+  );
+}
+
 /** Drop RFC 822 comments, "(…)" with nesting, outside quoted strings. */
 export function stripComments(value: string): string {
   let out = "";
@@ -199,10 +224,14 @@ function scanHeaders(text: string, start: number, end: number): ScannedHeaders {
 export function parseHeaderValue(raw: string): {
   value: string;
   params: Map<string, string>;
+  /** Parameter names given more than once (`x` and `x*` count as one). */
+  repeated: string[];
 } {
   // "multipart/signed(x); …" is multipart/signed (RFC 2045 §5.1 allows comments).
   const value = stripComments(raw);
   const params = new Map<string, string>();
+  const seen = new Set<string>();
+  const repeated: string[] = [];
   const semicolon = value.indexOf(";");
   const head = (semicolon === -1 ? value : value.slice(0, semicolon))
     .trim()
@@ -231,9 +260,12 @@ export function parseHeaderValue(raw: string): {
       paramValue = value.slice(pos, after === -1 ? value.length : after).trim();
       pos = after === -1 ? value.length : after + 1;
     }
+    const base = name.replace(/\*$/, "");
+    if (base.length > 0 && seen.has(base)) repeated.push(base);
+    seen.add(base);
     if (name.length > 0 && !params.has(name)) params.set(name, paramValue);
   }
-  return { value: head, params };
+  return { value: head, params, repeated };
 }
 
 /** The body ranges of a multipart's parts, between its boundary lines. */
@@ -318,6 +350,25 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
     }
     const contentType = headers.fields.get("content-type");
     const parsedType = contentType ? parseHeaderValue(contentType) : null;
+    const disposition = headers.fields.get("content-disposition");
+    const parsedDisposition = disposition
+      ? parseHeaderValue(disposition)
+      : null;
+    // postal-mime keeps the last of a repeated parameter and this parser the
+    // first; a message that depends on which (two boundaries, say) is refused.
+    for (const [label, parsed] of [
+      ["Content-Type", parsedType],
+      ["Content-Disposition", parsedDisposition],
+    ] as const) {
+      if (parsed && parsed.repeated.length > 0) {
+        return `A ${label} header repeats its ${parsed.repeated[0]} parameter`;
+      }
+    }
+    const rawEncoding = headers.fields.get("content-transfer-encoding");
+    const encoding = rawEncoding ? transferEncodingToken(rawEncoding) : null;
+    if (encoding !== null && !TRANSFER_ENCODINGS.has(encoding)) {
+      return `Unsupported Content-Transfer-Encoding: ${rawEncoding}`;
+    }
     const digestDefault =
       !parsedType?.value && parentType === "multipart/digest";
     const type =
@@ -343,17 +394,15 @@ export function scanMimeStructure(bytes: Uint8Array): MimeScan {
       return null;
     }
 
-    const disposition = headers.fields.get("content-disposition");
     const cid = headers.fields.get("content-id");
-    const encoding = headers.fields.get("content-transfer-encoding");
     const leaf: ScannedLeaf = {
       start,
       bodyStart: headers.bodyStart,
       end,
       type,
-      disposition: disposition ? parseHeaderValue(disposition).value : null,
+      disposition: parsedDisposition ? parsedDisposition.value : null,
       cid: cid ? cid.trim().replace(/^<(.*)>$/, "$1") || null : null,
-      encoding: encoding ? encoding.trim().toLowerCase() : null,
+      encoding,
       inRelated,
       digestDefault,
     };
@@ -681,6 +730,14 @@ async function importOne(
   }
   const raw = await readBlobBytes(ctx.env, blob);
   if (!raw) return { type: "invalidProperties", properties: ["blobId"] };
+  // The recorded size can be missing (a received message stored without
+  // raw_size resolves as 0): the bytes read are what count.
+  if (raw.byteLength > ctx.maxBytes) {
+    return {
+      type: "tooLarge",
+      description: `The message exceeds maxSizeUpload (${ctx.maxBytes} octets)`,
+    };
+  }
 
   // Step 2: the raw tree, before any conversion.
   const scan = scanMimeStructure(raw);

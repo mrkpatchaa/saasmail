@@ -17,7 +17,13 @@ import {
   parseMessageIdList,
   scanMimeStructure,
   stripComments,
+  transferEncodingToken,
 } from "../jmap/email-import";
+import { emails } from "../db/emails.schema";
+import { inboxPermissions } from "../db/inbox-permissions.schema";
+import { publicReceivedRawBlobId } from "../jmap/public-ids";
+import { createTestEmail, createTestPerson } from "./helpers";
+import { thread } from "./jmap-ids";
 import { storeUpload } from "../jmap/upload";
 import { listJmapOnlyDrafts } from "../jmap/web-drafts";
 import { resolveAllowedInboxes } from "../lib/inbox-permissions";
@@ -745,11 +751,42 @@ describe("Email/import", () => {
         }),
       ],
     ])(
-      "leaves a conflicting pair as sent and the implicit Email/set rejects it (%s)",
+      "applies a conflicting pair as sent, like a plain Email/set: own Drafts stays, so filing into Sent is refused (%s)",
       async (_label, patch) => {
-        const { emailId, implicit } = await sendWithPatch(patch());
+        const { authorId, emailId, implicit } = await sendWithPatch(patch());
         expect(implicit.updated).toBeNull();
         expect(implicit.notUpdated[emailId].type).toBe("invalidProperties");
+        const email = await getEmail(authorId, emailId);
+        expect(email.mailboxIds).toEqual({ [sys(INBOX, "drafts")]: true });
+      },
+    );
+
+    it.each([
+      [
+        "own Sent true, other Sent null",
+        () => ({
+          [`mailboxIds/${sys(INBOX, "sent")}`]: true,
+          [`mailboxIds/${sys(OTHER, "sent")}`]: null,
+          [`mailboxIds/${sys(INBOX, "drafts")}`]: null,
+          "keywords/$draft": null,
+        }),
+      ],
+      [
+        "other Sent null, own Sent true",
+        () => ({
+          [`mailboxIds/${sys(OTHER, "sent")}`]: null,
+          [`mailboxIds/${sys(INBOX, "sent")}`]: true,
+          [`mailboxIds/${sys(INBOX, "drafts")}`]: null,
+          "keywords/$draft": null,
+        }),
+      ],
+    ])(
+      "applies a conflicting pair as sent, like a plain Email/set: the foreign null is a no-op and the own Sent applies (%s)",
+      async (_label, patch) => {
+        const { authorId, emailId, implicit } = await sendWithPatch(patch());
+        expect(implicit.updated).toEqual({ [emailId]: null });
+        const email = await getEmail(authorId, emailId);
+        expect(email.mailboxIds).toEqual({ [sys(INBOX, "sent")]: true });
       },
     );
   });
@@ -1246,5 +1283,197 @@ describe("raw MIME scan", () => {
     expect(parseMessageIdList("<a@b> <c@d>")).toEqual(["a@b", "c@d"]);
     expect(parseMessageIdList("bare@id")).toEqual(["bare@id"]);
     expect(parseMessageIdList(undefined)).toEqual([]);
+  });
+});
+
+describe("Email/import review fixes", () => {
+  beforeAll(async () => {
+    await applyMigrations();
+  });
+  beforeEach(async () => {
+    await cleanDb();
+  });
+
+  async function importRaw(userId: string, raw: string) {
+    const blobId = await uploadRaw(userId, raw);
+    const [, result] = await importOne(userId, importOf(blobId));
+    return result;
+  }
+
+  it("refuses a repeated boundary parameter that would hide a nested multipart/signed", async () => {
+    const { authorId } = await seedAccount();
+    const result = await importRaw(
+      authorId,
+      lines(
+        ...headers(),
+        'Content-Type: multipart/mixed; boundary="seen"; boundary="real"',
+        "",
+        "--real",
+        'Content-Type: multipart/signed; protocol="application/pgp-signature"; boundary="s"',
+        "",
+        "--s",
+        "Content-Type: text/plain",
+        "",
+        "Signed text.",
+        "--s",
+        "Content-Type: application/pgp-signature",
+        "",
+        "-----BEGIN PGP SIGNATURE-----",
+        "--s--",
+        "--real--",
+        "",
+      ),
+    );
+    expect(result.created).toBeNull();
+    expect(result.notCreated.m1.type).toBe("invalidEmail");
+    expect(result.notCreated.m1.description).toContain("boundary");
+    expect((await getDb().select().from(jmapDrafts)).length).toBe(0);
+  });
+
+  it.each([
+    [
+      "a repeated charset",
+      "Content-Type: text/plain; charset=utf-8; CHARSET=iso-8859-1",
+      "",
+    ],
+    [
+      "a repeated filename",
+      "Content-Type: application/pdf",
+      'Content-Disposition: attachment; filename="a.pdf"; filename="b.pdf"',
+    ],
+    [
+      "a filename given plainly and in RFC 2231 form",
+      "Content-Type: application/pdf",
+      "Content-Disposition: attachment; filename=a.pdf; filename*=utf-8''b.pdf",
+    ],
+  ])("refuses %s with invalidEmail", async (_label, type, disposition) => {
+    const { authorId } = await seedAccount();
+    const result = await importRaw(
+      authorId,
+      lines(
+        ...headers(),
+        'Content-Type: multipart/mixed; boundary="m"',
+        "",
+        "--m",
+        "Content-Type: text/plain",
+        "",
+        "Body.",
+        "--m",
+        type,
+        ...(disposition ? [disposition] : []),
+        "",
+        "Part.",
+        "--m--",
+        "",
+      ),
+    );
+    expect(result.created).toBeNull();
+    expect(result.notCreated.m1.type).toBe("invalidEmail");
+  });
+
+  it("decodes a commented Content-Transfer-Encoding as postal-mime does: the attachment downloads byte-identical", async () => {
+    const { authorId } = await seedAccount();
+    const result = await importRaw(
+      authorId,
+      lines(
+        ...headers(),
+        'Content-Type: multipart/mixed; boundary="m"',
+        "",
+        "--m",
+        "Content-Type: text/plain",
+        "Content-Transfer-Encoding: 7bit (plain)",
+        "",
+        "Body.",
+        "--m",
+        "Content-Type: application/pdf",
+        'Content-Disposition: attachment; filename="report.pdf"',
+        "Content-Transfer-Encoding: base64 (x)",
+        "",
+        b64(PDF),
+        "--m--",
+        "",
+      ),
+    );
+    expect(result.notCreated).toBeNull();
+    const email = await getEmail(authorId, result.created.m1.id);
+    expect(email.attachments).toHaveLength(1);
+    expect(await blobBytes(authorId, email.attachments[0].blobId)).toEqual(PDF);
+  });
+
+  it("refuses a transfer encoding neither side decodes the same way", async () => {
+    const { authorId } = await seedAccount();
+    const result = await importRaw(
+      authorId,
+      lines(
+        ...headers(),
+        "Content-Type: text/plain",
+        "Content-Transfer-Encoding: x-uuencode",
+        "",
+        "begin 644 x",
+        "",
+      ),
+    );
+    expect(result.notCreated.m1.type).toBe("invalidEmail");
+    expect(transferEncodingToken(" Base64 (x)")).toBe("base64");
+    expect(transferEncodingToken("quoted-printable")).toBe("quoted-printable");
+  });
+
+  it("checks the bytes read, not the recorded size: a received raw message with no raw_size is still tooLarge", async () => {
+    const { authorId } = await seedAccount();
+    await createTestPerson();
+    await createTestEmail({ id: "big", recipient: INBOX });
+    const rawKey = "raw/big.eml";
+    await env.R2.put(rawKey, plainMessage() + "x".repeat(2000));
+    await getDb()
+      .update(emails)
+      .set({ rawR2Key: rawKey, rawSize: null })
+      .where(eq(emails.id, "big"));
+    const small = recordingSender(OK).sender;
+    small.maxAttachmentBytes = () => 1000;
+    const [, result] = await importOne(
+      authorId,
+      importOf(publicReceivedRawBlobId("big")),
+      { sender: small },
+    );
+    expect(result.created).toBeNull();
+    expect(result.notCreated.m1.type).toBe("tooLarge");
+    expect((await getDb().select().from(jmapDrafts)).length).toBe(0);
+    expect((await getDb().select().from(jmapMessageContent)).length).toBe(0);
+  });
+
+  it("threads a reply for a member with 33 inboxes (the inbox list is bound once)", async () => {
+    const { memberId } = await seedAccount();
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 32; i += 1) {
+      await getDb()
+        .insert(inboxPermissions)
+        .values({
+          userId: memberId,
+          email: `extra${i}@saasmail.test`,
+          createdAt: now,
+          createdBy: null,
+        });
+    }
+    await createTestPerson();
+    await createTestEmail({
+      id: "orig",
+      recipient: INBOX,
+      messageId: "<orig-1@example.com>",
+      conversationId: "c_0123456789abcdef",
+    });
+    const blobId = await uploadRaw(memberId, fullMessage());
+    const [, imported] = await importOne(memberId, importOf(blobId));
+    expect(imported.notCreated).toBeNull();
+    expect(imported.created.m1.threadId).toBe(thread("c_0123456789abcdef"));
+
+    const set = (await jmapCall(memberId, [
+      [
+        "Email/set",
+        { accountId: acct(memberId), create: { d1: draftCreate() } },
+        "a",
+      ],
+    ])) as Responses;
+    expect(set[0][1].notCreated).toBeNull();
+    expect(set[0][1].created.d1.threadId).toBe(thread("c_0123456789abcdef"));
   });
 });

@@ -93,7 +93,8 @@ function sameValue(left: unknown, right: unknown): boolean {
 /**
  * Rewrite mailbox ids per `targetFor`, collapsing ids that land on the same
  * target when their values agree. Where they don't, every id of that target is
- * kept as the client sent it, so the patch fails as it would have.
+ * kept as the client sent it, and the implicit Email/set applies the patch
+ * exactly as a plain Email/set would.
  */
 type MailboxEntry = { id: string; key: string; value: unknown };
 
