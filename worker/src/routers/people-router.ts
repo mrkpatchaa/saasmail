@@ -1,3 +1,5 @@
+import { AUDIT_ACTIONS } from "../lib/audit/events";
+import { bulkDetails, recordAudit } from "../lib/audit/record";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { desc, like, or, eq, sql, and, inArray, isNotNull } from "drizzle-orm";
 import { people } from "../db/people.schema";
@@ -754,7 +756,7 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
   }
 
   const person = await db
-    .select({ id: people.id })
+    .select({ id: people.id, email: people.email })
     .from(people)
     .where(eq(people.id, id))
     .limit(1);
@@ -818,6 +820,20 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
   await cleanupCustomerForPersonDeletion(db, id);
   await deletePersonConversationState(db, id, groupConversations);
   await db.delete(people).where(eq(people.id, id));
+
+  const deletedRefs = [
+    ...received.map((message) => `received:${message.id}`),
+    ...sent.map((message) => `sent:${message.id}`),
+  ];
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.mailDeleted,
+    targetType: "message",
+    summary: `Deleted ${person[0].email} and their ${deletedRefs.length} message${deletedRefs.length === 1 ? "" : "s"}`,
+    details: bulkDetails(deletedRefs, {
+      personId: id,
+      person: person[0].email,
+    }),
+  });
 
   return c.json({ success: true }, 200);
 });

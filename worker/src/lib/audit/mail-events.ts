@@ -3,7 +3,7 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { MessageRef } from "../messages/types";
 import { currentAuditActor } from "./context";
 import { AUDIT_ACTIONS, type AuditAction } from "./events";
-import { recordBulkAudit } from "./record";
+import { recordAudit, recordBulkAudit } from "./record";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
@@ -239,6 +239,67 @@ export async function auditAssign(
       ...(assignee
         ? { details: { assigneeUserId: assignee.id, assignee: assignee.email } }
         : {}),
+    });
+  }
+}
+
+/**
+ * Records a message handed to the provider or to the outbox's retries. A
+ * send the provider refused, or one dropped because every recipient is
+ * suppressed, sent nothing and is not recorded.
+ */
+export async function auditMailSent(
+  db: Db,
+  sent: {
+    id: string;
+    from: string;
+    to: string;
+    /** Recipients besides `to`: further To, Cc and Bcc. */
+    otherRecipients?: number;
+    subject: string | null;
+    status: string;
+    templateSlug?: string | null;
+    /** For a reply: whether it followed the original's Reply-To. */
+    repliedTo?: "reply_to" | "sender";
+  },
+): Promise<void> {
+  if (!["sent", "retrying", "scheduled"].includes(sent.status)) return;
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.mailSent,
+    targetType: "message",
+    targetId: `sent:${sent.id}`,
+    inbox: sent.from,
+    summary: `Sent '${sent.subject ?? ""}' to ${sent.to} from ${sent.from}`,
+    details: {
+      sentEmailId: sent.id,
+      to: sent.to,
+      otherRecipients: sent.otherRecipients ?? 0,
+      status: sent.status,
+      ...(sent.templateSlug ? { templateSlug: sent.templateSlug } : {}),
+      ...(sent.repliedTo ? { repliedTo: sent.repliedTo } : {}),
+    },
+  });
+}
+
+/**
+ * Records hard-deleted messages, one row per inbox. A single message is named
+ * by its subject: after the delete nothing else says what it was.
+ */
+export async function auditMailDeleted(
+  db: Db,
+  deleted: { ref: MessageRef; inbox: string; subject?: string | null }[],
+): Promise<void> {
+  for (const [inbox, group] of byInbox(deleted)) {
+    const subject = group.length === 1 ? group[0].subject : null;
+    await recordBulkAudit(db, {
+      action: AUDIT_ACTIONS.mailDeleted,
+      targetType: "message",
+      inbox,
+      refs: group.map((message) => refId(message.ref)),
+      summary: (n) =>
+        n === 1 && subject
+          ? `Deleted '${subject}' from ${inbox}`
+          : `Deleted ${messages(n)} from ${inbox}`,
     });
   }
 }
