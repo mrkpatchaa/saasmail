@@ -206,16 +206,19 @@ export async function getEmailById(
       .from(people)
       .where(eq(people.id, row[0].personId))
       .limit(1);
+    // Most mail has no Reply-To; only then is the identity list needed.
+    const requested = replyToOf(row[0]);
+    const candidates =
+      requested.length > 0
+        ? replyCandidates(requested, await ownInboxAddresses(db))
+        : [];
     return {
       ...row[0],
       type: "received",
       timestamp: row[0].receivedAt,
       fromAddress: senderRow[0]?.email ?? null,
       toAddress: null,
-      replyTo: replyTarget(
-        replyCandidates(replyToOf(row[0]), await ownInboxAddresses(db)),
-        senderRow[0]?.email,
-      ),
+      replyTo: replyTarget(candidates, senderRow[0]?.email),
       cc: parseCc(row[0].cc),
       attachments: atts,
     };
