@@ -3,6 +3,7 @@ import { recordAudit } from "../audit/record";
 import {
   auditMailboxMembership,
   auditMailboxState,
+  folderMembershipBefore,
   mailboxFlagsBefore,
   needsFlagsBefore,
 } from "../audit/mail-events";
@@ -309,7 +310,7 @@ export async function setMailboxState(
     return;
   }
 
-  // Read before the write: only a flag that was set can be recorded as cleared.
+  // Read before the write: the audit event counts only real changes.
   const flagsBefore = needsFlagsBefore(userId, changes)
     ? await mailboxFlagsBefore(db, resolved)
     : null;
@@ -583,6 +584,14 @@ export async function setMailboxMembership(
     }
   }
 
+  // Read before the write: the audit event counts only messages that move.
+  const membershipBefore = await folderMembershipBefore(
+    db,
+    userId,
+    resolved,
+    mailboxIds,
+  );
+
   const now = Math.floor(Date.now() / 1000);
   const statements: any[] = [];
   const addRows = resolved.flatMap((message) =>
@@ -650,6 +659,7 @@ export async function setMailboxMembership(
     resolved,
     add.map((mailboxId) => byId.get(mailboxId)!),
     "added",
+    membershipBefore,
   );
   await auditMailboxMembership(
     db,
@@ -657,6 +667,7 @@ export async function setMailboxMembership(
     resolved,
     remove.map((mailboxId) => byId.get(mailboxId)!),
     "removed",
+    membershipBefore,
   );
 }
 

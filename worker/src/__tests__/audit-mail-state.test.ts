@@ -1,7 +1,7 @@
 // docs/specs/SPEC-audit-log.md §2 and §3: who is recorded as acting, and the
 // events for changes to shared mail state.
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { asc } from "drizzle-orm";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { asc, sql } from "drizzle-orm";
 import { auditEvents } from "../db/audit-events.schema";
 import { httpActor, ruleActor } from "../lib/audit/actors";
 import { runWithAudit } from "../lib/audit/context";
@@ -225,6 +225,97 @@ describe("audit events for shared mail state", () => {
     });
   });
 
+  it("records nothing when nothing changes", async () => {
+    const folder = await createMailbox(getDb(), ADMIN, userId, {
+      inbox: INBOX,
+      name: "Invoices",
+    });
+    const until = Math.floor(Date.now() / 1000) + 3600;
+    await setMailboxState(getDb(), ADMIN, userId, [received("e1")], {
+      archived: true,
+    });
+    await setMailboxMembership(getDb(), ADMIN, userId, [received("e1")], {
+      add: [folder.id],
+    });
+    await snoozeConversations(getDb(), ADMIN, userId, [received("e1")], until);
+    await assignConversations(getDb(), ADMIN, userId, [received("e1")], userId);
+    await getDb().delete(auditEvents);
+
+    // The same again: every one of these is already so.
+    await setMailboxState(getDb(), ADMIN, userId, [received("e1")], {
+      archived: true,
+    });
+    await setMailboxMembership(getDb(), ADMIN, userId, [received("e1")], {
+      add: [folder.id],
+    });
+    await snoozeConversations(getDb(), ADMIN, userId, [received("e1")], until);
+    await assignConversations(getDb(), ADMIN, userId, [received("e1")], userId);
+    // And undoing what was never done.
+    await setMailboxState(getDb(), ADMIN, userId, [received("e2")], {
+      trashed: false,
+    });
+    await setMailboxMembership(getDb(), ADMIN, userId, [received("e2")], {
+      remove: [folder.id],
+    });
+    expect(await events()).toEqual([]);
+  });
+
+  it("counts only the messages that changed in a mixed batch", async () => {
+    await setMailboxState(getDb(), ADMIN, userId, [received("e1")], {
+      archived: true,
+    });
+    await getDb().delete(auditEvents);
+
+    await setMailboxState(
+      getDb(),
+      ADMIN,
+      userId,
+      [received("e1"), received("e2"), received("e3")],
+      { archived: true },
+    );
+    const [row] = await events();
+    expect(row.summary).toBe(`Archived 2 messages in ${INBOX}`);
+    expect(row.details).toEqual({
+      count: 2,
+      refs: ["received:e2", "received:e3"],
+    });
+  });
+
+  it("still changes the state when the audit's own read fails", async () => {
+    await setMailboxState(getDb(), ADMIN, userId, [received("e1")], {
+      archived: true,
+    });
+    await getDb().delete(auditEvents);
+
+    // The only raw query on this path is the audit's look at the old flags.
+    const real = getDb();
+    const flaky = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === "all") {
+          return () => {
+            throw new Error("D1 hiccup");
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      setMailboxState(flaky, ADMIN, userId, [received("e1")], {
+        archived: false,
+      }),
+    ).resolves.toBeUndefined();
+    warn.mockRestore();
+
+    const [state] = await real.all<{ archived_at: number | null }>(
+      sql`SELECT archived_at FROM mailbox_message_state WHERE message_id = 'e1'`,
+    );
+    expect(state.archived_at).toBeNull();
+    // What changed is unknown, so nothing is claimed.
+    expect(await events()).toEqual([]);
+  });
+
   it("merges per-message calls into one row inside collectAudit", async () => {
     await collectAudit(getDb(), async () => {
       for (const id of ["e1", "e2", "e3"]) {
@@ -265,10 +356,11 @@ describe("audit events for shared mail state", () => {
       add: [folder.id],
     });
 
+    // Only e1 was in the folder, so only e1 was removed from it.
     const rows = await events();
     expect(rows.map((row) => row.summary).sort()).toEqual([
       "Filed 1 message into 'Invoices'",
-      "Removed 2 messages from 'Invoices'",
+      "Removed 1 message from 'Invoices'",
     ]);
     expect(rows.every((row) => row.action === "mail.moved")).toBe(true);
     expect(rows.every((row) => row.inbox === INBOX)).toBe(true);

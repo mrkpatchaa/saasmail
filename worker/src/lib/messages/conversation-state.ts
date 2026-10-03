@@ -1,4 +1,8 @@
-import { auditAssign, auditSnooze } from "../audit/mail-events";
+import {
+  auditAssign,
+  auditSnooze,
+  conversationStateBefore,
+} from "../audit/mail-events";
 import { and, eq, inArray, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../../db/emails.schema";
@@ -145,6 +149,7 @@ export async function snoozeConversations(
   }
 
   const conversations = await resolveConversationRefs(db, allowed, refs);
+  const before = await conversationStateBefore(db, userId, conversations);
   for (const conversation of conversations) {
     await db
       .insert(inboxConversationState)
@@ -168,7 +173,7 @@ export async function snoozeConversations(
       });
   }
 
-  await auditSnooze(db, userId, conversations, until);
+  await auditSnooze(db, userId, conversations, until, before);
   return conversations.length;
 }
 
@@ -198,6 +203,7 @@ export async function assignConversations(
     }
   }
 
+  const before = await conversationStateBefore(db, _actorUserId, conversations);
   const now = Math.floor(Date.now() / 1000);
   for (const conversation of conversations) {
     await db
@@ -222,7 +228,7 @@ export async function assignConversations(
       });
   }
 
-  await auditAssign(db, _actorUserId, conversations, assignee);
+  await auditAssign(db, _actorUserId, conversations, assignee, before);
   return conversations.length;
 }
 
