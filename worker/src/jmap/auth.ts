@@ -12,6 +12,8 @@ export type JmapAccess = {
   authMethod: "session" | "apiKey";
   /** The API key the client authenticated with, when it used one. */
   apiKey?: { id: string; prefix: string };
+  /** The admin behind an impersonated session. */
+  impersonatedBy?: { id: string; email: string | null };
 };
 
 export function problem(
@@ -69,5 +71,8 @@ export async function authenticateJmap(
     allowed: await resolveAllowedInboxes(db, resolved.user),
     authMethod: resolved.authMethod,
     ...(resolved.apiKey ? { apiKey: resolved.apiKey } : {}),
+    ...(resolved.impersonatedBy
+      ? { impersonatedBy: resolved.impersonatedBy }
+      : {}),
   };
 }

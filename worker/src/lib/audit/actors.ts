@@ -30,12 +30,21 @@ export function anonymousHttpActor(request: Request): AuditActor {
   };
 }
 
-/** A signed-in person using the web app. */
-export function userActor(user: Person, request?: Request): AuditActor {
+/**
+ * A signed-in person using the web app. When an admin is acting as that
+ * person, the admin is the actor and the label says both.
+ */
+export function userActor(
+  user: Person,
+  request?: Request,
+  impersonatedBy?: Person | null,
+): AuditActor {
   return {
     actorType: "user",
-    actorUserId: user.id,
-    actorLabel: personLabel(user),
+    actorUserId: impersonatedBy ? impersonatedBy.id : user.id,
+    actorLabel: impersonatedBy
+      ? `${personLabel(impersonatedBy)} as ${personLabel(user)}`
+      : personLabel(user),
     channel: "web",
     ...requestMeta(request),
   };
@@ -63,12 +72,13 @@ export function httpActor(
     user: Person;
     authMethod: "session" | "apiKey";
     apiKey?: { id: string; prefix: string };
+    impersonatedBy?: Person | null;
   },
   request?: Request,
 ): AuditActor {
   return auth.authMethod === "apiKey" && auth.apiKey
     ? apiKeyActor(auth.user, auth.apiKey, request)
-    : userActor(auth.user, request);
+    : userActor(auth.user, request, auth.impersonatedBy);
 }
 
 /** An MCP client acting for a person with an OAuth token. */
@@ -93,13 +103,17 @@ export function jmapActor(
     user: Person;
     authMethod: "session" | "apiKey";
     apiKey?: { id: string; prefix: string };
+    impersonatedBy?: Person | null;
   },
   request?: Request,
 ): AuditActor {
+  const by = auth.impersonatedBy;
   return {
     actorType: "jmap",
-    actorUserId: auth.user.id,
-    actorLabel: `JMAP (${auth.apiKey?.prefix ?? "session"})`,
+    actorUserId: by ? by.id : auth.user.id,
+    actorLabel: by
+      ? `JMAP (session, ${personLabel(by)} as ${personLabel(auth.user)})`
+      : `JMAP (${auth.apiKey?.prefix ?? "session"})`,
     channel: "jmap",
     ...(auth.apiKey ? { apiKeyId: auth.apiKey.id } : {}),
     ...requestMeta(request),

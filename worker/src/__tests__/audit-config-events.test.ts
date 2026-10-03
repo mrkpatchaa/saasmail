@@ -2,7 +2,7 @@
 // credentials.
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
-import { auditAuthRequest } from "../auth/audit-hooks";
+import { auditAuthRequest, recordFailedSignIn } from "../auth/audit-hooks";
 import { auditEvents } from "../db/audit-events.schema";
 import { invitations } from "../db/invitations.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
@@ -296,6 +296,8 @@ describe("audit events for configuration and people", () => {
       });
     const wrong = await signIn("not the password");
     expect(wrong.status).toBeGreaterThanOrEqual(400);
+    // A second failure within the minute is not a second row.
+    expect((await signIn("still not it")).status).toBeGreaterThanOrEqual(400);
     const right = await signIn(password);
     expect(right.status, await right.clone().text()).toBe(200);
 
@@ -310,6 +312,7 @@ describe("audit events for configuration and people", () => {
       actorUserId: null,
       channel: "web",
       ip: "198.51.100.4",
+      targetId: signerId,
       details: { method: "password", email: "signer@example.com" },
     });
     expect(rows[1]).toMatchObject({
@@ -366,7 +369,11 @@ describe("auditAuthRequest", () => {
     });
   });
 
-  it("records a failed sign-in with the address tried and nobody as actor", async () => {
+  it("records a failed sign-in against an account, with nobody as actor", async () => {
+    const account = await createTestUser({
+      id: "u-jane",
+      email: "jane@acme.com",
+    });
     await auditAuthRequest(getDb(), {
       path: "/sign-in/email",
       body: { email: "Jane@Acme.com", password: "wrong" },
@@ -376,10 +383,136 @@ describe("auditAuthRequest", () => {
     expect(row).toMatchObject({
       action: "auth.sign_in_failed",
       actorUserId: null,
+      targetId: account.userId,
       summary: "Failed password sign-in for jane@acme.com",
       details: { method: "password", email: "jane@acme.com" },
     });
     expect(JSON.stringify(row)).not.toContain("wrong");
+  });
+
+  it("does not let an unauthenticated caller write what they like", async () => {
+    await createTestUser({ id: "u-jane", email: "jane@acme.com" });
+    const fail = (email: unknown) =>
+      auditAuthRequest(getDb(), {
+        path: "/sign-in/email",
+        body: { email, password: "x" },
+        context: { returned: new Error("Invalid email or password") },
+      });
+
+    // No such account, a password typed into the address field, junk, and
+    // an over-long value: none of these is stored.
+    await fail("nobody@acme.com");
+    await fail("P@ssw0rd.1");
+    await fail("not an address");
+    await fail(`${"a".repeat(300)}@acme.com`);
+    await fail(42);
+    expect(await events()).toEqual([]);
+
+    // A real account: recorded once a minute, however often it is tried.
+    await fail("jane@acme.com");
+    await fail("jane@acme.com");
+    await fail("JANE@acme.com");
+    expect(await events()).toHaveLength(1);
+  });
+
+  it("records a failed passkey sign-in once a minute per caller address", async () => {
+    const from = (ip: string) =>
+      auditAuthRequest(getDb(), {
+        path: "/passkey/verify-authentication",
+        request: new Request("https://mail.test/api/auth/x", {
+          headers: { "cf-connecting-ip": ip },
+        }),
+        context: { returned: new Error("bad assertion") },
+      });
+    await from("203.0.113.1");
+    await from("203.0.113.1");
+    await from("203.0.113.2");
+    const rows = await events();
+    expect(rows.map((row) => row.summary)).toEqual([
+      "Failed passkey sign-in",
+      "Failed passkey sign-in",
+    ]);
+  });
+
+  it("records a refused password sign-in for an account that has a passkey", async () => {
+    await recordFailedSignIn(getDb(), {
+      method: "password",
+      user: { id: "u-jane", email: "jane@acme.com" },
+      reason: "passkey_required",
+    });
+    const [row] = await events();
+    expect(row).toMatchObject({
+      action: "auth.sign_in_failed",
+      targetId: "u-jane",
+      summary:
+        "Refused password sign-in for jane@acme.com: the account has a passkey",
+      details: { reason: "passkey_required" },
+    });
+  });
+
+  it("records what an admin does through the auth API, as that admin", async () => {
+    const admin = { id: "u-admin", email: "admin@acme.com" };
+    const member = await createTestUser({
+      id: "u-member",
+      email: "member@acme.com",
+      role: "member",
+    });
+    const call = (path: string, body: Record<string, unknown>, returned = {}) =>
+      auditAuthRequest(getDb(), {
+        path,
+        body,
+        context: {
+          returned,
+          session: { user: admin },
+          // An impersonation creates a session for the member: never the actor.
+          newSession: { user: { id: member.userId, email: "member@acme.com" } },
+        },
+      });
+
+    await call("/admin/impersonate-user", { userId: member.userId });
+    await call("/admin/set-role", { userId: member.userId, role: "admin" });
+    await call("/admin/set-user-password", {
+      userId: member.userId,
+      newPassword: "hunter2-do-not-log",
+    });
+    await call("/admin/ban-user", { userId: member.userId, banReason: "x" });
+    await call(
+      "/admin/create-user",
+      { email: "new@acme.com", password: "another-secret", role: "member" },
+      { user: { id: "u-new", email: "new@acme.com" } },
+    );
+    await call("/admin/remove-user", { userId: member.userId });
+    // Reads are not events.
+    await call("/admin/list-users", {});
+
+    const rows = await events();
+    expect(rows.map((row) => [row.action, row.summary])).toEqual([
+      ["user.impersonated", "Started acting as member@acme.com"],
+      ["user.role_changed", "Changed member@acme.com to admin"],
+      ["user.updated", "Changed the account member@acme.com: password set"],
+      ["user.updated", "Changed the account member@acme.com: banned"],
+      ["user.joined", "Created the account new@acme.com"],
+      ["user.removed", "Removed member@acme.com"],
+    ]);
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        actorType: "user",
+        actorUserId: "u-admin",
+        actorLabel: "admin@acme.com",
+      });
+    }
+    const logged = JSON.stringify(rows);
+    expect(logged).not.toContain("hunter2-do-not-log");
+    expect(logged).not.toContain("another-secret");
+  });
+
+  it("ignores the server's own account creation, which has no caller", async () => {
+    await auditAuthRequest(getDb(), {
+      path: "/admin/create-user",
+      body: { email: "joiner@acme.com", password: "secret" },
+      context: { returned: { user: { id: "u-j", email: "joiner@acme.com" } } },
+    });
+    expect(await events()).toEqual([]);
   });
 
   it("records passkeys added and removed, and OAuth client and consent changes", async () => {
@@ -399,7 +532,11 @@ describe("auditAuthRequest", () => {
     });
     await auditAuthRequest(getDb(), {
       path: "/oauth2/consent",
-      body: { accept: true, scope: "email:read" },
+      body: {
+        accept: true,
+        scope: "email:read",
+        oauth_query: "response_type=code&client_id=c-1&scope=email%3Aread",
+      },
       context: { returned: {}, session },
     });
     // Declining consent grants nothing.
@@ -421,6 +558,15 @@ describe("auditAuthRequest", () => {
       "user.passkey_added",
       "user.passkey_removed",
     ]);
+    // The consent names the client it was given to.
+    const granted = (await events()).find(
+      (row) => row.action === "oauth.consent_granted",
+    );
+    expect(granted).toMatchObject({
+      targetId: "c-1",
+      actorUserId: "u-jane",
+      details: { scope: "email:read" },
+    });
   });
 
   it("records nothing for other paths or for a failed change", async () => {

@@ -61,6 +61,24 @@ describe("httpActor", () => {
     });
   });
 
+  it("names the admin behind an impersonated session", () => {
+    expect(
+      httpActor(
+        {
+          user,
+          authMethod: "session",
+          impersonatedBy: { id: "u-admin", email: "admin@acme.com" },
+        },
+        request,
+      ),
+    ).toMatchObject({
+      actorType: "user",
+      actorUserId: "u-admin",
+      actorLabel: "admin@acme.com as jane@acme.com",
+      channel: "web",
+    });
+  });
+
   it("is the API key, named by its prefix, for a key", () => {
     expect(
       httpActor(

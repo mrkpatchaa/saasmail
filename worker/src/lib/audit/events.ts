@@ -33,6 +33,10 @@ export const AUDIT_ACTIONS = {
   userRoleChanged: "user.role_changed",
   userRemoved: "user.removed",
   userInboxAccessChanged: "user.inbox_access_changed",
+  /** An admin changed an account through the auth API: ban, password, sessions. */
+  userUpdated: "user.updated",
+  /** An admin started acting as another user. */
+  userImpersonated: "user.impersonated",
   userPasskeyAdded: "user.passkey_added",
   userPasskeyRemoved: "user.passkey_removed",
   authSignIn: "auth.sign_in",
@@ -49,6 +53,7 @@ export const AUDIT_ACTIONS = {
   sequenceCancelled: "sequence.cancelled",
   listMemberAdded: "list.member_added",
   listMemberRemoved: "list.member_removed",
+  campaignScheduled: "campaign.scheduled",
   campaignStarted: "campaign.started",
   campaignCancelled: "campaign.cancelled",
   agentActionExecuted: "agent.action_executed",

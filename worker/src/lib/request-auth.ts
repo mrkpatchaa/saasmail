@@ -10,6 +10,11 @@ export type RequestAuthResult = {
   authMethod: "session" | "apiKey";
   /** The key that authenticated the request; its prefix names it in the audit log. */
   apiKey?: { id: string; prefix: string };
+  /**
+   * Set when the session is an admin acting as `user` (better-auth's
+   * impersonation): the admin is who the audit log must name.
+   */
+  impersonatedBy?: { id: string; email: string | null };
 };
 
 export async function resolveRequestAuth(
@@ -20,7 +25,23 @@ export async function resolveRequestAuth(
   const auth = createAuth(env);
   const session = await auth.api.getSession({ headers: request.headers });
   if (session) {
-    return { user: session.user, authMethod: "session" };
+    const impersonatorId = (
+      session.session as { impersonatedBy?: string | null }
+    )?.impersonatedBy;
+    if (!impersonatorId) return { user: session.user, authMethod: "session" };
+    const [impersonator] = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(eq(users.id, impersonatorId))
+      .limit(1);
+    return {
+      user: session.user,
+      authMethod: "session",
+      impersonatedBy: {
+        id: impersonatorId,
+        email: impersonator?.email ?? null,
+      },
+    };
   }
 
   const authHeader = request.headers.get("Authorization");

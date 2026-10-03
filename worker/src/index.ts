@@ -1,5 +1,4 @@
-import { AUDIT_ACTIONS } from "./lib/audit/events";
-import { recordAudit } from "./lib/audit/record";
+import { recordFailedSignIn } from "./auth/audit-hooks";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { routeAgentRequest } from "agents";
 import { swaggerUI } from "@hono/swagger-ui";
@@ -172,13 +171,17 @@ app.post("/api/auth/sign-in/email", async (c, next) => {
     .where(eq(passkeys.userId, userRows[0].id))
     .limit(1);
   if (pkRows.length > 0) {
-    await recordAudit(db, {
-      action: AUDIT_ACTIONS.authSignInFailed,
-      targetType: "user",
-      targetId: userRows[0].id,
-      summary: `Refused password sign-in for ${email}: the account has a passkey`,
-      details: { method: "password", email, reason: "passkey_required" },
-    });
+    // Refused before better-auth sees it, so its hook cannot record it.
+    try {
+      await recordFailedSignIn(db, {
+        method: "password",
+        user: { id: userRows[0].id, email },
+        request: c.req.raw,
+        reason: "passkey_required",
+      });
+    } catch (error) {
+      console.warn("[audit] refused sign-in not recorded:", error);
+    }
     return c.json(
       {
         error:
