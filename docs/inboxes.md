@@ -21,6 +21,35 @@ Different inboxes call for different UX. Set each inbox to render as **Thread** 
 
 One deployment, one person timeline, but the interaction model matches the channel.
 
+## Replying
+
+A reply goes where the sender asked for it. When a received message has a
+`Reply-To` header (a ticketing system, a contact form, a `noreply@` notification
+that names a real support address), the reply is addressed to that address
+instead of the `From` address. If the header lists several addresses, the first
+becomes To and the others are added to Cc.
+
+The reply composer and the chat view's quick reply say so before you send
+("Replies go to support@acme.com (the sender asked for replies there)") and
+offer **Reply to the sender instead**. The mail view's reading pane shows the
+`Reply-To:` line on such a message.
+
+Two guards apply:
+
+- A Reply-To address that is one of this instance's own inboxes is ignored, so a
+  message whose Reply-To points back at you never makes saasmail mail itself.
+  With no other address left, the reply goes to the sender.
+- [Rule auto-replies](automations.md#auto-replies) always answer the sender,
+  whatever the header says.
+
+The reply stays on the original sender's timeline, marked with the address it
+went to; it does not start a timeline for the Reply-To address.
+
+The API and MCP behave the same way. `POST /api/send/reply/{emailId}` and the
+MCP tool `reply_email` follow Reply-To by default; pass `recipient: "sender"` to
+answer the `From` address. Both return `to`, the address the reply went to, and
+`repliedTo` (`reply_to` or `sender`).
+
 ## Per-inbox forwarding
 
 Give any inbox a **Forward to** address and every message it receives is re-sent to
