@@ -41,16 +41,12 @@ function addressLabel(
 }
 
 /**
- * The addresses a reply to this message goes to, when the sender asked for
- * replies somewhere other than their own address.
+ * The addresses a reply to this message reaches when the sender asked for
+ * replies elsewhere. The server leaves the list empty when that is just the
+ * sender.
  */
 function replyToAddresses(message: MailMessage): MailMessage["cc"] {
-  if (message.direction !== "inbound") return [];
-  const replyTo = message.replyTo ?? [];
-  const sender = message.from?.email.toLowerCase();
-  const onlySender =
-    replyTo.length === 1 && replyTo[0].email.toLowerCase() === sender;
-  return onlySender ? [] : replyTo;
+  return message.direction === "inbound" ? (message.replyTo ?? []) : [];
 }
 
 function fullTime(timestamp: number): string {

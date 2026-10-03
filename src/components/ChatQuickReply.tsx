@@ -26,10 +26,11 @@ interface ChatQuickReplyProps {
    */
   replyCc?: CcEntry[];
   /**
-   * Where the reply target asked for replies (its Reply-To), when that is not
-   * its sender. The reply goes there unless the user chooses the sender.
+   * Every address a reply to the target reaches when it follows its Reply-To
+   * (the first is To, the others are copied); empty when replies simply go to
+   * the sender. The reply follows it unless the user chooses the sender.
    */
-  replyToAddress?: string | null;
+  replyRecipients?: CcEntry[];
   onSent: () => void; // Refetch + scroll
   /**
    * Optional handoff to the global compose drawer. When provided, the
@@ -73,7 +74,7 @@ export default function ChatQuickReply({
   latestReceivedEmailId,
   personEmail,
   replyCc,
-  replyToAddress,
+  replyRecipients = [],
   onSent,
   onOpenCompose,
 }: ChatQuickReplyProps) {
@@ -128,6 +129,7 @@ export default function ChatQuickReply({
   }, [text]);
 
   const canSend = text.trim().length > 0 && !sending && !overCap;
+  const followsReplyTo = replyRecipients.length > 0 && !replyToSender;
 
   async function handleSend() {
     if (!canSend) return;
@@ -147,9 +149,9 @@ export default function ChatQuickReply({
           ...(files.length > 0
             ? { files: files.map((file) => ({ file })) }
             : {}),
-          ...(replyToAddress && replyToSender
-            ? { recipient: "sender" as const }
-            : {}),
+          // Always the target this box showed: with no hint on screen the
+          // reply goes to the sender, never to a Reply-To the user didn't see.
+          recipient: followsReplyTo ? "reply_to" : "sender",
         });
       } else {
         await sendEmail({
@@ -195,9 +197,9 @@ export default function ChatQuickReply({
 
   return (
     <div className="border-t border-border bg-card px-4 py-3 sm:px-6">
-      {latestReceivedEmailId && replyToAddress && (
+      {latestReceivedEmailId && replyRecipients.length > 0 && (
         <ReplyToHint
-          replyTo={replyToAddress}
+          recipients={replyRecipients}
           toSender={replyToSender}
           onToggle={setReplyToSender}
           className="mb-2"

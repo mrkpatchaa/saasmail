@@ -134,13 +134,21 @@ export default function ReplyComposer({
   // clicking Reply on our own outgoing message rendered an empty
   // composer with no warning.
   const [contextError, setContextError] = useState(false);
-  // The message asked for replies at another address (Reply-To). The reply
-  // follows it unless the user ticks "Reply to the sender instead".
-  const replyToAddress =
-    originalEmail?.type === "received" ? (originalEmail.replyTo ?? null) : null;
+  // The message asked for replies at other addresses (Reply-To): the first
+  // becomes To and the rest are copied, unless the user ticks "Reply to the
+  // sender instead". Known only once the original has loaded.
+  const replyRecipients =
+    originalEmail?.type === "received"
+      ? (originalEmail.replyRecipients ?? [])
+      : [];
   const [replyToSender, setReplyToSender] = useState(false);
-  const recipientPayload =
-    replyToAddress && replyToSender ? { recipient: "sender" as const } : {};
+  const followsReplyTo = replyRecipients.length > 0 && !replyToSender;
+  // Always say which target was on screen. Left to its default the server
+  // follows Reply-To, which this composer may never have shown (the original
+  // can fail to load, or the user can send before it has).
+  const recipientPayload = {
+    recipient: followsReplyTo ? ("reply_to" as const) : ("sender" as const),
+  };
 
   // Template state
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
@@ -314,6 +322,16 @@ export default function ReplyComposer({
   const recipientLabel = personName
     ? `${personName} <${personEmail}>`
     : personEmail;
+  // A reply to one of our own sent messages goes to that message's recipient,
+  // which is not always this timeline's person: it may have followed a
+  // Reply-To.
+  const sentTo =
+    originalEmail?.type === "sent" ? originalEmail.toAddress : null;
+  const toLabel = followsReplyTo
+    ? replyRecipients[0].email
+    : sentTo && sentTo.toLowerCase() !== personEmail.toLowerCase()
+      ? sentTo
+      : recipientLabel;
 
   return (
     // Non-modal tray (Gmail-style): page behind stays interactive, only
@@ -381,14 +399,12 @@ export default function ReplyComposer({
                 data-testid="reply-to-address"
                 className="block truncate py-2 pr-3 text-sm text-text-primary"
               >
-                {replyToAddress && !replyToSender
-                  ? replyToAddress
-                  : recipientLabel}
+                {toLabel}
               </span>
             </TrayMetaRow>
-            {replyToAddress && (
+            {replyRecipients.length > 0 && (
               <ReplyToHint
-                replyTo={replyToAddress}
+                recipients={replyRecipients}
                 toSender={replyToSender}
                 onToggle={setReplyToSender}
                 className="px-4 py-2 sm:px-5"

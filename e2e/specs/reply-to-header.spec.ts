@@ -66,7 +66,7 @@ test.describe.serial("replies follow Reply-To", () => {
     const composer = await openReply(page);
     await composer.getByLabel("Reply to the sender instead").check();
     await expect(composer.getByTestId("reply-to-hint")).toContainText(
-      `This reply goes to the sender, not ${REPLY_TO}`,
+      "This reply is addressed to the sender",
     );
     await expect(composer.getByTestId("reply-to-address")).toContainText(
       SENDER,

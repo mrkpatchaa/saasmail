@@ -84,6 +84,12 @@ export interface Email {
    * replies go to the sender.
    */
   replyTo?: string | null;
+  /**
+   * Every address a reply to this received message reaches when it follows
+   * Reply-To: the first is To, the others are copied. Empty when the reply
+   * simply goes to the sender.
+   */
+  replyRecipients?: CcEntry[];
   /** Set when this was a campaign send rather than mail someone wrote. */
   campaignId?: string | null;
 }
@@ -500,8 +506,9 @@ export interface MailMessage {
   bcc?: MailAddress[];
   /**
    * The addresses a reply to this received message would use, from its
-   * Reply-To header without our own inboxes. Empty when replies go to the
-   * sender, and for sent messages.
+   * Reply-To header without our own inboxes: the first is To, the others are
+   * copied. Empty when the reply simply goes to the sender, and for sent
+   * messages.
    */
   replyTo?: MailAddress[];
   subject: string | null;
@@ -832,6 +839,8 @@ export async function replyToEmail(
   status: string;
   /** The address the reply was sent to. */
   to: string;
+  /** Every address it was copied to. */
+  cc: string[];
   repliedTo: ReplyRecipient;
 }> {
   const { files = [], ...payload } = data;

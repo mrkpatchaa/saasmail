@@ -1,8 +1,11 @@
 import { cn } from "@/lib/utils";
 
 interface ReplyToHintProps {
-  /** Where the reply goes when it follows the message's Reply-To. */
-  replyTo: string;
+  /**
+   * Every address the reply uses when it follows the message's Reply-To: the
+   * first is To, the others are copied. Never empty.
+   */
+  recipients: { email: string }[];
   /** True when the user chose to answer the sender instead. */
   toSender: boolean;
   onToggle: (toSender: boolean) => void;
@@ -11,15 +14,16 @@ interface ReplyToHintProps {
 
 /**
  * Shown by the reply composers when the message being answered asked for
- * replies at another address: says where the reply will go and lets the user
- * answer the sender instead.
+ * replies at other addresses: names every address the reply will reach and
+ * lets the user answer the sender instead.
  */
 export default function ReplyToHint({
-  replyTo,
+  recipients,
   toSender,
   onToggle,
   className,
 }: ReplyToHintProps) {
+  const [first, ...copied] = recipients.map((entry) => entry.email);
   return (
     <div
       data-testid="reply-to-hint"
@@ -30,8 +34,10 @@ export default function ReplyToHint({
     >
       <span>
         {toSender
-          ? `This reply goes to the sender, not ${replyTo}`
-          : `Replies go to ${replyTo} (the sender asked for replies there)`}
+          ? "This reply is addressed to the sender; the message's Reply-To is not used"
+          : `Replies go to ${first}${
+              copied.length > 0 ? `, with ${copied.join(", ")} in Cc` : ""
+            } (the sender asked for replies there)`}
       </span>
       <label className="inline-flex cursor-pointer items-center gap-1.5 font-medium text-text-primary">
         <input

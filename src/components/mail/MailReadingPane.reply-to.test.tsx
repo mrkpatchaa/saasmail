@@ -98,16 +98,22 @@ describe("MailReadingPane Reply-To line", () => {
   });
 
   it("stays out of the way when replies go to the sender", () => {
-    const { unmount } = renderPane({ ...inbound, replyTo: [] });
+    // The server sends an empty list when a reply simply goes to the sender.
+    renderPane({ ...inbound, replyTo: [] });
     expect(screen.queryByTestId("mail-reading-reply-to")).toBeNull();
-    unmount();
+  });
 
-    // A Reply-To that only repeats the From address adds nothing.
+  it("lists an address copied next to the sender", () => {
     renderPane({
       ...inbound,
-      replyTo: [{ email: "NoReply@acme.com", name: null }],
+      replyTo: [
+        { email: "noreply@acme.com", name: null },
+        { email: "desk@acme.com", name: null },
+      ],
     });
-    expect(screen.queryByTestId("mail-reading-reply-to")).toBeNull();
+    expect(screen.getByTestId("mail-reading-reply-to").textContent).toBe(
+      "Reply-To: noreply@acme.com, desk@acme.com",
+    );
   });
 
   it("does not show one on a message without the field", () => {

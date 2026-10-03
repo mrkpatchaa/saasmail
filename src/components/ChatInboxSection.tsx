@@ -638,7 +638,7 @@ export default function ChatInboxSection({
           latestReceivedEmailId={replyTarget?.id ?? null}
           personEmail={_personEmail}
           replyCc={replyCc}
-          replyToAddress={replyTarget?.replyTo ?? null}
+          replyRecipients={replyTarget?.replyRecipients}
           onSent={onSent}
           onOpenCompose={handleOpenInCompose}
         />

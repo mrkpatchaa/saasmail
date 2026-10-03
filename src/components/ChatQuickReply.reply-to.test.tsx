@@ -12,13 +12,13 @@ vi.mock("@/lib/api", () => api);
 
 import ChatQuickReply from "@/components/ChatQuickReply";
 
-function renderReply(replyToAddress: string | null) {
+function renderReply(replyRecipients?: { email: string }[]) {
   return render(
     <ChatQuickReply
       inboxAddress="support@example.com"
       latestReceivedEmailId="email-1"
       personEmail="noreply@acme.com"
-      replyToAddress={replyToAddress}
+      replyRecipients={replyRecipients}
       onSent={() => {}}
     />,
   );
@@ -43,33 +43,46 @@ describe("ChatQuickReply and Reply-To", () => {
       attachmentIds: [],
       status: "sent",
       to: "help@acme.com",
+      cc: [],
       repliedTo: "reply_to",
     });
   });
 
-  it("shows no hint when replies go to the sender", async () => {
-    renderReply(null);
+  it("with no hint on screen, asks for the sender", async () => {
+    renderReply();
     expect(screen.queryByTestId("reply-to-hint")).toBeNull();
 
+    // Never left to the server's default, which follows a Reply-To.
     const payload = await send("hello");
-    expect(payload).not.toHaveProperty("recipient");
+    expect(payload.recipient).toBe("sender");
   });
 
   it("says where the reply goes and follows the Reply-To by default", async () => {
-    renderReply("help@acme.com");
+    renderReply([{ email: "help@acme.com" }]);
     expect(screen.getByTestId("reply-to-hint").textContent).toContain(
       "Replies go to help@acme.com (the sender asked for replies there)",
     );
 
     const payload = await send("hello");
-    expect(payload).not.toHaveProperty("recipient");
+    expect(payload.recipient).toBe("reply_to");
+  });
+
+  it("names every address that will get a copy", () => {
+    renderReply([
+      { email: "noreply@acme.com" },
+      { email: "desk@acme.com" },
+      { email: "b@acme.com" },
+    ]);
+    expect(screen.getByTestId("reply-to-hint").textContent).toContain(
+      "Replies go to noreply@acme.com, with desk@acme.com, b@acme.com in Cc (the sender asked for replies there)",
+    );
   });
 
   it('sends recipient: "sender" once the toggle is on', async () => {
-    renderReply("help@acme.com");
+    renderReply([{ email: "help@acme.com" }]);
     fireEvent.click(screen.getByLabelText("Reply to the sender instead"));
     expect(screen.getByTestId("reply-to-hint").textContent).toContain(
-      "This reply goes to the sender, not help@acme.com",
+      "This reply is addressed to the sender",
     );
 
     const payload = await send("hello");
