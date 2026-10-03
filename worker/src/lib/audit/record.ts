@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { auditEvents } from "../../db/audit-events.schema";
@@ -55,6 +56,85 @@ export async function recordAudit(db: Db, entry: AuditEntry): Promise<void> {
   } catch (err) {
     console.warn(`[audit] ${entry.action} not recorded:`, err);
   }
+}
+
+/** An event about one or many things of a kind: N messages, N conversations. */
+export interface BulkAuditEntry {
+  action: AuditAction;
+  targetType: AuditTargetType;
+  inbox?: string | null;
+  /** The ids of everything affected. One id becomes the row's `target_id`. */
+  refs: string[];
+  /** The sentence for `count` things. */
+  summary: (count: number) => string;
+  details?: Record<string, unknown>;
+}
+
+const collector = new AsyncLocalStorage<BulkAuditEntry[]>();
+
+/**
+ * Writes one row for an operation on `refs`: a single ref is the row's
+ * target, several are a count and the first refs in `details`. Inside
+ * `collectAudit`, the row is held back and merged with its like.
+ */
+export async function recordBulkAudit(
+  db: Db,
+  entry: BulkAuditEntry,
+): Promise<void> {
+  if (entry.refs.length === 0) return;
+  const pending = collector.getStore();
+  if (pending) {
+    pending.push(entry);
+    return;
+  }
+  await writeBulk(db, entry);
+}
+
+/**
+ * Runs `fn` and writes the bulk events it produced as one row per kind
+ * (same action, inbox, target type and details), however many service calls
+ * produced them. For callers that change one message per call in a loop: a
+ * JMAP `Email/set`, a purge.
+ */
+export async function collectAudit<T>(
+  db: Db,
+  fn: () => Promise<T>,
+): Promise<T> {
+  // A nested collection joins the outer one, which writes at its end.
+  if (collector.getStore()) return fn();
+  const pending: BulkAuditEntry[] = [];
+  try {
+    return await collector.run(pending, fn);
+  } finally {
+    const merged = new Map<string, BulkAuditEntry>();
+    for (const entry of pending) {
+      const key = JSON.stringify([
+        entry.action,
+        entry.targetType,
+        entry.inbox ?? null,
+        entry.details ?? null,
+      ]);
+      const existing = merged.get(key);
+      if (existing) existing.refs = [...existing.refs, ...entry.refs];
+      else merged.set(key, { ...entry, refs: [...entry.refs] });
+    }
+    for (const entry of merged.values()) await writeBulk(db, entry);
+  }
+}
+
+function writeBulk(db: Db, entry: BulkAuditEntry): Promise<void> {
+  const refs = [...new Set(entry.refs)];
+  return recordAudit(db, {
+    action: entry.action,
+    targetType: entry.targetType,
+    targetId: refs.length === 1 ? refs[0] : null,
+    inbox: entry.inbox ?? null,
+    summary: entry.summary(refs.length),
+    details:
+      refs.length === 1
+        ? (entry.details ?? null)
+        : bulkDetails(refs, entry.details),
+  });
 }
 
 /** `details` for an operation on many things: the count and the first refs. */

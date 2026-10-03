@@ -1,3 +1,4 @@
+import { auditAssign, auditSnooze } from "../audit/mail-events";
 import { and, eq, inArray, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../../db/emails.schema";
@@ -167,6 +168,7 @@ export async function snoozeConversations(
       });
   }
 
+  await auditSnooze(db, userId, conversations, until);
   return conversations.length;
 }
 
@@ -178,13 +180,15 @@ export async function assignConversations(
   userId: string | null,
 ): Promise<number> {
   const conversations = await resolveConversationRefs(db, allowed, refs);
+  let assignee: { id: string; email: string } | null = null;
   if (userId !== null) {
     const [user] = await db
-      .select({ id: users.id, role: users.role })
+      .select({ id: users.id, role: users.role, email: users.email })
       .from(users)
       .where(eq(users.id, userId))
       .limit(1);
     if (!user) throw new MessageStateAccessError();
+    assignee = { id: user.id, email: user.email };
 
     const assigneeAllowed = await resolveAllowedInboxes(db, user);
     for (const conversation of conversations) {
@@ -218,6 +222,7 @@ export async function assignConversations(
       });
   }
 
+  await auditAssign(db, _actorUserId, conversations, assignee);
   return conversations.length;
 }
 

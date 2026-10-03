@@ -1,3 +1,9 @@
+import {
+  auditMailboxMembership,
+  auditMailboxState,
+  mailboxFlagsBefore,
+  needsFlagsBefore,
+} from "../audit/mail-events";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
@@ -301,6 +307,11 @@ export async function setMailboxState(
     return;
   }
 
+  // Read before the write: only a flag that was set can be recorded as cleared.
+  const flagsBefore = needsFlagsBefore(userId, changes)
+    ? await mailboxFlagsBefore(db, resolved)
+    : null;
+
   const archivedAt = changes.archived === true ? now : null;
   const spamAt = changes.spam === true ? now : null;
   const trashedAt = changes.trashed === true ? now : null;
@@ -348,6 +359,7 @@ export async function setMailboxState(
     );
   }
   await runWriteBatches(db, statements);
+  await auditMailboxState(db, userId, resolved, changes, flagsBefore);
 }
 
 async function getMailboxForMutation(
@@ -605,6 +617,20 @@ export async function setMailboxMembership(
   }
 
   await runWriteBatches(db, statements);
+  await auditMailboxMembership(
+    db,
+    userId,
+    resolved,
+    add.map((mailboxId) => byId.get(mailboxId)!),
+    "added",
+  );
+  await auditMailboxMembership(
+    db,
+    userId,
+    resolved,
+    remove.map((mailboxId) => byId.get(mailboxId)!),
+    "removed",
+  );
 }
 
 const DELETE_BATCH_SIZE = 40;

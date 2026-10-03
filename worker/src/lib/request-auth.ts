@@ -8,6 +8,8 @@ import { hashKey } from "./crypto";
 export type RequestAuthResult = {
   user: any;
   authMethod: "session" | "apiKey";
+  /** The key that authenticated the request; its prefix names it in the audit log. */
+  apiKey?: { id: string; prefix: string };
 };
 
 export async function resolveRequestAuth(
@@ -28,7 +30,11 @@ export async function resolveRequestAuth(
 
   const tokenHash = await hashKey(authHeader.slice(7));
   const rows = await db
-    .select({ userId: apiKeys.userId })
+    .select({
+      userId: apiKeys.userId,
+      id: apiKeys.id,
+      prefix: apiKeys.keyPrefix,
+    })
     .from(apiKeys)
     .where(eq(apiKeys.keyHash, tokenHash))
     .limit(1);
@@ -47,5 +53,9 @@ export async function resolveRequestAuth(
     return null;
   }
 
-  return { user: userRows[0], authMethod: "apiKey" };
+  return {
+    user: userRows[0],
+    authMethod: "apiKey",
+    apiKey: { id: rows[0].id, prefix: rows[0].prefix },
+  };
 }

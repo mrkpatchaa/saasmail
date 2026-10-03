@@ -1,3 +1,5 @@
+import { jmapActor } from "../lib/audit/actors";
+import { runWithAudit } from "../lib/audit/context";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import type { Variables } from "../variables";
 import type { AllowedInboxes } from "../lib/inbox-permissions";
@@ -351,13 +353,16 @@ export function registerJmapRoutes(
       env: c.env,
       createdIds: new Map(Object.entries(request.createdIds ?? {})),
     };
-    const methodResponses = await executeJmapCalls(
-      c.get("db"),
-      auth.allowed,
-      auth.user,
-      request.using,
-      request.methodCalls,
-      ctx,
+    // Sends and state changes made by these calls are audited as this client.
+    const methodResponses = await runWithAudit(jmapActor(auth, c.req.raw), () =>
+      executeJmapCalls(
+        c.get("db"),
+        auth.allowed,
+        auth.user,
+        request.using,
+        request.methodCalls,
+        ctx,
+      ),
     );
 
     const session = await makeSession(
