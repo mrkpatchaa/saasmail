@@ -88,10 +88,11 @@ export const EmailSchema = z.object({
     .optional()
     .openapi({
       description:
-        "Address from the inbound Reply-To header, when present (e.g. a " +
-        "contact form's actual submitter behind a noreply@ sender). Populated " +
-        "only on GET /api/emails/{id} for received messages; omitted or null " +
-        "on list/conversation endpoints and on sent messages.",
+        "Where a reply to this received message goes when that is not the " +
+        "sender: the first address of the inbound Reply-To header that is " +
+        "not one of this instance's own inboxes (e.g. a contact form's " +
+        "actual submitter behind a noreply@ sender). Null when there is no " +
+        "such address, when it is the sender, and on sent messages.",
     }),
 });
 
@@ -235,7 +236,7 @@ const getEmailRoute = createRoute({
   path: "/{id}",
   tags: ["Emails"],
   description:
-    "Get a single email with full details, including attachments. replyTo is set for received messages when a Reply-To header was present.",
+    "Get a single email with full details, including attachments. replyTo is set for received messages whose Reply-To header names someone other than the sender.",
   request: {
     params: z.object({ id: z.string() }),
   },

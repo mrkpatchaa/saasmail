@@ -18,6 +18,12 @@ export type ReceivedSelect = {
   cc: string | null;
   /** The raw To header from `raw_headers`, when the select read it. */
   toHeader?: string | null;
+  /**
+   * `reply_to`, and for a row where it is NULL the `reply-to` value from
+   * `raw_headers`, when the select read them (`withReplyTo`).
+   */
+  replyTo?: string | null;
+  replyToHeader?: string | null;
   conversationId: string | null;
   receivedAt: number;
   personEmail: string | null;
@@ -135,6 +141,9 @@ export function adaptReceived(row: ReceivedSelect): UnifiedMessage {
     ...(others.length > 0 ? { additionalTo: others } : {}),
     ...(toList ? { toList } : {}),
     cc: parseCc(row.cc),
+    ...(row.replyTo !== undefined
+      ? { replyTo: replyToList(row.replyTo, row.replyToHeader) }
+      : {}),
     subject: row.subject,
     bodyText: row.bodyText,
     bodyHtml: row.bodyHtml,

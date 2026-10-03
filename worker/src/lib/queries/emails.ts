@@ -5,8 +5,14 @@ import { sentEmails } from "../../db/sent-emails.schema";
 import { senderIdentities } from "../../db/sender-identities.schema";
 import { attachments } from "../../db/attachments.schema";
 import { people } from "../../db/people.schema";
-import { parseCc } from "../messages/adapters";
+import { parseCc, replyToOf } from "../messages/adapters";
 import { queryMessages } from "../messages/query";
+import {
+  applyReplyGuard,
+  ownInboxAddresses,
+  replyCandidates,
+  replyTarget,
+} from "../reply-recipients";
 import type { AllowedInboxes } from "../inbox-permissions";
 import { isInboxAllowed } from "../inbox-permissions";
 
@@ -34,6 +40,8 @@ export type PersonEmailRow = {
   bodyText: string | null;
   isRead: number | null;
   cc: CcEntry[];
+  /** Where a reply goes when that is not the sender; see `replyTarget`. */
+  replyTo: string | null;
   timestamp: number;
   status: string | null;
   campaignId?: string | null;
@@ -54,7 +62,10 @@ export type ListPersonEmailsResult = {
   inboxes: InboxMeta[];
 };
 
-export type ReceivedEmailDetail = Omit<typeof emails.$inferSelect, "cc"> & {
+export type ReceivedEmailDetail = Omit<
+  typeof emails.$inferSelect,
+  "cc" | "replyTo"
+> & {
   type: "received";
   timestamp: number;
   fromAddress: string | null;
@@ -84,41 +95,6 @@ export type SentEmailDetail = {
 
 export type EmailDetail = ReceivedEmailDetail | SentEmailDetail;
 
-/**
- * Pull the Reply-To address out of an email's stored raw headers.
- * `raw_headers` is a JSON object of all inbound headers (see email-handler),
- * so no schema change is needed to surface this. Returns the bare address
- * (lower-cased), unwrapping a "Name <addr>" form. Null when absent/malformed.
- */
-function extractReplyTo(rawHeaders: string | null): string | null {
-  if (!rawHeaders) return null;
-  try {
-    const headers = JSON.parse(rawHeaders) as Record<string, unknown>;
-    for (const [key, value] of Object.entries(headers)) {
-      if (key.toLowerCase() === "reply-to" && typeof value === "string") {
-        const angle = value.match(/<([^>]+)>/);
-        const addr = (angle ? angle[1] : value).trim().toLowerCase();
-        return addr || null;
-      }
-    }
-  } catch {
-    // Malformed raw_headers — treat as no Reply-To rather than failing the read.
-  }
-  return null;
-}
-
-/** Reply-To is only meaningful when it differs from the attributed sender. */
-export function surfaceReplyTo(
-  rawHeaders: string | null,
-  personEmail: string | null,
-): string | null {
-  const replyTo = extractReplyTo(rawHeaders);
-  if (!replyTo) return null;
-  const person = personEmail?.trim().toLowerCase();
-  if (person && replyTo === person) return null;
-  return replyTo;
-}
-
 /** Compatibility wrapper for the existing person-timeline API. */
 export async function listPersonEmails(
   db: DrizzleD1Database<any>,
@@ -140,9 +116,11 @@ export async function listPersonEmails(
     limit: requested,
     withAttachmentCounts: true,
     withAttachments: true,
+    withReplyTo: true,
     includeTrashed: false,
     includeSpam: false,
   });
+  await applyReplyGuard(db, pageResult.messages);
 
   const result: PersonEmailRow[] = pageResult.messages.map((message) => ({
     id: message.ref.id,
@@ -159,6 +137,7 @@ export async function listPersonEmails(
     bodyText: message.bodyText,
     isRead: message.isRead === null ? null : message.isRead ? 1 : 0,
     cc: message.cc,
+    replyTo: replyTarget(message.replyTo ?? [], message.from?.email),
     timestamp: message.occurredAt,
     status: message.delivery?.status ?? null,
     campaignId: message.source.campaignId,
@@ -233,7 +212,10 @@ export async function getEmailById(
       timestamp: row[0].receivedAt,
       fromAddress: senderRow[0]?.email ?? null,
       toAddress: null,
-      replyTo: surfaceReplyTo(row[0].rawHeaders, senderRow[0]?.email ?? null),
+      replyTo: replyTarget(
+        replyCandidates(replyToOf(row[0]), await ownInboxAddresses(db)),
+        senderRow[0]?.email,
+      ),
       cc: parseCc(row[0].cc),
       attachments: atts,
     };
