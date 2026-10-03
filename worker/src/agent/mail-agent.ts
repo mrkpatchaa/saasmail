@@ -1,3 +1,8 @@
+import { mailAgentSessionIdForUser } from "./identity";
+import { agentActor } from "../lib/audit/actors";
+import { runWithAudit, type AuditActor } from "../lib/audit/context";
+import { AUDIT_ACTIONS } from "../lib/audit/events";
+import { recordAudit } from "../lib/audit/record";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import { eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
@@ -538,6 +543,30 @@ function terminalToolCallIdsFromStep(content: readonly unknown[]): string[] {
   return [...ids];
 }
 
+/**
+ * Records every tool call of a step that the user declined to approve. The
+ * approval card is where a person stops the agent, so this is the only trace
+ * that they did.
+ */
+export async function auditDeniedToolCalls(
+  audit: { db: DrizzleD1Database<any>; actor: AuditActor },
+  content: readonly unknown[],
+): Promise<void> {
+  for (const part of content) {
+    const value = record(part);
+    if (value?.type !== "tool-output-denied") continue;
+    const toolName =
+      typeof value.toolName === "string" ? value.toolName : "a tool";
+    await runWithAudit(audit.actor, () =>
+      recordAudit(audit.db, {
+        action: AUDIT_ACTIONS.agentActionDenied,
+        summary: `The agent's request to run ${toolName} was declined`,
+        details: { tool: toolName, toolCallId: value.toolCallId },
+      }),
+    );
+  }
+}
+
 export async function streamMailAgentTurn({
   model,
   messages,
@@ -546,6 +575,7 @@ export async function streamMailAgentTurn({
   abortSignal,
   toolApprovalSecret,
   approvalLedger,
+  audit,
 }: {
   model: LanguageModel;
   messages: UIMessage[];
@@ -554,6 +584,8 @@ export async function streamMailAgentTurn({
   abortSignal?: AbortSignal;
   toolApprovalSecret?: string | Uint8Array;
   approvalLedger?: AgentApprovalLedger;
+  /** Where to record an approval the user declined, and as whom. */
+  audit?: { db: DrizzleD1Database<any>; actor: AuditActor };
 }) {
   return streamText({
     model,
@@ -564,6 +596,7 @@ export async function streamMailAgentTurn({
     experimental_toolApprovalSecret: toolApprovalSecret,
     stopWhen: isStepCount(8),
     onStepFinish: async ({ content, toolResults }) => {
+      if (audit) await auditDeniedToolCalls(audit, content);
       if (!approvalLedger) return;
 
       const entries = content
@@ -668,7 +701,12 @@ export async function runMailAgentChat({
       env: env as CloudflareBindings,
       user,
       gatedCallsAlready: countCompletedApprovalActions(prepared.messages),
+      sessionId: mailAgentSessionIdForUser(instanceName, user.id),
     }),
+    audit: {
+      db,
+      actor: agentActor(user, mailAgentSessionIdForUser(instanceName, user.id)),
+    },
     instructions: await buildMailAgentInstructions({ db, user, body }),
     abortSignal,
     toolApprovalSecret,

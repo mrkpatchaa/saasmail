@@ -1,3 +1,5 @@
+import { AUDIT_ACTIONS } from "../lib/audit/events";
+import { recordAudit } from "../lib/audit/record";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -620,6 +622,15 @@ export async function beginCampaignSend(
     jobId,
   };
   await env.EMAIL_QUEUE.send(message);
+  // Started by a person, or by cron for a scheduled campaign.
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.campaignStarted,
+    targetType: "campaign",
+    targetId: campaignId,
+    inbox: campaign.fromAddress,
+    summary: `Started sending the campaign '${campaign.name}' to ${target} subscribers`,
+    details: { listId: campaign.listId, recipients: target },
+  });
   return null;
 }
 
@@ -809,6 +820,14 @@ campaignsRouter.openapi(cancelRoute, async (c) => {
         eq(asyncJobs.status, "running"),
       ),
     );
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.campaignCancelled,
+    targetType: "campaign",
+    targetId: id,
+    inbox: campaign.fromAddress,
+    summary: `Cancelled the campaign '${campaign.name}' (it was ${campaign.status})`,
+    details: { previousStatus: campaign.status },
+  });
 
   const updated = await db
     .select()
