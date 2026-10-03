@@ -1,4 +1,4 @@
-import { parseAddressHeader } from "../email-parser";
+import { parseAddressHeader, parseReplyToHeader } from "../email-parser";
 import type { MailAddress, UnifiedMessage } from "./types";
 
 export type ReceivedSelect = {
@@ -65,6 +65,47 @@ export function parseCc(raw: string | null | undefined): MailAddress[] {
   } catch {
     return [];
   }
+}
+
+/** The `reply-to` value kept in a stored `raw_headers` object, if any. */
+function replyToHeader(rawHeaders: string | null): string | null {
+  if (!rawHeaders) return null;
+  try {
+    const value = (JSON.parse(rawHeaders) as Record<string, unknown>)[
+      "reply-to"
+    ];
+    return typeof value === "string" ? value : null;
+  } catch {
+    // Malformed raw_headers: no Reply-To rather than a failed read.
+    return null;
+  }
+}
+
+/**
+ * A received message's Reply-To list: the stored column, or, for a row from
+ * before it existed (`reply_to` NULL), the header kept in `raw_headers`.
+ * `header` is that one value when a query already pulled it out.
+ */
+function replyToList(
+  stored: string | null,
+  header: string | null | undefined,
+): MailAddress[] {
+  if (stored !== null) return parseCc(stored);
+  return header ? parseReplyToHeader(header) : [];
+}
+
+/**
+ * Where the sender of a received message asked for replies. Every reader of
+ * Reply-To goes through this; nothing else parses `raw_headers` for it.
+ */
+export function replyToOf(row: {
+  replyTo: string | null;
+  rawHeaders: string | null;
+}): MailAddress[] {
+  return replyToList(
+    row.replyTo,
+    row.replyTo === null ? replyToHeader(row.rawHeaders) : null,
+  );
 }
 
 export function adaptReceived(row: ReceivedSelect): UnifiedMessage {

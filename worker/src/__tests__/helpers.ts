@@ -302,6 +302,7 @@ export async function createTestEmail(
     referencesHeader?: string | null;
     conversationId?: string | null;
     cc?: string | null;
+    replyTo?: string | null;
   } = {},
 ) {
   const db = getDb();
@@ -320,6 +321,7 @@ export async function createTestEmail(
     isRead: opts.isRead ?? 0,
     conversationId: opts.conversationId ?? null,
     cc: opts.cc ?? null,
+    replyTo: opts.replyTo ?? null,
     receivedAt: now,
     createdAt: now,
   };

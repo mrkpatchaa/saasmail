@@ -579,6 +579,9 @@ emailsRouter.openapi(reassignPersonRoute, async (c) => {
         .update(emails)
         .set({
           personId: person.id,
+          // The stored list goes with the header: from here on the new
+          // person's address is the reply target.
+          replyTo: null,
           ...(rawHeaders !== target.rawHeaders ? { rawHeaders } : {}),
         })
         .where(eq(emails.id, target.id));
