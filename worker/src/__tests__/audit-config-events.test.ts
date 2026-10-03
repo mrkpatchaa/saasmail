@@ -258,6 +258,69 @@ describe("audit events for configuration and people", () => {
     });
   });
 
+  it("records real sign-ins through better-auth: a wrong password, then the right one", async () => {
+    await getDb()
+      .insert(invitations)
+      .values({
+        id: "inv-2",
+        token: "tok-2",
+        role: "member",
+        email: "signer@example.com",
+        expiresAt: new Date(Date.now() + 86_400_000),
+        usedBy: null,
+        usedAt: null,
+        createdBy: userId,
+        createdAt: new Date(),
+      });
+    const password = "correct horse battery staple";
+    const joined = await authFetch("/api/invites/accept", {
+      method: "POST",
+      body: JSON.stringify({
+        token: "tok-2",
+        name: "Signer",
+        email: "signer@example.com",
+        password,
+      }),
+    });
+    expect(joined.status, await joined.clone().text()).toBe(200);
+    const { userId: signerId } = (await joined.json()) as { userId: string };
+
+    const signIn = (attempt: string) =>
+      authFetch("/api/auth/sign-in/email", {
+        method: "POST",
+        headers: { "cf-connecting-ip": "198.51.100.4" },
+        body: JSON.stringify({
+          email: "signer@example.com",
+          password: attempt,
+        }),
+      });
+    const wrong = await signIn("not the password");
+    expect(wrong.status).toBeGreaterThanOrEqual(400);
+    const right = await signIn(password);
+    expect(right.status, await right.clone().text()).toBe(200);
+
+    const rows = (await events()).filter((row) =>
+      row.action.startsWith("auth."),
+    );
+    expect(rows.map((row) => row.action)).toEqual([
+      "auth.sign_in_failed",
+      "auth.sign_in",
+    ]);
+    expect(rows[0]).toMatchObject({
+      actorUserId: null,
+      channel: "web",
+      ip: "198.51.100.4",
+      details: { method: "password", email: "signer@example.com" },
+    });
+    expect(rows[1]).toMatchObject({
+      actorType: "user",
+      actorUserId: signerId,
+      actorLabel: "signer@example.com",
+      details: { method: "password" },
+    });
+    expect(JSON.stringify(rows)).not.toContain(password);
+  });
+
   it("records an API key created and revoked by its prefix", async () => {
     const created = await send("/api/api-keys", apiKey, "POST");
     expect(created.status, await created.clone().text()).toBe(201);
