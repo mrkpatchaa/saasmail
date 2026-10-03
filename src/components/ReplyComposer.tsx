@@ -14,6 +14,7 @@ import CcInput from "@/components/CcInput";
 import ThreadMessage from "@/components/ThreadMessage";
 import AttachmentPicker from "@/components/AttachmentPicker";
 import AttachmentChips from "@/components/AttachmentChips";
+import ReplyToHint from "@/components/ReplyToHint";
 import {
   TrayMaximizeButton,
   TrayMetaRow,
@@ -133,6 +134,13 @@ export default function ReplyComposer({
   // clicking Reply on our own outgoing message rendered an empty
   // composer with no warning.
   const [contextError, setContextError] = useState(false);
+  // The message asked for replies at another address (Reply-To). The reply
+  // follows it unless the user ticks "Reply to the sender instead".
+  const replyToAddress =
+    originalEmail?.type === "received" ? (originalEmail.replyTo ?? null) : null;
+  const [replyToSender, setReplyToSender] = useState(false);
+  const recipientPayload =
+    replyToAddress && replyToSender ? { recipient: "sender" as const } : {};
 
   // Template state
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
@@ -257,6 +265,7 @@ export default function ReplyComposer({
           ...(files.length > 0
             ? { files: files.map((file) => ({ file })) }
             : {}),
+          ...recipientPayload,
         });
       } else {
         if (!selectedSlug) {
@@ -272,6 +281,7 @@ export default function ReplyComposer({
           ...(files.length > 0
             ? { files: files.map((file) => ({ file })) }
             : {}),
+          ...recipientPayload,
         });
       }
       setFiles([]);
@@ -367,10 +377,23 @@ export default function ReplyComposer({
               </select>
             </TrayMetaRow>
             <TrayMetaRow label="To">
-              <span className="block truncate py-2 pr-3 text-sm text-text-primary">
-                {recipientLabel}
+              <span
+                data-testid="reply-to-address"
+                className="block truncate py-2 pr-3 text-sm text-text-primary"
+              >
+                {replyToAddress && !replyToSender
+                  ? replyToAddress
+                  : recipientLabel}
               </span>
             </TrayMetaRow>
+            {replyToAddress && (
+              <ReplyToHint
+                replyTo={replyToAddress}
+                toSender={replyToSender}
+                onToggle={setReplyToSender}
+                className="px-4 py-2 sm:px-5"
+              />
+            )}
             <TrayMetaRow label="Cc">
               <CcInput
                 value={cc}

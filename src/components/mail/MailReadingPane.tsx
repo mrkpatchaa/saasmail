@@ -40,6 +40,19 @@ function addressLabel(
   return address.name ? `${address.name} <${address.email}>` : address.email;
 }
 
+/**
+ * The addresses a reply to this message goes to, when the sender asked for
+ * replies somewhere other than their own address.
+ */
+function replyToAddresses(message: MailMessage): MailMessage["cc"] {
+  if (message.direction !== "inbound") return [];
+  const replyTo = message.replyTo ?? [];
+  const sender = message.from?.email.toLowerCase();
+  const onlySender =
+    replyTo.length === 1 && replyTo[0].email.toLowerCase() === sender;
+  return onlySender ? [] : replyTo;
+}
+
 function fullTime(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString([], {
     dateStyle: "medium",
@@ -409,6 +422,19 @@ export default function MailReadingPane({
                               Cc:
                             </span>{" "}
                             {selectedMessage.cc
+                              .map((entry) => addressLabel(entry))
+                              .join(", ")}
+                          </p>
+                        )}
+                        {replyToAddresses(selectedMessage).length > 0 && (
+                          <p
+                            className="mt-1 text-xs text-text-secondary"
+                            data-testid="mail-reading-reply-to"
+                          >
+                            <span className="font-medium text-text-primary">
+                              Reply-To:
+                            </span>{" "}
+                            {replyToAddresses(selectedMessage)
                               .map((entry) => addressLabel(entry))
                               .join(", ")}
                           </p>
