@@ -544,24 +544,37 @@ function terminalToolCallIdsFromStep(content: readonly unknown[]): string[] {
 }
 
 /**
- * Records every tool call of a step that the user declined to approve. The
- * approval card is where a person stops the agent, so this is the only trace
- * that they did.
+ * Records the approvals the user declined in the turn they are answered: a
+ * tool part still in `approval-responded` with `approved: false`. Once the
+ * turn has run the part is `output-denied`, so a later turn does not record
+ * it again. (A finished step never carries the denial: the SDK reports it
+ * before the step starts.) An expired approval is the system's doing and is
+ * not recorded here.
  */
-export async function auditDeniedToolCalls(
+export async function auditDeclinedApprovals(
   audit: { db: DrizzleD1Database<any>; actor: AuditActor },
-  content: readonly unknown[],
+  messages: UIMessage[],
 ): Promise<void> {
-  for (const part of content) {
-    const value = record(part);
-    if (value?.type !== "tool-output-denied") continue;
-    const toolName =
-      typeof value.toolName === "string" ? value.toolName : "a tool";
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") return;
+  for (const part of last.parts) {
+    if (!isToolUIPart(part)) continue;
+    const approval = toolApproval(part);
+    if (
+      (part as { state?: string }).state !== "approval-responded" ||
+      approval?.approved !== false
+    ) {
+      continue;
+    }
+    const toolName = getToolName(part);
     await runWithAudit(audit.actor, () =>
       recordAudit(audit.db, {
         action: AUDIT_ACTIONS.agentActionDenied,
         summary: `The agent's request to run ${toolName} was declined`,
-        details: { tool: toolName, toolCallId: value.toolCallId },
+        details: {
+          tool: toolName,
+          toolCallId: (part as { toolCallId?: string }).toolCallId,
+        },
       }),
     );
   }
@@ -575,7 +588,6 @@ export async function streamMailAgentTurn({
   abortSignal,
   toolApprovalSecret,
   approvalLedger,
-  audit,
 }: {
   model: LanguageModel;
   messages: UIMessage[];
@@ -584,8 +596,6 @@ export async function streamMailAgentTurn({
   abortSignal?: AbortSignal;
   toolApprovalSecret?: string | Uint8Array;
   approvalLedger?: AgentApprovalLedger;
-  /** Where to record an approval the user declined, and as whom. */
-  audit?: { db: DrizzleD1Database<any>; actor: AuditActor };
 }) {
   return streamText({
     model,
@@ -596,7 +606,6 @@ export async function streamMailAgentTurn({
     experimental_toolApprovalSecret: toolApprovalSecret,
     stopWhen: isStepCount(8),
     onStepFinish: async ({ content, toolResults }) => {
-      if (audit) await auditDeniedToolCalls(audit, content);
       if (!approvalLedger) return;
 
       const entries = content
@@ -666,6 +675,13 @@ export async function runMailAgentChat({
   }
 
   const prepared = await prepareApprovalMessages(messages, approvalLedger);
+  await auditDeclinedApprovals(
+    {
+      db,
+      actor: agentActor(user, mailAgentSessionIdForUser(instanceName, user.id)),
+    },
+    messages,
+  );
   if (prepared.persistedRepair && persistMessages) {
     await persistMessages(prepared.persistedRepair);
   }
@@ -703,10 +719,6 @@ export async function runMailAgentChat({
       gatedCallsAlready: countCompletedApprovalActions(prepared.messages),
       sessionId: mailAgentSessionIdForUser(instanceName, user.id),
     }),
-    audit: {
-      db,
-      actor: agentActor(user, mailAgentSessionIdForUser(instanceName, user.id)),
-    },
     instructions: await buildMailAgentInstructions({ db, user, body }),
     abortSignal,
     toolApprovalSecret,

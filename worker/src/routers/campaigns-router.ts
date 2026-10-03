@@ -765,6 +765,15 @@ campaignsRouter.openapi(scheduleRoute, async (c) => {
     .update(campaigns)
     .set({ status: "scheduled", scheduledAt, updatedAt: now() })
     .where(eq(campaigns.id, id));
+  // Cron starts it later as the system; this row says who decided it.
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.campaignScheduled,
+    targetType: "campaign",
+    targetId: id,
+    inbox: campaign.fromAddress,
+    summary: `Scheduled the campaign '${campaign.name}' for ${new Date(scheduledAt * 1000).toISOString()}`,
+    details: { scheduledAt },
+  });
   const updated = await db
     .select()
     .from(campaigns)
@@ -1021,7 +1030,17 @@ campaignsRouter.openapi(testSendRoute, async (c) => {
   });
 
   // No campaign_recipients row, no stats change: a test must never look like
-  // delivery in the numbers.
+  // delivery in the numbers. It is still mail sent under the list's identity.
+  if (result.delivered.length > 0) {
+    await recordAudit(db, {
+      action: AUDIT_ACTIONS.mailSent,
+      targetType: "campaign",
+      targetId: campaign.id,
+      inbox: campaign.fromAddress,
+      summary: `Sent a test of the campaign '${campaign.name}' to ${to} from ${campaign.fromAddress}`,
+      details: { to, test: true },
+    });
+  }
   return c.json({ sent: result.delivered.length > 0 });
 });
 

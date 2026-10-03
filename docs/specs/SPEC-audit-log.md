@@ -135,7 +135,7 @@ agentSessionId, … })` (identity from D1 per D22). The wrap is per tool, not pe
   routes.
 - `GET /api/admin/audit/export.csv` with the same filters, at most 10,000 rows, `Content-Disposition:
 attachment`.
-- `GET /api/admin/audit/actions` → the distinct action names (for the filter dropdown).
+- `GET /api/admin/audit/actions` → every action name in the catalogue (for the filter dropdown).
 - Page: filter bar (action group, actor, inbox, date range, text), table (time, actor, action, target,
   inbox, summary), "Load more", a row expands to pretty-printed `details`. A "Download CSV" button.
   Mobile: one card per event instead of the table. Behind `AdminGuard`, like `/automations`.
@@ -143,7 +143,7 @@ attachment`.
 ## 5. Retention
 
 `pruneAuditEvents(db, now)` deletes rows older than `AUDIT_RETENTION_DAYS` (default 180, min 30) in
-batches of 1,000 per cron pass, appended to the hourly chain in `worker/src/index.ts` right after
+batches of 1,000, up to ten per cron pass, appended to the hourly chain in `worker/src/index.ts` right after
 `pruneJmapChanges` (no new cron schedule: `scheduled()` runs every job on every tick).
 
 ## Tests
@@ -200,3 +200,28 @@ The five decisions are unchanged. Where the code differed from what the sections
     one by one: `sequence.enrolled` and `campaign.started` cover them.
 16. `AsyncLocalStorage` gets a two-method type declaration instead of `@types/node`, whose globals
     would clash with the Workers types.
+
+After an independent review of the first implementation (same day):
+
+17. better-auth's admin plugin serves `/api/auth/admin/*` (set role, remove, ban, set password, revoke
+    sessions, impersonate), which no route of ours sees. The auth hook records them: `user.role_changed`,
+    `user.removed`, `user.joined`, a new `user.updated` (ban, password, sessions; never a request
+    field) and a new `user.impersonated`. An impersonated session is recorded as the admin
+    ("admin@… as member@…"), not as the member.
+18. `agent.action_denied` is read from the incoming messages (a tool part in `approval-responded` with
+    `approved: false`); the SDK never puts the denial in a finished step, so the first version never
+    fired.
+19. A failed sign-in needs no authentication: it is recorded only against an existing account, never
+    with what was typed, and at most once a minute per account (per caller address for a passkey).
+20. Mail-state events count only what changed: the flags, folder membership and conversation state
+    are read before the write (one read each, for calls by a person), and a failed audit read is
+    logged instead of failing the request.
+21. `mail.sent` is also recorded for a failed send that goes out on a manual Outbox retry and for a
+    campaign test send.
+22. New `campaign.scheduled`: cron starts a scheduled campaign as the system, so the schedule is what
+    names the person.
+23. Deleting a contact records its mail as one `mail.deleted` row per inbox, like every other delete.
+24. A granted OAuth consent names its client; the webhook URL is logged without credentials or query.
+25. The prune takes up to ten batches of 1,000 per pass (one would fall behind a busy instance), and
+    `GET /api/admin/audit/actions` returns the catalogue instead of a `DISTINCT` over the table.
+26. The page drops a "Load more" page that arrives after the filters changed.

@@ -1,5 +1,4 @@
-import { AUDIT_ACTIONS } from "../lib/audit/events";
-import { bulkDetails, recordAudit } from "../lib/audit/record";
+import { auditMailDeleted } from "../lib/audit/mail-events";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { desc, like, or, eq, sql, and, inArray, isNotNull } from "drizzle-orm";
 import { people } from "../db/people.schema";
@@ -768,11 +767,11 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
   const groupConversations = await collectPersonGroupConversations(db, id);
 
   const received = await db
-    .select({ id: emails.id })
+    .select({ id: emails.id, inbox: emails.recipient })
     .from(emails)
     .where(eq(emails.personId, id));
   const sent = await db
-    .select({ id: sentEmails.id })
+    .select({ id: sentEmails.id, inbox: sentEmails.fromAddress })
     .from(sentEmails)
     .where(eq(sentEmails.personId, id));
 
@@ -821,19 +820,24 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
   await deletePersonConversationState(db, id, groupConversations);
   await db.delete(people).where(eq(people.id, id));
 
-  const deletedRefs = [
-    ...received.map((message) => `received:${message.id}`),
-    ...sent.map((message) => `sent:${message.id}`),
-  ];
-  await recordAudit(db, {
-    action: AUDIT_ACTIONS.mailDeleted,
-    targetType: "message",
-    summary: `Deleted ${person[0].email} and their ${deletedRefs.length} message${deletedRefs.length === 1 ? "" : "s"}`,
-    details: bulkDetails(deletedRefs, {
-      personId: id,
-      person: person[0].email,
-    }),
-  });
+  // One row per inbox, so a search of an inbox's log finds what left it.
+  await auditMailDeleted(
+    db,
+    [
+      ...received.map((message) => ({
+        ref: { kind: "received" as const, id: message.id },
+        inbox: message.inbox,
+      })),
+      ...sent.map((message) => ({
+        ref: { kind: "sent" as const, id: message.id },
+        inbox: message.inbox,
+      })),
+    ],
+    {
+      with: `the contact ${person[0].email}`,
+      details: { personId: id, person: person[0].email },
+    },
+  );
 
   return c.json({ success: true }, 200);
 });

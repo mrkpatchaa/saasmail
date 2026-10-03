@@ -1,3 +1,4 @@
+import { AUDIT_ACTIONS } from "../lib/audit/events";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
@@ -229,7 +230,7 @@ const actionsRoute = createRoute({
   path: "/actions",
   tags: ["Admin", "Audit log"],
   description:
-    "The distinct actions present in the audit log, for a filter list.",
+    "Every action the audit log can record, sorted, for a filter list.",
   responses: {
     500: { description: "Internal server error" },
     200: {
@@ -243,11 +244,10 @@ const actionsRoute = createRoute({
   },
 });
 
+// The catalogue, not a DISTINCT over the table: that would read the whole
+// action index every time the page opens.
 adminAuditRouter.openapi(actionsRoute, async (c) => {
-  const rows = await c.get("db").all<{
-    action: string;
-  }>(sql`SELECT DISTINCT action FROM audit_events ORDER BY action`);
-  return c.json({ actions: rows.map((row) => row.action) }, 200);
+  return c.json({ actions: Object.values(AUDIT_ACTIONS).sort() }, 200);
 });
 
 const exportRoute = createRoute({

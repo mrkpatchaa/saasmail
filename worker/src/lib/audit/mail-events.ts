@@ -389,6 +389,8 @@ export async function auditMailSent(
     templateSlug?: string | null;
     /** For a reply: whether it followed the original's Reply-To. */
     repliedTo?: "reply_to" | "sender";
+    /** True when a send that had failed went out on a manual retry. */
+    retried?: boolean;
   },
 ): Promise<void> {
   if (!["sent", "retrying", "scheduled"].includes(sent.status)) return;
@@ -397,7 +399,7 @@ export async function auditMailSent(
     targetType: "message",
     targetId: `sent:${sent.id}`,
     inbox: sent.from,
-    summary: `Sent '${sent.subject ?? ""}' to ${sent.to} from ${sent.from}`,
+    summary: `${sent.retried ? "Retried and sent" : "Sent"} '${sent.subject ?? ""}' to ${sent.to} from ${sent.from}`,
     details: {
       sentEmailId: sent.id,
       to: sent.to,
@@ -405,6 +407,7 @@ export async function auditMailSent(
       status: sent.status,
       ...(sent.templateSlug ? { templateSlug: sent.templateSlug } : {}),
       ...(sent.repliedTo ? { repliedTo: sent.repliedTo } : {}),
+      ...(sent.retried ? { retried: true } : {}),
     },
   });
 }
@@ -416,7 +419,10 @@ export async function auditMailSent(
 export async function auditMailDeleted(
   db: Db,
   deleted: { ref: MessageRef; inbox: string; subject?: string | null }[],
+  /** What they were deleted along with, e.g. "the contact alice@example.com". */
+  context?: { with: string; details?: Record<string, unknown> },
 ): Promise<void> {
+  const along = context ? `, with ${context.with}` : "";
   for (const [inbox, group] of byInbox(deleted)) {
     const subject = group.length === 1 ? group[0].subject : null;
     await recordBulkAudit(db, {
@@ -426,8 +432,9 @@ export async function auditMailDeleted(
       refs: group.map((message) => refId(message.ref)),
       summary: (n) =>
         n === 1 && subject
-          ? `Deleted '${subject}' from ${inbox}`
-          : `Deleted ${messages(n)} from ${inbox}`,
+          ? `Deleted '${subject}' from ${inbox}${along}`
+          : `Deleted ${messages(n)} from ${inbox}${along}`,
+      ...(context?.details ? { details: context.details } : {}),
     });
   }
 }

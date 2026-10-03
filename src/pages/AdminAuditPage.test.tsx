@@ -157,6 +157,44 @@ describe("AdminAuditPage", () => {
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 
+  it("drops a page that arrives after the filters changed", async () => {
+    let finishOldPage: (value: unknown) => void = () => {};
+    api.fetchAuditEvents
+      .mockResolvedValueOnce({ events: [event("a")], nextCursor: "1800:9" })
+      // The "Load more" of the first list, still on its way...
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (finishOldPage = resolve)),
+      )
+      // ...when new filters fetch a different list.
+      .mockResolvedValueOnce({
+        events: [event("fresh", { summary: "Fresh result" })],
+        nextCursor: null,
+      });
+    render(<AdminAuditPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+    fireEvent.change(screen.getByLabelText("Text"), {
+      target: { value: "fresh" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("audit-table").textContent).toContain(
+        "Fresh result",
+      ),
+    );
+
+    finishOldPage({
+      events: [event("stale", { summary: "Stale result" })],
+      nextCursor: "1700:1",
+    });
+    await waitFor(() => expect(api.fetchAuditEvents).toHaveBeenCalledTimes(3));
+    // Give the late page a chance to be (wrongly) appended.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByText("Stale result")).toBeNull();
+    expect(screen.getAllByTestId("audit-row")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
   it("says so when nothing matches, and when loading fails", async () => {
     api.fetchAuditEvents.mockResolvedValueOnce({
       events: [],

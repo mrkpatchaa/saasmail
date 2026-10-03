@@ -99,8 +99,9 @@ describe("GET /api/admin/audit", () => {
   it("pages with the cursor, without gaps or repeats", async () => {
     await seed(
       Array.from({ length: 7 }, (_, i) => ({
-        // Two share a second, across a page boundary.
-        at: i === 3 || i === 4 ? 2_000 : 1_000 + i,
+        // Four share a second, so that second straddles a page boundary and
+        // only the row sequence can tell where the next page starts.
+        at: i >= 1 && i <= 4 ? 2_000 : 1_000 + i,
         summary: `n${i}`,
       })),
     );
@@ -117,7 +118,7 @@ describe("GET /api/admin/audit", () => {
       pages += 1;
     }
     expect(pages).toBe(3);
-    expect(seen).toEqual(["n4", "n3", "n6", "n5", "n2", "n1", "n0"]);
+    expect(seen).toEqual(["n4", "n3", "n2", "n1", "n6", "n5", "n0"]);
   });
 
   it("rejects a cursor it did not issue", async () => {
@@ -155,16 +156,14 @@ describe("GET /api/admin/audit", () => {
     expect(await summaries("?q=1_0")).toEqual([]);
   });
 
-  it("lists the actions present, sorted", async () => {
-    await seed([
-      { action: "rule.created" },
-      { action: "mail.archived" },
-      { action: "mail.archived" },
-    ]);
+  it("lists every action the log can record, sorted", async () => {
     const res = await authFetch(`${BASE}/actions`, { apiKey });
-    expect(await res.json()).toEqual({
-      actions: ["mail.archived", "rule.created"],
-    });
+    const { actions } = (await res.json()) as { actions: string[] };
+    expect(actions).toEqual([...actions].sort());
+    expect(new Set(actions).size).toBe(actions.length);
+    for (const action of ["mail.sent", "user.impersonated", "rule.toggled"]) {
+      expect(actions).toContain(action);
+    }
   });
 
   it("exports the filtered events as CSV, safe for spreadsheets", async () => {

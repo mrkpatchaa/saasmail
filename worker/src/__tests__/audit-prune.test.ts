@@ -3,6 +3,7 @@ import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
   AUDIT_PRUNE_BATCH,
+  AUDIT_PRUNE_MAX_BATCHES,
   auditRetentionDays,
   pruneAuditEvents,
 } from "../lib/audit/prune";
@@ -74,11 +75,13 @@ describe("pruneAuditEvents", () => {
     expect(await pruneAuditEvents(getDb(), NOW, 30)).toBe(3);
   });
 
-  it("deletes at most one batch per pass, oldest first", async () => {
+  it("deletes in batches up to a bound per pass, oldest first", async () => {
+    const bound = AUDIT_PRUNE_BATCH * AUDIT_PRUNE_MAX_BATCHES;
     await seed("oldest", 5, NOW - 300 * DAY);
-    await seed("old", AUDIT_PRUNE_BATCH, NOW - 200 * DAY);
+    await seed("old", bound, NOW - 200 * DAY);
 
-    expect(await pruneAuditEvents(getDb(), NOW)).toBe(AUDIT_PRUNE_BATCH);
+    // One pass takes as many batches as it is allowed and no more.
+    expect(await pruneAuditEvents(getDb(), NOW)).toBe(bound);
     expect(await count("oldest")).toBe(0);
     expect(await count("old")).toBe(5);
 

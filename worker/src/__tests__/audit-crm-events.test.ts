@@ -3,7 +3,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { sql } from "drizzle-orm";
-import { auditDeniedToolCalls } from "../agent/mail-agent";
+import { auditDeclinedApprovals } from "../agent/mail-agent";
 import { auditEvents } from "../db/audit-events.schema";
 import { lists } from "../db/lists.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
@@ -250,26 +250,55 @@ describe("audit events for customers, sequences, lists and the agent", () => {
     });
   });
 
-  it("records an agent action the user declined", async () => {
-    await auditDeniedToolCalls(
-      {
-        db: getDb(),
-        actor: agentActor({ id: userId, email: "test@example.com" }, "s1"),
-      },
+  it("records an agent action the user declined, in the turn it is answered", async () => {
+    const audit = {
+      db: getDb(),
+      actor: agentActor({ id: userId, email: "test@example.com" }, "s1"),
+    };
+    const part = (state: string, approved: boolean, toolCallId: string) => ({
+      type: "tool-enroll_in_sequence",
+      toolCallId,
+      state,
+      input: { personId: "p1", sequenceId: "seq-1" },
+      approval: { id: `approval-${toolCallId}`, approved },
+    });
+    const turn = (parts: unknown[]) =>
       [
-        { type: "tool-result", toolCallId: "c0", toolName: "whoami" },
-        {
-          type: "tool-output-denied",
-          toolCallId: "c1",
-          toolName: "enroll_in_sequence",
-        },
-      ],
+        { id: "m1", role: "user", parts: [{ type: "text", text: "enroll" }] },
+        { id: "m2", role: "assistant", parts },
+      ] as never;
+
+    // The user pressed Deny: the answer arrives with the next request.
+    await auditDeclinedApprovals(
+      audit,
+      turn([part("approval-responded", false, "c1")]),
     );
+    // Approved, still waiting, or already settled in an earlier turn: none of
+    // these is a decline to record now.
+    await auditDeclinedApprovals(
+      audit,
+      turn([
+        part("approval-responded", true, "c2"),
+        part("approval-requested", false, "c3"),
+        part("output-denied", false, "c4"),
+      ]),
+    );
+    // Only the message being answered counts.
+    await auditDeclinedApprovals(audit, [
+      {
+        id: "m2",
+        role: "assistant",
+        parts: [part("approval-responded", false, "c5")],
+      },
+      { id: "m3", role: "user", parts: [{ type: "text", text: "never mind" }] },
+    ] as never);
+
     const rows = await events();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       action: "agent.action_denied",
       actorType: "agent",
+      actorUserId: userId,
       summary: "The agent's request to run enroll_in_sequence was declined",
       details: { tool: "enroll_in_sequence", toolCallId: "c1" },
     });

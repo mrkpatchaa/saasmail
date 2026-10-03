@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import { asc } from "drizzle-orm";
 import { auditEvents } from "../db/audit-events.schema";
 import { blocklist } from "../db/blocklist.schema";
+import { outboxEmails } from "../db/outbox-emails.schema";
 import { rules } from "../db/rules.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import type {
@@ -172,7 +173,7 @@ describe("audit events for sends and deletes", () => {
     expect(await events("mail.sent")).toEqual([]);
   });
 
-  it("records a rule's auto-reply and junk mark as the rule", async () => {
+  it("records a rule's auto-reply as the rule, and not its archive", async () => {
     const now = Math.floor(Date.now() / 1000);
     await getDb()
       .insert(rules)
@@ -254,14 +255,105 @@ describe("audit events for sends and deletes", () => {
     const res = await authFetch("/api/people/p1", { apiKey, method: "DELETE" });
     expect(res.status).toBe(200);
 
+    // One row for the inbox the mail was in, so that inbox's log shows it.
     const rows = await events("mail.deleted");
     expect(rows).toHaveLength(1);
-    expect(rows[0].summary).toBe(`Deleted ${CUSTOMER} and their 2 messages`);
+    expect(rows[0]).toMatchObject({
+      inbox: INBOX,
+      targetId: null,
+      summary: `Deleted 2 messages from ${INBOX}, with the contact ${CUSTOMER}`,
+    });
     expect(rows[0].details).toMatchObject({
       person: CUSTOMER,
       count: 2,
       refs: ["received:e1", "sent:s1"],
     });
+  });
+
+  it("records a rule's junk mark as the rule, through the rules engine", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await getDb()
+      .insert(rules)
+      .values({
+        id: "rule-2",
+        name: "Block vendors",
+        inbox: INBOX,
+        trigger: "message.received",
+        conditions: [],
+        actions: [{ type: "mark_spam" }],
+        position: 0,
+        stopProcessing: 0,
+        enabled: 1,
+        matchCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    await evaluateRules(getDb(), {
+      emailId: "e1",
+      inbox: INBOX,
+      fromAddress: CUSTOMER,
+      subject: "Invoice question",
+      bodyText: "Hello",
+      bodyHtml: null,
+      hasAttachments: false,
+      spamScore: null,
+      headers: {},
+      now,
+    });
+
+    const rows = await events();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      action: "mail.spam",
+      actorType: "rule",
+      actorLabel: "rule Block vendors",
+      channel: "rule",
+      targetId: "received:e1",
+    });
+  });
+
+  it("records mail that went out on a manual retry of a failed send", async () => {
+    await createTestSentEmail({
+      id: "s-failed",
+      personId: "p1",
+      fromAddress: INBOX,
+      toAddress: CUSTOMER,
+      subject: "Second try",
+      status: "failed",
+    });
+    const now = Math.floor(Date.now() / 1000);
+    await getDb().insert(outboxEmails).values({
+      id: "ob-1",
+      sentEmailId: "s-failed",
+      fromAddress: INBOX,
+      toAddress: CUSTOMER,
+      subject: "Second try",
+      bodyHtml: "<p>hi</p>",
+      bodyText: "hi",
+      transactional: 1,
+      status: "failed",
+      attempts: 5,
+      lastError: "provider said no",
+      nextRetryAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const res = await authFetch("/api/outbox/ob-1/retry", {
+      apiKey,
+      method: "POST",
+    });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(((await res.json()) as { outcome: string }).outcome).toBe("sent");
+
+    const [row] = await events("mail.sent");
+    expect(row).toMatchObject({
+      actorType: "api_key",
+      targetId: "sent:s-failed",
+      inbox: INBOX,
+      summary: `Retried and sent 'Second try' to ${CUSTOMER} from ${INBOX}`,
+    });
+    expect(row.details.retried).toBe(true);
   });
 
   it("records a purge of blocked mail as one row per inbox", async () => {

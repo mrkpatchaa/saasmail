@@ -36,6 +36,19 @@ export async function getWebhookConfig(
   }
 }
 
+/**
+ * Where a URL points, for the audit log: scheme, host and path. A username,
+ * a password, the query and the fragment can each hold a token.
+ */
+function loggableUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "(unparseable URL)";
+  }
+}
+
 /** Write the global webhook config. Pass null (or a blank url) to clear/disable. */
 export async function setWebhookConfig(
   db: DrizzleD1Database<any>,
@@ -63,11 +76,11 @@ export async function setWebhookConfig(
     targetType: "setting",
     targetId: WEBHOOK_KEY,
     summary: url
-      ? `Set the inbound webhook to ${url}`
+      ? `Set the inbound webhook to ${loggableUrl(url)}`
       : "Turned the inbound webhook off",
     details: {
       key: WEBHOOK_KEY,
-      url: url || null,
+      url: url ? loggableUrl(url) : null,
       hasSecret: Boolean(cfg?.secret && cfg.secret.length > 0),
     },
   });

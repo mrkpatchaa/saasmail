@@ -440,6 +440,15 @@ describe("schedule and cancel", () => {
     });
     expect(ok.status).toBe(200);
     expect((await ok.json<any>()).status).toBe("scheduled");
+
+    // Cron will start it as the system: this is the row that names a person.
+    const audit = await getDb().select().from(auditEvents);
+    expect(audit.map((row) => row.action)).toEqual(["campaign.scheduled"]);
+    expect(audit[0]).toMatchObject({
+      actorType: "api_key",
+      targetId: body.id,
+      inbox: FROM,
+    });
   });
 
   it("cancels and stops the fan-out job", async () => {

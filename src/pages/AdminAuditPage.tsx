@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Download, ScrollText } from "lucide-react";
 import PageHeader, { PageContainer } from "@/components/PageHeader";
 import { SectionHeader } from "@/components/PageForm";
@@ -127,6 +127,10 @@ export default function AdminAuditPage() {
   }, []);
 
   const filters = useMemo(() => toFilters(applied), [applied]);
+  // The filters of the latest list, to drop a page that was asked for under
+  // older ones and comes back late.
+  const currentFilters = useRef(filters);
+  currentFilters.current = filters;
 
   useEffect(() => {
     let cancelled = false;
@@ -154,12 +158,17 @@ export default function AdminAuditPage() {
     if (!nextCursor || loadingMore) return;
     setLoadingMore(true);
     setError(null);
+    const requested = filters;
     try {
-      const res = await fetchAuditEvents(filters, nextCursor);
+      const res = await fetchAuditEvents(requested, nextCursor);
+      // The filters changed while this page was loading: it belongs to a
+      // list that is no longer on screen.
+      if (currentFilters.current !== requested) return;
       setEvents((previous) => [...previous, ...res.events]);
       setNextCursor(res.nextCursor);
     } catch {
-      setError("Failed to load more.");
+      if (currentFilters.current === requested)
+        setError("Failed to load more.");
     } finally {
       setLoadingMore(false);
     }

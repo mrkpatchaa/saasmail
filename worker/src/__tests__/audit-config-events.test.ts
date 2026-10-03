@@ -89,6 +89,15 @@ describe("audit events for configuration and people", () => {
       hasSecret: true,
     });
     expect(JSON.stringify(row)).not.toContain("whsec_do_not_log_me");
+
+    // A URL can carry credentials too: only where it points is kept.
+    await send("/api/webhook", apiKey, "PUT", {
+      url: "https://user:hunter2@hooks.example.com/in?token=tok_abc#frag",
+    });
+    const [, second] = await events();
+    expect(second.details.url).toBe("https://hooks.example.com/in");
+    expect(JSON.stringify(second)).not.toContain("hunter2");
+    expect(JSON.stringify(second)).not.toContain("tok_abc");
   });
 
   it("records an inbox's life: created, changed, access, deleted", async () => {
