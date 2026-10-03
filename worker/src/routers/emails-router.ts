@@ -96,6 +96,16 @@ export const EmailSchema = z.object({
         "on GET /api/emails/{id}, GET /api/emails/by-person/{personId} and " +
         "GET /api/conversations/{id}/emails.",
     }),
+  replyRecipients: z
+    .array(CcEntrySchema)
+    .optional()
+    .openapi({
+      description:
+        "Every address a reply to this received message is sent to when it " +
+        "follows the Reply-To header: the first becomes To and the others " +
+        "are added to Cc. This instance's own inboxes are left out. Empty " +
+        "when the reply simply goes to the sender, and on sent messages.",
+    }),
 });
 
 /**

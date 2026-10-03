@@ -654,7 +654,7 @@ describe("MCP tools", () => {
       });
       expect(toSender.isError, toSender.text).toBe(false);
       expect(toSender.data.repliedTo).toBe("sender");
-      expect(toSender.data.to).not.toBe("desk@example.com");
+      expect(toSender.data.to).toBe("alice@example.com");
 
       const invalid = await callTool(memberToken, "reply_email", {
         emailId: "e-mine",

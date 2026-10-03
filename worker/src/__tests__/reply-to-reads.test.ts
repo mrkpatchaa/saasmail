@@ -4,7 +4,12 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { queryMessages } from "../lib/messages/query";
-import { replyCandidates, replyTarget } from "../lib/reply-recipients";
+import { inboxPermissions } from "../db/inbox-permissions.schema";
+import {
+  replyCandidates,
+  replyRecipients,
+  replyTarget,
+} from "../lib/reply-recipients";
 import {
   applyMigrations,
   authFetch,
@@ -66,6 +71,33 @@ describe("replyTarget", () => {
   it("is null when the first candidate is the sender, or there is none", () => {
     expect(replyTarget([{ email: "a@acme.com" }], "A@acme.com")).toBeNull();
     expect(replyTarget([], "a@acme.com")).toBeNull();
+  });
+});
+
+describe("replyRecipients", () => {
+  it("is the candidates, in order", () => {
+    expect(
+      replyRecipients(
+        [{ email: "help@acme.com" }, { email: "b@acme.com" }],
+        "noreply@acme.com",
+      ),
+    ).toEqual([{ email: "help@acme.com" }, { email: "b@acme.com" }]);
+  });
+
+  it("is empty when the reply simply goes to the sender", () => {
+    expect(replyRecipients([], "a@acme.com")).toEqual([]);
+    expect(replyRecipients([{ email: "A@acme.com" }], "a@acme.com")).toEqual(
+      [],
+    );
+  });
+
+  it("keeps the sender when others are copied alongside it", () => {
+    expect(
+      replyRecipients(
+        [{ email: "a@acme.com" }, { email: "desk@acme.com" }],
+        "a@acme.com",
+      ),
+    ).toEqual([{ email: "a@acme.com" }, { email: "desk@acme.com" }]);
   });
 });
 
@@ -180,6 +212,112 @@ describe("Reply-To reads", () => {
     });
   });
 
+  describe("GET /api/messages for a member", () => {
+    it("drops an inbox of ours the member was never granted", async () => {
+      const member = await createTestUser({
+        id: "reply-to-member",
+        email: "reply-to-member@example.com",
+        role: "member",
+      });
+      await getDb()
+        .insert(inboxPermissions)
+        .values({
+          userId: member.userId,
+          email: INBOX,
+          createdAt: Math.floor(Date.now() / 1000),
+          createdBy: null,
+        });
+      await createTestEmail({
+        id: "e1",
+        personId: "p1",
+        recipient: INBOX,
+        replyTo: list(OTHER_INBOX, "help@acme.com"),
+      });
+
+      const res = await authFetch(`/api/messages?inbox=${INBOX}`, {
+        apiKey: member.apiKey,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        messages: { replyTo?: { email: string }[] }[];
+      };
+      expect(body.messages).toHaveLength(1);
+      expect(body.messages[0].replyTo).toEqual([
+        { email: "help@acme.com", name: null },
+      ]);
+    });
+  });
+
+  describe("what a reply would use", () => {
+    it("is empty when the Reply-To only repeats the sender", async () => {
+      await createTestEmail({
+        id: "e1",
+        personId: "p1",
+        recipient: INBOX,
+        replyTo: list("NoReply@acme.com"),
+      });
+
+      const listed = (await (
+        await authFetch(`/api/messages?inbox=${INBOX}`, { apiKey })
+      ).json()) as { messages: { replyTo?: unknown[] }[] };
+      expect(listed.messages[0].replyTo).toEqual([]);
+
+      const detail = (await (
+        await authFetch("/api/emails/e1", { apiKey })
+      ).json()) as { replyTo: string | null; replyRecipients: unknown[] };
+      expect(detail.replyTo).toBeNull();
+      expect(detail.replyRecipients).toEqual([]);
+    });
+
+    it("names an address that is copied next to the sender", async () => {
+      // The reply goes To the sender and Cc desk@: the reader must see desk@.
+      await createTestEmail({
+        id: "e1",
+        personId: "p1",
+        recipient: INBOX,
+        replyTo: list("noreply@acme.com", "desk@acme.com"),
+      });
+      const expected = [
+        { email: "noreply@acme.com", name: null },
+        { email: "desk@acme.com", name: null },
+      ];
+
+      const listed = (await (
+        await authFetch(`/api/messages?inbox=${INBOX}`, { apiKey })
+      ).json()) as { messages: { replyTo?: unknown[] }[] };
+      expect(listed.messages[0].replyTo).toEqual(expected);
+
+      const detail = (await (
+        await authFetch("/api/emails/e1", { apiKey })
+      ).json()) as { replyTo: string | null; replyRecipients: unknown[] };
+      // The single address is for "who else to reply to": not the sender.
+      expect(detail.replyTo).toBeNull();
+      expect(detail.replyRecipients).toEqual(expected);
+    });
+
+    it("never names the inbox the message arrived at", async () => {
+      // An address we receive at without an inbox row: the send-time guard
+      // refuses it as the From of the reply, so reads must not offer it.
+      await createTestEmail({
+        id: "e1",
+        personId: "p1",
+        recipient: "alias@saasmail.test",
+        replyTo: list("alias@saasmail.test"),
+      });
+
+      const listed = (await (
+        await authFetch("/api/messages?inbox=alias@saasmail.test", { apiKey })
+      ).json()) as { messages: { replyTo?: unknown[] }[] };
+      expect(listed.messages[0].replyTo).toEqual([]);
+
+      const detail = (await (
+        await authFetch("/api/emails/e1", { apiKey })
+      ).json()) as { replyTo: string | null; replyRecipients: unknown[] };
+      expect(detail.replyTo).toBeNull();
+      expect(detail.replyRecipients).toEqual([]);
+    });
+  });
+
   describe("GET /api/emails/{id}", () => {
     it("prefers the stored list over raw_headers", async () => {
       await createTestEmail({
@@ -224,11 +362,19 @@ describe("Reply-To reads", () => {
       const res = await authFetch("/api/emails/by-person/p1", { apiKey });
       expect(res.status).toBe(200);
       const data = (await res.json()) as {
-        emails: { id: string; replyTo: string | null }[];
+        emails: {
+          id: string;
+          replyTo: string | null;
+          replyRecipients: { email: string }[];
+        }[];
       };
-      const byId = new Map(data.emails.map((e) => [e.id, e.replyTo]));
-      expect(byId.get("e1")).toBe("help@acme.com");
-      expect(byId.get("s1")).toBeNull();
+      const byId = new Map(data.emails.map((e) => [e.id, e]));
+      expect(byId.get("e1")?.replyTo).toBe("help@acme.com");
+      expect(byId.get("e1")?.replyRecipients).toEqual([
+        { email: "help@acme.com", name: null },
+      ]);
+      expect(byId.get("s1")?.replyTo).toBeNull();
+      expect(byId.get("s1")?.replyRecipients).toEqual([]);
     });
 
     it("GET /api/conversations/{id}/emails fills replyTo on received mail", async () => {
@@ -244,9 +390,16 @@ describe("Reply-To reads", () => {
       });
       expect(res.status).toBe(200);
       const data = (await res.json()) as {
-        emails: { id: string; replyTo: string | null }[];
+        emails: {
+          id: string;
+          replyTo: string | null;
+          replyRecipients: { email: string }[];
+        }[];
       };
       expect(data.emails[0].replyTo).toBe("help@acme.com");
+      expect(data.emails[0].replyRecipients).toEqual([
+        { email: "help@acme.com", name: null },
+      ]);
     });
   });
 });

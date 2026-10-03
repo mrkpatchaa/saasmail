@@ -231,6 +231,10 @@ const ReplyEmailResponseSchema = SentEmailResponseSchema.extend({
     description: "The address the reply was sent to.",
     example: "support@acme.com",
   }),
+  cc: z.array(z.string()).openapi({
+    description:
+      "Every address the reply was copied to: the Cc of the request plus, when the reply followed a Reply-To header with several addresses, the ones after the first.",
+  }),
   repliedTo: z.enum(["reply_to", "sender"]).openapi({
     description:
       "`reply_to` when `to` came from the original's Reply-To header, `sender` when it is the original's sender (or, for a sent original, its recipient).",
@@ -332,6 +336,7 @@ sendRouter.openapi(replyEmailRoute, async (c) => {
       status: result.status,
       attachmentIds: result.attachmentIds,
       to: result.to,
+      cc: result.cc,
       repliedTo: result.repliedTo,
     },
     201,

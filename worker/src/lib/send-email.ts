@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { emailTemplates } from "../db/email-templates.schema";
@@ -118,6 +118,8 @@ export type ReplyEmailSuccess = {
   attachmentIds: string[];
   /** The address the reply was sent to. */
   to: string;
+  /** Every address it was copied to: the caller's Cc plus any Reply-To extras. */
+  cc: string[];
   /** Whether that address came from the original's Reply-To or is its sender. */
   repliedTo: ReplyRecipient;
 };
@@ -332,6 +334,11 @@ export async function replyToEmail(
   let origSubject: string | null;
   let origInReplyToMessageId: string | null;
   let toAddress: string;
+  // Who the conversation is with. It stays the original's correspondent and
+  // the caller's Cc even when the reply is delivered to a Reply-To address,
+  // so the reply shows up in the thread it was written in.
+  let threadTo: string;
+  const threadCc = (cc ?? []).map((c) => c.email);
   let repliedTo: ReplyRecipient = "sender";
   // A Reply-To list read from raw_headers, to store on the row afterwards.
   let replyToBackfill: MailAddress[] | null = null;
@@ -359,6 +366,7 @@ export async function replyToEmail(
     origInReplyToMessageId = orig.messageId ?? null;
     // Canonicalize the recipient — older rows may be mixed-case.
     toAddress = person[0].email.toLowerCase();
+    threadTo = toAddress;
 
     if (params.recipient !== "sender") {
       const requested = replyToOf(orig);
@@ -404,6 +412,7 @@ export async function replyToEmail(
     origSubject = orig.subject ?? null;
     origInReplyToMessageId = orig.messageId ?? null;
     toAddress = orig.toAddress.toLowerCase();
+    threadTo = toAddress;
   }
 
   // Determine subject and body
@@ -524,8 +533,8 @@ export async function replyToEmail(
   const conversationIdReply = await outboundConversationId(
     db,
     fromAddress,
-    toAddress,
-    (cc ?? []).map((c) => c.email),
+    threadTo,
+    threadCc,
   );
 
   // Store sent email
@@ -557,11 +566,19 @@ export async function replyToEmail(
   if (replyToBackfill) {
     // Best effort: the next reply and every read then use the column instead
     // of parsing raw_headers again.
+    // Only while the row is as it was read: a re-attribution during the send
+    // cleared its Reply-To on purpose, and this must not bring it back.
     try {
       await db
         .update(emails)
         .set({ replyTo: JSON.stringify(replyToBackfill) })
-        .where(eq(emails.id, emailId));
+        .where(
+          and(
+            eq(emails.id, emailId),
+            isNull(emails.replyTo),
+            eq(emails.personId, origPersonId),
+          ),
+        );
     } catch (err) {
       console.warn(`[reply] Reply-To not stored for ${emailId}:`, err);
     }
@@ -574,21 +591,24 @@ export async function replyToEmail(
     status: outcome,
     attachmentIds,
     to: toAddress,
+    cc: (cc ?? []).map((entry) => entry.email),
     repliedTo,
   };
 }
 
 /**
- * The caller's Cc plus the Reply-To addresses after the first, which went to
- * To: each address once, never the To itself, and never past the Cc limit.
+ * The Cc of a reply whose To is a Reply-To address: the caller's Cc without
+ * that address (a reply-all composer may carry it over from the original),
+ * plus the Reply-To addresses after the first. Each address once, never the
+ * To itself, and never past the Cc limit.
  */
 function withReplyToCc(
   cc: { email: string; name: string | null }[] | undefined,
   extra: MailAddress[],
   toAddress: string,
 ): { email: string; name: string | null }[] | undefined {
-  if (extra.length === 0) return cc;
-  const merged = [...(cc ?? [])];
+  if (!cc && extra.length === 0) return cc;
+  const merged = (cc ?? []).filter((entry) => entry.email !== toAddress);
   const seen = new Set([toAddress, ...merged.map((entry) => entry.email)]);
   for (const entry of extra) {
     if (merged.length >= MAX_CC_ENTRIES) break;

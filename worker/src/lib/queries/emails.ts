@@ -11,6 +11,7 @@ import {
   applyReplyGuard,
   ownInboxAddresses,
   replyCandidates,
+  replyRecipients,
   replyTarget,
 } from "../reply-recipients";
 import type { AllowedInboxes } from "../inbox-permissions";
@@ -42,6 +43,8 @@ export type PersonEmailRow = {
   cc: CcEntry[];
   /** Where a reply goes when that is not the sender; see `replyTarget`. */
   replyTo: string | null;
+  /** Every address a reply would use; see `replyRecipients`. */
+  replyRecipients: CcEntry[];
   timestamp: number;
   status: string | null;
   campaignId?: string | null;
@@ -71,6 +74,7 @@ export type ReceivedEmailDetail = Omit<
   fromAddress: string | null;
   toAddress: null;
   replyTo: string | null;
+  replyRecipients: CcEntry[];
   cc: CcEntry[];
   attachments: AttachmentRow[];
 };
@@ -87,6 +91,7 @@ export type SentEmailDetail = {
   bodyText: string | null;
   isRead: null;
   replyTo: null;
+  replyRecipients: CcEntry[];
   cc: CcEntry[];
   timestamp: number;
   status: string;
@@ -138,6 +143,7 @@ export async function listPersonEmails(
     isRead: message.isRead === null ? null : message.isRead ? 1 : 0,
     cc: message.cc,
     replyTo: replyTarget(message.replyTo ?? [], message.from?.email),
+    replyRecipients: message.replyTo ?? [],
     timestamp: message.occurredAt,
     status: message.delivery?.status ?? null,
     campaignId: message.source.campaignId,
@@ -210,7 +216,11 @@ export async function getEmailById(
     const requested = replyToOf(row[0]);
     const candidates =
       requested.length > 0
-        ? replyCandidates(requested, await ownInboxAddresses(db))
+        ? replyCandidates(
+            requested,
+            await ownInboxAddresses(db),
+            row[0].recipient,
+          )
         : [];
     return {
       ...row[0],
@@ -219,6 +229,7 @@ export async function getEmailById(
       fromAddress: senderRow[0]?.email ?? null,
       toAddress: null,
       replyTo: replyTarget(candidates, senderRow[0]?.email),
+      replyRecipients: replyRecipients(candidates, senderRow[0]?.email),
       cc: parseCc(row[0].cc),
       attachments: atts,
     };
@@ -262,6 +273,7 @@ export async function getEmailById(
     bodyText: sent.bodyText,
     isRead: null,
     replyTo: null,
+    replyRecipients: [],
     cc: parseCc(sent.cc),
     timestamp: sent.sentAt,
     status: sent.status,

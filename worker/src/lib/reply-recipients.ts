@@ -34,6 +34,22 @@ export function replyCandidates(
 }
 
 /**
+ * Every address a reply would be sent to when it follows Reply-To: the first
+ * is To, the others are copied. Empty when that is nobody but the sender,
+ * i.e. when following Reply-To changes nothing.
+ */
+export function replyRecipients(
+  candidates: MailAddress[],
+  senderEmail: string | null | undefined,
+): MailAddress[] {
+  const sender = senderEmail?.trim().toLowerCase();
+  const onlySender =
+    candidates.length === 1 &&
+    candidates[0].email.trim().toLowerCase() === sender;
+  return candidates.length === 0 || onlySender ? [] : candidates;
+}
+
+/**
  * The one address the `Email`-shaped routes report as `replyTo`: the first
  * candidate, unless that is the sender anyway.
  */
@@ -47,9 +63,11 @@ export function replyTarget(
 }
 
 /**
- * Replaces each message's Reply-To list (as read with `withReplyTo`) by its
- * candidates, so an HTTP response says where a reply would go. A browser
- * cannot do this itself: a member only knows the inboxes they were granted.
+ * Replaces each message's Reply-To list (as read with `withReplyTo`) by the
+ * addresses a reply would use (`replyRecipients`), so an HTTP response says
+ * where a reply would go. A browser cannot do this itself: a member only
+ * knows the inboxes they were granted. The inbox a message arrived at is
+ * what a reply is sent from, so it is never offered either.
  * Reads the identities once, and not at all when no message has a Reply-To.
  */
 export async function applyReplyGuard(
@@ -59,7 +77,10 @@ export async function applyReplyGuard(
   if (!messages.some((message) => (message.replyTo?.length ?? 0) > 0)) return;
   const own = await ownInboxAddresses(db);
   for (const message of messages) {
-    if (message.replyTo)
-      message.replyTo = replyCandidates(message.replyTo, own);
+    if (!message.replyTo) continue;
+    message.replyTo = replyRecipients(
+      replyCandidates(message.replyTo, own, message.inbox),
+      message.from?.email,
+    );
   }
 }

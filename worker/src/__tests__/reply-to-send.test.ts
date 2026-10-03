@@ -18,6 +18,7 @@ import {
   type ReplyEmailResult,
   type ReplyEmailSuccess,
 } from "../lib/send-email";
+import { computeConversationId } from "../lib/conversation-id";
 import { MAX_CC_ENTRIES } from "../lib/send-limits";
 import {
   applyMigrations,
@@ -265,6 +266,136 @@ describe("replyToEmail and Reply-To", () => {
       .where(eq(emails.id, "e1"));
     expect(row.replyTo).toBeNull();
   });
+
+  it("does not copy the address the reply is already addressed to", async () => {
+    // A reply-all composer carries the original's Cc; here that Cc is also
+    // where the sender asked for replies.
+    await received({ replyTo: list("team@acme.com") });
+
+    const { result, call } = await reply("e1", {
+      cc: [{ email: "Team@acme.com" }, { email: "boss@acme.com" }],
+    });
+    const ok = sent(result);
+    expect(call.to).toBe("team@acme.com");
+    expect(call.cc).toEqual(["boss@acme.com"]);
+    expect(ok.cc).toEqual(["boss@acme.com"]);
+
+    const [row] = await getDb()
+      .select({ cc: sentEmails.cc })
+      .from(sentEmails)
+      .where(eq(sentEmails.id, ok.id));
+    expect(
+      (JSON.parse(row.cc!) as { email: string }[]).map((c) => c.email),
+    ).toEqual(["boss@acme.com"]);
+  });
+
+  it("sends no Cc at all when the only Cc was the new To", async () => {
+    await received({ replyTo: list("team@acme.com") });
+
+    const { result, call } = await reply("e1", {
+      cc: [{ email: "team@acme.com" }],
+    });
+    expect(call.to).toBe("team@acme.com");
+    expect(call.cc ?? []).toEqual([]);
+    expect(sent(result).cc).toEqual([]);
+  });
+
+  it("reports every address a reply was copied to", async () => {
+    // The first Reply-To address is the sender itself; the second still
+    // receives a copy, and the caller is told.
+    await received({ replyTo: list(SENDER, "desk@acme.com") });
+
+    const { result, call } = await reply("e1");
+    const ok = sent(result);
+    expect(call.to).toBe(SENDER);
+    expect(call.cc).toEqual(["desk@acme.com"]);
+    expect(ok.to).toBe(SENDER);
+    expect(ok.cc).toEqual(["desk@acme.com"]);
+    expect(ok.repliedTo).toBe("reply_to");
+  });
+
+  it("reports no copies when there are none", async () => {
+    await received({ replyTo: list("help@acme.com") });
+    expect(sent((await reply("e1")).result).cc).toEqual([]);
+  });
+
+  it("keeps a one-to-one reply out of any group conversation", async () => {
+    await received({ replyTo: list("help@acme.com") });
+
+    const ok = sent((await reply("e1")).result);
+    const [row] = await getDb()
+      .select({ conversationId: sentEmails.conversationId })
+      .from(sentEmails)
+      .where(eq(sentEmails.id, ok.id));
+    expect(row.conversationId).toBeNull();
+  });
+
+  it("keeps a reply in the group conversation it was written in", async () => {
+    // The thread is the sender plus bob; the message asks for replies at a
+    // third address. The reply is delivered there and stays in the thread.
+    const conversationId = await computeConversationId(INBOX, [
+      SENDER,
+      "bob@other.com",
+    ]);
+    expect(conversationId).not.toBeNull();
+    await createTestEmail({
+      id: "e1",
+      personId: "p1",
+      recipient: INBOX,
+      messageId: "<ticket-1@acme.com>",
+      conversationId,
+      cc: list("bob@other.com"),
+      replyTo: list("desk@acme.com", "second@acme.com"),
+    });
+
+    const { result, call } = await reply("e1", {
+      cc: [{ email: "bob@other.com" }],
+    });
+    const ok = sent(result);
+    expect(call.to).toBe("desk@acme.com");
+    expect(call.cc).toEqual(["bob@other.com", "second@acme.com"]);
+
+    const [row] = await getDb()
+      .select({ conversationId: sentEmails.conversationId })
+      .from(sentEmails)
+      .where(eq(sentEmails.id, ok.id));
+    expect(row.conversationId).toBe(conversationId);
+  });
+
+  it("does not store the Reply-To of a message re-attributed during the send", async () => {
+    await createTestPerson({ id: "p2", email: "real-person@acme.com" });
+    await received({
+      replyTo: null,
+      rawHeaders: JSON.stringify({ "reply-to": "help@acme.com" }),
+    });
+
+    // The provider call is where a concurrent re-attribution can land: the
+    // row was read before it and the write-back comes after.
+    const probe = recorder();
+    const original = probe.sender.send.bind(probe.sender);
+    probe.sender.send = async (params: SendEmailParams) => {
+      await getDb()
+        .update(emails)
+        .set({ personId: "p2", rawHeaders: "{}", replyTo: null })
+        .where(eq(emails.id, "e1"));
+      return original(params);
+    };
+    await replyToEmail({
+      db: getDb(),
+      env: env as unknown as CloudflareBindings,
+      emailId: "e1",
+      payload: { fromAddress: INBOX, bodyHtml: "<p>thanks</p>" },
+      files: [],
+      allowed: ADMIN,
+      sender: probe.sender,
+    });
+
+    const [row] = await getDb()
+      .select({ replyTo: emails.replyTo })
+      .from(emails)
+      .where(eq(emails.id, "e1"));
+    expect(row.replyTo).toBeNull();
+  });
 });
 
 describe("POST /api/send/reply/{emailId} recipient", () => {
@@ -307,9 +438,14 @@ describe("POST /api/send/reply/{emailId} recipient", () => {
   it("follows the Reply-To by default and says where the reply went", async () => {
     const res = await post({});
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { to: string; repliedTo: string };
+    const body = (await res.json()) as {
+      to: string;
+      repliedTo: string;
+      cc: string[];
+    };
     expect(body.to).toBe("help@acme.com");
     expect(body.repliedTo).toBe("reply_to");
+    expect(body.cc).toEqual([]);
   });
 
   it('answers the sender with recipient: "sender"', async () => {

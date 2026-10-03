@@ -636,7 +636,7 @@ export function buildMcpServer(ctx: McpContext): McpServer {
     "reply_email",
     {
       description:
-        "Reply to a message, threading correctly via its Message-ID. Works for received and sent messages. Provide either bodyHtml or a templateSlug with its variables. A reply to a received message follows its Reply-To header (first address in To, the others in Cc, never one of this instance's own inboxes) unless recipient is \"sender\"; the result's `to` is the address the reply went to.",
+        "Reply to a message, threading correctly via its Message-ID. Works for received and sent messages. Provide either bodyHtml or a templateSlug with its variables. A reply to a received message follows its Reply-To header (first address in To, the others in Cc, never one of this instance's own inboxes) unless recipient is \"sender\"; the result's `to` and `cc` are the addresses the reply went to, and read_email's `replyRecipients` lists them beforehand.",
       annotations: { readOnlyHint: false, title: "Reply To Email" },
       inputSchema: {
         emailId: z
