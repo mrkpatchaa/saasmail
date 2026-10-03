@@ -11,8 +11,12 @@ import { formatFromAddress } from "./format-from-address";
 import { assertInboxAllowed, type AllowedInboxes } from "./inbox-permissions";
 import { renderTemplate, type TemplateVariables } from "./interpolate";
 import { deliveredMessageId, generateMessageId } from "./message-id";
+import { replyToOf } from "./messages/adapters";
+import type { MailAddress } from "./messages/types";
 import type { ParsedFile } from "./multipart-send";
 import { sendViaOutbox, type OutboxOutcome } from "./outbox";
+import { ownInboxAddresses, replyCandidates } from "./reply-recipients";
+import { MAX_CC_ENTRIES } from "./send-limits";
 import {
   fetchInternalDomains,
   findOrCreatePersonId,
@@ -79,6 +83,9 @@ export type ReplyEmailPayload = {
   replyTo?: string;
 };
 
+/** Who a reply to a received message is addressed to. */
+export type ReplyRecipient = "reply_to" | "sender";
+
 export type ReplyEmailParams = {
   db: Db;
   env: CloudflareBindings;
@@ -86,6 +93,13 @@ export type ReplyEmailParams = {
   payload: ReplyEmailPayload;
   files: ParsedFile[];
   allowed: AllowedInboxes;
+  /**
+   * "reply_to" (the default) follows the original's Reply-To header when it
+   * names someone other than us; "sender" answers its From whatever the
+   * header says. Automatic replies pass "sender": Reply-To is set by whoever
+   * wrote the message.
+   */
+  recipient?: ReplyRecipient;
   /** Internal automation override; HTTP callers never set this. */
   subjectOverride?: string;
   /** Internal headers added to the transport payload. */
@@ -102,6 +116,10 @@ export type ReplyEmailSuccess = {
   resendId: string | null;
   status: OutboxOutcome;
   attachmentIds: string[];
+  /** The address the reply was sent to. */
+  to: string;
+  /** Whether that address came from the original's Reply-To or is its sender. */
+  repliedTo: ReplyRecipient;
 };
 
 export type ReplyEmailFailure =
@@ -294,7 +312,7 @@ export async function replyToEmail(
   // inbox + recipient + CC emails before downstream use so stored
   // rows match the lowercased conversation_id.
   const fromAddress = raw.fromAddress.trim().toLowerCase();
-  const cc = raw.cc?.map((c) => ({
+  let cc = raw.cc?.map((c) => ({
     email: c.email.trim().toLowerCase(),
     name: c.name ?? null,
   }));
@@ -314,6 +332,9 @@ export async function replyToEmail(
   let origSubject: string | null;
   let origInReplyToMessageId: string | null;
   let toAddress: string;
+  let repliedTo: ReplyRecipient = "sender";
+  // A Reply-To list read from raw_headers, to store on the row afterwards.
+  let replyToBackfill: MailAddress[] | null = null;
 
   if (receivedRow.length > 0) {
     const orig = receivedRow[0];
@@ -338,6 +359,26 @@ export async function replyToEmail(
     origInReplyToMessageId = orig.messageId ?? null;
     // Canonicalize the recipient — older rows may be mixed-case.
     toAddress = person[0].email.toLowerCase();
+
+    if (params.recipient !== "sender") {
+      const requested = replyToOf(orig);
+      if (requested.length > 0) {
+        // Never answer one of our own inboxes, or the one this reply is
+        // from: a Reply-To that points back at us would have us mail
+        // ourselves.
+        const candidates = replyCandidates(
+          requested,
+          await ownInboxAddresses(db),
+          fromAddress,
+        );
+        if (candidates.length > 0) {
+          toAddress = candidates[0].email.trim().toLowerCase();
+          repliedTo = "reply_to";
+          cc = withReplyToCc(cc, candidates.slice(1), toAddress);
+        }
+        if (orig.replyTo === null) replyToBackfill = requested;
+      }
+    }
   } else {
     const sentRow = await db
       .select()
@@ -513,11 +554,48 @@ export async function replyToEmail(
   // Cancel any active sequences for this person
   await cancelSequencesForPerson(db, origPersonId);
 
+  if (replyToBackfill) {
+    // Best effort: the next reply and every read then use the column instead
+    // of parsing raw_headers again.
+    try {
+      await db
+        .update(emails)
+        .set({ replyTo: JSON.stringify(replyToBackfill) })
+        .where(eq(emails.id, emailId));
+    } catch (err) {
+      console.warn(`[reply] Reply-To not stored for ${emailId}:`, err);
+    }
+  }
+
   return {
     ok: true,
     id,
     resendId: sendResult.result?.id ?? null,
     status: outcome,
     attachmentIds,
+    to: toAddress,
+    repliedTo,
   };
+}
+
+/**
+ * The caller's Cc plus the Reply-To addresses after the first, which went to
+ * To: each address once, never the To itself, and never past the Cc limit.
+ */
+function withReplyToCc(
+  cc: { email: string; name: string | null }[] | undefined,
+  extra: MailAddress[],
+  toAddress: string,
+): { email: string; name: string | null }[] | undefined {
+  if (extra.length === 0) return cc;
+  const merged = [...(cc ?? [])];
+  const seen = new Set([toAddress, ...merged.map((entry) => entry.email)]);
+  for (const entry of extra) {
+    if (merged.length >= MAX_CC_ENTRIES) break;
+    const email = entry.email.trim().toLowerCase();
+    if (seen.has(email)) continue;
+    seen.add(email);
+    merged.push({ email, name: entry.name ?? null });
+  }
+  return merged;
 }

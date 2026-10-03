@@ -92,7 +92,9 @@ export const EmailSchema = z.object({
         "sender: the first address of the inbound Reply-To header that is " +
         "not one of this instance's own inboxes (e.g. a contact form's " +
         "actual submitter behind a noreply@ sender). Null when there is no " +
-        "such address, when it is the sender, and on sent messages.",
+        "such address, when it is the sender, and on sent messages. Filled " +
+        "on GET /api/emails/{id}, GET /api/emails/by-person/{personId} and " +
+        "GET /api/conversations/{id}/emails.",
     }),
 });
 
