@@ -38,7 +38,8 @@ header names → raw values (postal-mime), so older rows can be read without a m
 ## 1. Parse and store
 
 **Files:** `worker/src/lib/email-parser.ts`, `worker/src/db/emails.schema.ts`,
-`worker/src/email-handler.ts`, `worker/src/__tests__/helpers.ts`, a generated migration.
+`worker/src/email-handler.ts`, `worker/src/routers/emails-router.ts`, `worker/src/__tests__/helpers.ts`,
+a generated migration.
 
 - `ParsedEmail` gains `replyTo: ParsedEmailAddress[]` from postal-mime's `replyTo`: email trimmed and
   lowercased, name or `null`, entries without an `@` dropped, duplicates removed, at most 10 kept.
@@ -48,43 +49,73 @@ header names → raw values (postal-mime), so older rows can be read without a m
 - A helper `replyToOf(row: { replyTo: string | null; rawHeaders: string | null }): MailAddress[]` in
   `worker/src/lib/messages/adapters.ts` returns the stored list, else the parsed fallback from
   `raw_headers`, else `[]`. Every reader below uses it; nothing parses `raw_headers` elsewhere.
+- Re-attribution (`PATCH /api/emails/{id}/person`) already strips `reply-to` from `raw_headers`, because
+  from then on `people.email` is the reply target. It sets `reply_to = NULL` in the same update, or the
+  stored list would bring the old target back.
 
 ## 2. Message reads
 
-**Files:** `worker/src/lib/messages/types.ts`, `query.ts`, `adapters.ts`, `src/lib/api.ts`.
+**Files:** `worker/src/lib/messages/types.ts`, `query.ts`, `adapters.ts`,
+`worker/src/lib/reply-recipients.ts` (new), `worker/src/lib/queries/emails.ts`,
+`worker/src/routers/messages-router.ts`, `conversations-router.ts`, `emails-router.ts`,
+`worker/src/lib/agent/tools.ts`, `src/lib/api.ts`.
 
-- `UnifiedMessage.replyTo: MailAddress[]` (received: `replyToOf(row)`; sent: `[]`). `query.ts` selects
-  `reply_to` and `raw_headers` for the received arm only when the caller asks for `replyTo`
-  (`withReplyTo: true`), so list queries don't carry `raw_headers` for every row; the reading pane,
-  the conversation route, `read_email` (MCP) and the agent's read tools ask for it.
-- `MailMessage` in `src/lib/api.ts` mirrors it.
+- `UnifiedMessage.replyTo?: MailAddress[]`: what `replyToOf` gives, set only when the caller asks
+  (`withReplyTo: true`): the list (possibly empty) for received mail, `[]` for sent. It is left out
+  otherwise, like `attachments` and `state`, so "not loaded" never reads as "none".
+- With `withReplyTo`, the received arm selects `e.reply_to` and, for rows where that is `NULL`, the one
+  `reply-to` value out of `raw_headers` (`json_extract`, the way `to_header` is read). The whole
+  `raw_headers` object never leaves SQLite, so a list page can afford it.
+- Who asks:
+  - `GET /api/messages`: the reading pane renders the selected row of this list; there is no
+    per-message read behind it.
+  - `GET /api/conversations/{id}/emails` and `GET /api/emails/by-person/{personId}`: they feed the chat
+    view's quick reply (group and one-to-one).
+  - the agent's `read_message`.
+  - `GET /api/emails/{id}` and MCP `read_email` read one row through `getEmailById`, which calls
+    `replyToOf` on it; its private header parser (`extractReplyTo`) goes away.
+- The HTTP routes return where a reply would go, not the bare header: the own-inbox guard of decision 2
+  runs on the server (`replyCandidates()` in `worker/src/lib/reply-recipients.ts`, the function the reply
+  path uses), because a member's browser only knows the inboxes they were granted and cannot filter the
+  others.
+  - `MailMessage.replyTo?: MailAddress[]` (`GET /api/messages`): the candidates, in order.
+  - `Email.replyTo: string | null` (the three `Email`-shaped routes): the first candidate when it is
+    not the sender, else `null`. The field existed on `GET /api/emails/{id}` (`surfaceReplyTo`); its
+    type is unchanged, it now also drops our own inboxes, and the two timeline routes fill it.
+  - The agent's `read_message` returns the list as stored: it reads the message, it doesn't send.
 
 ## 3. Reply path
 
 **Files:** `worker/src/lib/send-email.ts`, `worker/src/routers/send-router.ts`,
 `worker/src/mcp/server.ts` (`reply_email`), `worker/src/lib/rules/auto-reply.ts`,
-`src/lib/api.ts`, the reply composer (`src/components/mail/MailReadingPane.tsx` and the customer view's
-reply paths in `src/pages/ConversationDetail.tsx`, `src/components/ThreadMessage.tsx` and
-`src/components/ChatQuickReply.tsx`).
+`src/lib/api.ts`, the reply composer (`src/components/ReplyComposer.tsx`, opened from
+`src/components/mail/MailReadingPane.tsx` and the customer view) and the chat view's quick reply
+(`src/components/ChatInboxSection.tsx`, `src/components/ChatQuickReply.tsx`), plus
+`src/components/ThreadMessage.tsx` for the "Replying to" card.
 
 - `ReplyEmailParams` gains `recipient?: "reply_to" | "sender"` (default `"reply_to"`).
 - For a received original: `candidates = replyToOf(orig)` minus our inbox addresses minus the From
   inbox of this reply. Non-empty and `recipient === "reply_to"` → `toAddress = candidates[0].email`,
   `candidates.slice(1)` appended to Cc (dedupe, cap). Otherwise `toAddress = people.email` as today.
   For a sent original nothing changes. If `orig.replyTo` was `NULL` and the fallback found addresses,
-  write them to `emails.reply_to` (best effort, after the send).
+  write them to `emails.reply_to` (best effort, after the send). That update fires the `emails` update
+  triggers once (FTS and the JMAP change log); no JMAP property changes, so clients refetch an
+  identical Email.
 - `ReplyEmailSuccess` gains `to: string` and `repliedTo: "reply_to" | "sender"`.
-- `POST /api/send/reply/{emailId}`: optional `recipient` form field (zod enum); response gains `to`
-  and `repliedTo`. Update the zod-openapi schemas so `/doc` is right.
+- `POST /api/send/reply/{emailId}`: optional `recipient` (zod enum) in the JSON `payload`
+  (`ReplyEmailSchema`), next to `fromAddress`: the multipart body has only `payload` and `files`. The
+  response gains `to` and `repliedTo`. Update the zod-openapi schemas so `/doc` is right.
 - MCP `reply_email`: optional `recipient` input (`z.enum(["reply_to","sender"]).optional()`), the
   description says replies follow the message's Reply-To unless `recipient: "sender"`, and the result
   includes `to`. The tool inventory test is unchanged (no new tool).
 - `runAutoReply` passes `recipient: "sender"`.
 - Web: when a received message's `replyTo` (after the own-inbox filter) differs from its From, the reply
   composer shows "Replies go to support@acme.com (the sender asked for replies there)" with a
-  "Reply to the sender instead" toggle; the toggle's value is sent as `recipient`. The reading pane's
-  header block shows a `Reply-To:` line in the same case. `replyToEmail` in `src/lib/api.ts` takes
-  `recipient`.
+  "Reply to the sender instead" toggle; the toggle's value is sent as `recipient`. The composer reads
+  `Email.replyTo` of the message it answers (it already loads that message with `fetchEmail`); the
+  chat view's quick reply reads it from its reply target. The reading pane's header block shows a
+  `Reply-To:` line in the same case, from `MailMessage.replyTo`. `replyToEmail` in `src/lib/api.ts`
+  takes `recipient`.
 
 ## Tests
 
@@ -104,3 +135,22 @@ reply paths in `src/pages/ConversationDetail.tsx`, `src/components/ThreadMessage
   attribution). `docs/mcp.md`: `reply_email` gains `recipient`. `docs/jmap.md`: one line that `replyTo`
   stays `null` until the next id-format reset. `docs/automations.md`: auto-replies answer the sender.
 - CHANGELOG `### Added`: **Replies follow the sender's Reply-To.** … (one paragraph, the house style).
+
+## Spec changes (2026-10-03, while implementing)
+
+The decisions above are unchanged. Sections 1 to 3 were corrected where the code differed from what
+they assumed:
+
+1. The reading pane has no per-message read: it renders rows of `GET /api/messages`. That list asks for
+   `replyTo`, and the query reads only the `reply-to` value out of `raw_headers`, never the object.
+2. `read_email` (MCP) and `GET /api/emails/{id}` go through `getEmailById`, not `queryMessages`, and
+   already returned `replyTo: string | null`, which `ReassignPersonModal` uses. The field keeps its
+   type and is now computed through `replyToOf`.
+3. A member's browser only knows the inboxes they were granted, so the own-inbox guard for the web hint
+   runs on the server; the HTTP routes return the addresses a reply would use.
+4. `PATCH /api/emails/{id}/person` strips Reply-To from `raw_headers` on re-attribution; it must clear
+   `emails.reply_to` too.
+5. `UnifiedMessage.replyTo` is optional (present when asked for), like the other opt-in fields.
+6. `recipient` is a field of the JSON `payload`, not a separate form field.
+7. The reply composer lives in `src/components/ReplyComposer.tsx`; the person timeline route feeds the
+   one-to-one chat reply and asks for `replyTo` like the conversation route.
