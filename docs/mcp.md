@@ -97,9 +97,10 @@ Three scopes gate what a connected client may do:
 message's `Reply-To` header: its first address becomes To and any others are
 added to Cc, never one of this instance's own inboxes
 ([Replying](inboxes.md#replying)). Pass `recipient: "sender"` to answer the
-`From` address instead. The result's `to` is the address the reply went to, and
-`repliedTo` says whether it came from the header (`reply_to`) or is the sender
-(`sender`).
+`From` address instead. `read_email` lists the addresses beforehand in
+`replyRecipients`. The result's `to` is the address the reply went to, `cc`
+every address it was copied to, and `repliedTo` says whether `to` came from the
+header (`reply_to`) or is the sender (`sender`).
 
 **Access is scoped to the connecting user.** A client acting for a member with
 access to one inbox sees only that inbox — the same permission model as the web

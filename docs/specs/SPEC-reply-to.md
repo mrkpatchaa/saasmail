@@ -77,11 +77,16 @@ a generated migration.
 - The HTTP routes return where a reply would go, not the bare header: the own-inbox guard of decision 2
   runs on the server (`replyCandidates()` in `worker/src/lib/reply-recipients.ts`, the function the reply
   path uses), because a member's browser only knows the inboxes they were granted and cannot filter the
-  others.
-  - `MailMessage.replyTo?: MailAddress[]` (`GET /api/messages`): the candidates, in order.
-  - `Email.replyTo: string | null` (the three `Email`-shaped routes): the first candidate when it is
-    not the sender, else `null`. The field existed on `GET /api/emails/{id}` (`surfaceReplyTo`); its
-    type is unchanged, it now also drops our own inboxes, and the two timeline routes fill it.
+  others. The inbox the message arrived at is dropped too: it is what the reply is sent from. A list
+  that is only the sender is returned empty (`replyRecipients()`), since following it changes nothing.
+  - `MailMessage.replyTo?: MailAddress[]` (`GET /api/messages`): every address a reply would use, in
+    order (To, then the copies).
+  - `Email.replyRecipients: MailAddress[]` (the three `Email`-shaped routes): the same list. The reply
+    composers read this one, so that every address that gets the reply is on screen before it is sent.
+  - `Email.replyTo: string | null` (same routes): the first candidate when it is not the sender, else
+    `null`. The field existed on `GET /api/emails/{id}` (`surfaceReplyTo`) and `ReassignPersonModal`
+    uses it; its type is unchanged, it now also drops our own inboxes, and the two timeline routes
+    fill it.
   - The agent's `read_message` returns the list as stored: it reads the message, it doesn't send.
 
 ## 3. Reply path
@@ -97,25 +102,35 @@ a generated migration.
 - For a received original: `candidates = replyToOf(orig)` minus our inbox addresses minus the From
   inbox of this reply. Non-empty and `recipient === "reply_to"` → `toAddress = candidates[0].email`,
   `candidates.slice(1)` appended to Cc (dedupe, cap). Otherwise `toAddress = people.email` as today.
+  The new To is removed from the caller's Cc: a reply-all composer carries the original's Cc, which
+  may hold that very address. The reply's `conversation_id` is still computed from the original
+  sender and the caller's Cc, not from the Reply-To addresses, so a reply written in a group
+  conversation stays in it (decision 4 for groups).
   For a sent original nothing changes. If `orig.replyTo` was `NULL` and the fallback found addresses,
-  write them to `emails.reply_to` (best effort, after the send). That update fires the `emails` update
-  triggers once (FTS and the JMAP change log); no JMAP property changes, so clients refetch an
-  identical Email.
-- `ReplyEmailSuccess` gains `to: string` and `repliedTo: "reply_to" | "sender"`.
+  write them to `emails.reply_to` (best effort, after the send, and only if the row still has no
+  list and still belongs to the same person: a re-attribution during the send cleared it on purpose).
+  That update fires the `emails` update triggers once (FTS and the JMAP change log); no JMAP property
+  changes, so clients refetch an identical Email.
+- `ReplyEmailSuccess` gains `to: string`, `cc: string[]` (every address the reply was copied to) and
+  `repliedTo: "reply_to" | "sender"`.
 - `POST /api/send/reply/{emailId}`: optional `recipient` (zod enum) in the JSON `payload`
   (`ReplyEmailSchema`), next to `fromAddress`: the multipart body has only `payload` and `files`. The
-  response gains `to` and `repliedTo`. Update the zod-openapi schemas so `/doc` is right.
+  response gains `to`, `cc` and `repliedTo`. Update the zod-openapi schemas so `/doc` is right.
 - MCP `reply_email`: optional `recipient` input (`z.enum(["reply_to","sender"]).optional()`), the
   description says replies follow the message's Reply-To unless `recipient: "sender"`, and the result
-  includes `to`. The tool inventory test is unchanged (no new tool).
+  includes `to` and `cc`. The tool inventory test is unchanged (no new tool).
 - `runAutoReply` passes `recipient: "sender"`.
 - Web: when a received message's `replyTo` (after the own-inbox filter) differs from its From, the reply
   composer shows "Replies go to support@acme.com (the sender asked for replies there)" with a
-  "Reply to the sender instead" toggle; the toggle's value is sent as `recipient`. The composer reads
-  `Email.replyTo` of the message it answers (it already loads that message with `fetchEmail`); the
-  chat view's quick reply reads it from its reply target. The reading pane's header block shows a
-  `Reply-To:` line in the same case, from `MailMessage.replyTo`. `replyToEmail` in `src/lib/api.ts`
-  takes `recipient`.
+  "Reply to the sender instead" toggle. The composer reads `Email.replyRecipients` of the message it
+  answers (it already loads that message with `fetchEmail`); the chat view's quick reply reads it from
+  its reply target. With several addresses the hint names them all ("Replies go to a@x.com, with
+  b@y.com in Cc (…)"), also when the first is the sender itself. The web always sends `recipient`:
+  `reply_to` only while the hint is on screen and the toggle is off, `sender` otherwise, so a reply
+  never goes to an address the composer did not show (the original may fail to load). Answering one
+  of our sent messages, the To row shows that message's recipient. The reading pane's header block
+  shows a `Reply-To:` line in the same case, from `MailMessage.replyTo`. `replyToEmail` in
+  `src/lib/api.ts` takes `recipient`.
 
 ## Tests
 
@@ -154,3 +169,19 @@ they assumed:
 6. `recipient` is a field of the JSON `payload`, not a separate form field.
 7. The reply composer lives in `src/components/ReplyComposer.tsx`; the person timeline route feeds the
    one-to-one chat reply and asks for `replyTo` like the conversation route.
+
+After a review of the first implementation (same day), decision 3 gained the detail it lacked: the
+copies it adds must be visible.
+
+8. The composers show every address a reply reaches, not only the first. `Reply-To: sender, other`
+   used to show no hint at all while `other` was copied. The `Email` shape gains `replyRecipients`
+   for that, the reply result gains `cc`, and a list that is only the sender is reported as empty.
+9. The web always sends `recipient`, the target it displayed. The server default (follow Reply-To)
+   is for API and MCP callers; a composer whose original had not loaded showed the sender and would
+   have followed a Reply-To it never showed.
+10. The address that becomes To is removed from the caller's Cc, so it is not mailed twice.
+11. A reply keeps the conversation of the message it answers: `conversation_id` is computed from the
+    original sender and the caller's Cc. Computed from the Reply-To address, a reply written in a
+    group conversation left it.
+12. The read-side guard also drops the inbox the message arrived at, and the write-back does not run
+    if the message was re-attributed during the send.

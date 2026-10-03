@@ -30,9 +30,10 @@ instead of the `From` address. If the header lists several addresses, the first
 becomes To and the others are added to Cc.
 
 The reply composer and the chat view's quick reply say so before you send
-("Replies go to support@acme.com (the sender asked for replies there)") and
-offer **Reply to the sender instead**. The mail view's reading pane shows the
-`Reply-To:` line on such a message.
+("Replies go to support@acme.com (the sender asked for replies there)"), name
+every address that will get a copy, and offer **Reply to the sender instead**,
+which ignores the header altogether. The mail view's reading pane shows the
+`Reply-To:` line on such a message. An address is never both in To and in Cc.
 
 Two guards apply:
 
@@ -43,12 +44,16 @@ Two guards apply:
   whatever the header says.
 
 The reply stays on the original sender's timeline, marked with the address it
-went to; it does not start a timeline for the Reply-To address.
+went to; it does not start a timeline for the Reply-To address. A reply written
+in a group conversation stays in that conversation.
 
 The API and MCP behave the same way. `POST /api/send/reply/{emailId}` and the
 MCP tool `reply_email` follow Reply-To by default; pass `recipient: "sender"` to
-answer the `From` address. Both return `to`, the address the reply went to, and
-`repliedTo` (`reply_to` or `sender`).
+answer the `From` address. Both return `to`, the address the reply went to,
+`cc`, every address it was copied to, and `repliedTo` (`reply_to` or `sender`).
+To see the addresses beforehand, read `replyRecipients` on the message
+(`GET /api/emails/{id}`, MCP `read_email`). The web composers always send
+`recipient`, so a reply never goes to an address they did not show.
 
 ## Per-inbox forwarding
 
