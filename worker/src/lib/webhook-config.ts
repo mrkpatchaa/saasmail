@@ -1,3 +1,5 @@
+import { AUDIT_ACTIONS } from "./audit/events";
+import { recordAudit } from "./audit/record";
 import { eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { appSettings } from "../db/app-settings.schema";
@@ -55,4 +57,18 @@ export async function setWebhookConfig(
       target: appSettings.key,
       set: { value, updatedAt: now, updatedBy },
     });
+  // The signing secret is never written to the log: only whether one is set.
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.settingsChanged,
+    targetType: "setting",
+    targetId: WEBHOOK_KEY,
+    summary: url
+      ? `Set the inbound webhook to ${url}`
+      : "Turned the inbound webhook off",
+    details: {
+      key: WEBHOOK_KEY,
+      url: url || null,
+      hasSecret: Boolean(cfg?.secret && cfg.secret.length > 0),
+    },
+  });
 }

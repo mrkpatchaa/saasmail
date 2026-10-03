@@ -1,3 +1,5 @@
+import { AUDIT_ACTIONS } from "./lib/audit/events";
+import { recordAudit } from "./lib/audit/record";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { routeAgentRequest } from "agents";
 import { swaggerUI } from "@hono/swagger-ui";
@@ -169,6 +171,13 @@ app.post("/api/auth/sign-in/email", async (c, next) => {
     .where(eq(passkeys.userId, userRows[0].id))
     .limit(1);
   if (pkRows.length > 0) {
+    await recordAudit(db, {
+      action: AUDIT_ACTIONS.authSignInFailed,
+      targetType: "user",
+      targetId: userRows[0].id,
+      summary: `Refused password sign-in for ${email}: the account has a passkey`,
+      details: { method: "password", email, reason: "passkey_required" },
+    });
     return c.json(
       {
         error:

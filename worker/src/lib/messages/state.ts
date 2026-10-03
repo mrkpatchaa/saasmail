@@ -1,3 +1,5 @@
+import { AUDIT_ACTIONS } from "../audit/events";
+import { recordAudit } from "../audit/record";
 import {
   auditMailboxMembership,
   auditMailboxState,
@@ -418,6 +420,13 @@ export async function createMailbox(
   };
 
   await db.insert(mailboxes).values(row);
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.folderCreated,
+    targetType: "folder",
+    targetId: row.id,
+    inbox,
+    summary: `Created the folder '${row.name}' in ${inbox}`,
+  });
   return row;
 }
 
@@ -483,6 +492,17 @@ export async function updateMailbox(
   if (changes.sortOrder !== undefined) update.sortOrder = changes.sortOrder;
 
   await db.update(mailboxes).set(update).where(eq(mailboxes.id, mailboxId));
+  // Reordering folders is not recorded; a new name is.
+  if (update.name !== undefined && update.name !== mailbox.name) {
+    await recordAudit(db, {
+      action: AUDIT_ACTIONS.folderRenamed,
+      targetType: "folder",
+      targetId: mailboxId,
+      inbox: mailbox.inbox,
+      summary: `Renamed the folder '${mailbox.name}' to '${update.name}' in ${mailbox.inbox}`,
+      details: { from: mailbox.name, to: update.name },
+    });
+  }
   return { ...mailbox, ...update };
 }
 
@@ -511,8 +531,15 @@ export async function deleteMailbox(
   _userId: string,
   mailboxId: string,
 ): Promise<void> {
-  await getMailboxForMutation(db, allowed, mailboxId);
+  const mailbox = await getMailboxForMutation(db, allowed, mailboxId);
   await db.delete(mailboxes).where(eq(mailboxes.id, mailboxId));
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.folderDeleted,
+    targetType: "folder",
+    targetId: mailboxId,
+    inbox: mailbox.inbox,
+    summary: `Deleted the folder '${mailbox.name}' in ${mailbox.inbox}`,
+  });
 }
 
 export async function setMailboxMembership(
