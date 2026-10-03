@@ -20,29 +20,27 @@ const EXPORT_PAGE = 500;
 
 const ErrorSchema = z.object({ error: z.string() });
 
-const AuditEventSchema = z
-  .object({
-    id: z.string(),
-    at: z.number().openapi({ description: "Unix seconds." }),
-    actorType: z.string().openapi({
-      description: "user, api_key, mcp, jmap, agent, rule or system.",
-    }),
-    actorUserId: z.string().nullable(),
-    actorLabel: z.string(),
-    channel: z.string().openapi({
-      description:
-        "web, api, mcp, jmap, agent, rule, inbound, cron, queue or import.",
-    }),
-    action: z.string().openapi({ example: "mail.archived" }),
-    targetType: z.string().nullable(),
-    targetId: z.string().nullable(),
-    inbox: z.string().nullable(),
-    summary: z.string(),
-    details: z.record(z.string(), z.any()).nullable(),
-    ip: z.string().nullable(),
-    userAgent: z.string().nullable(),
-  })
-  .openapi("AuditEvent");
+const AuditEventSchema = z.object({
+  id: z.string(),
+  at: z.number().openapi({ description: "Unix seconds." }),
+  actorType: z.string().openapi({
+    description: "user, api_key, mcp, jmap, agent, rule or system.",
+  }),
+  actorUserId: z.string().nullable(),
+  actorLabel: z.string(),
+  channel: z.string().openapi({
+    description:
+      "web, api, mcp, jmap, agent, rule, inbound, cron, queue or import.",
+  }),
+  action: z.string().openapi({ example: "mail.archived" }),
+  targetType: z.string().nullable(),
+  targetId: z.string().nullable(),
+  inbox: z.string().nullable(),
+  summary: z.string(),
+  details: z.record(z.string(), z.any()).nullable(),
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+});
 
 const FilterQuery = z.object({
   action: z.string().optional().openapi({
