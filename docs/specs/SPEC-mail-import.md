@@ -1,6 +1,6 @@
 # SPEC: Import mail from mbox and .eml
 
-Stage 11 (data ownership), slice 2 of 3. Depends on `SPEC-mail-export.md` (shares the Data UI, the
+Stage 11 (data ownership), slice 2 of 3. Depends on `docs/archive/SPEC-mail-export.md` (shares the Data UI, the
 `async_jobs` columns and `docs/data.md`) and `docs/archive/SPEC-audit-log.md`. Label `minor`.
 
 ## Why
