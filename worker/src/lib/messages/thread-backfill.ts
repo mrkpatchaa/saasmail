@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { SQL, and, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { asyncJobs, type AsyncJob } from "../../db/async-jobs.schema";
@@ -56,6 +56,22 @@ export const BACKFILL_LIMITS = {
   /** Rows cleared per statement when going back to `relationship`. */
   clearBatch: 500,
 };
+
+/**
+ * A D1 statement for `$client.batch`: drizzle's own batch takes builders
+ * only, and the row updates here are raw SQL.
+ */
+function prepared(
+  db: Db,
+  statement: SQL | { toSQL(): { sql: string; params: unknown[] } },
+): D1PreparedStatement {
+  const query =
+    statement instanceof SQL
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (db as any).dialect.sqlToQuery(statement)
+      : statement.toSQL();
+  return db.$client.prepare(query.sql).bind(...query.params);
+}
 
 /** The newest backfill of an inbox, running or not. */
 export async function latestThreadBackfill(
@@ -231,17 +247,21 @@ export async function runThreadBackfillSlice(
           : await clearPage(db, state.params);
       const next: BackfillParams = { ...state.params, ...step.progress };
       const nextRaw = JSON.stringify(next);
-      const saved = await db.batch([
-        ...step.statements,
-        db
-          .update(asyncJobs)
-          .set({
-            params: nextRaw,
-            processedRows: sql`${asyncJobs.processedRows} + ${step.rows}`,
-            updatedAt: Math.floor(now() / 1000),
-          })
-          .where(stillClaimed(job.id, state.raw)),
-      ] as any);
+      // One transaction: the rows and the progress that covers them.
+      const saved = await db.$client.batch([
+        ...step.statements.map((statement) => prepared(db, statement)),
+        prepared(
+          db,
+          db
+            .update(asyncJobs)
+            .set({
+              params: nextRaw,
+              processedRows: sql`${asyncJobs.processedRows} + ${step.rows}`,
+              updatedAt: Math.floor(now() / 1000),
+            })
+            .where(stillClaimed(job.id, state.raw)),
+        ),
+      ]);
       if (changesOf(saved[saved.length - 1]) !== 1) return null;
       state = { raw: nextRaw, params: next };
       if (step.done) {
@@ -276,8 +296,7 @@ export async function runThreadBackfillSlice(
 }
 
 type Step = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  statements: any[];
+  statements: SQL[];
   rows: number;
   progress: Partial<BackfillParams>;
   done: boolean;
@@ -342,7 +361,7 @@ async function headersPage(db: Db, params: BackfillParams): Promise<Step> {
   }
   const walked = page.nextCursor === null;
   return {
-    statements: statements.map((statement) => db.run(statement)),
+    statements,
     rows: page.messages.length,
     progress: walked
       ? params.pass === 1
@@ -407,7 +426,7 @@ async function clearPage(db: Db, params: BackfillParams): Promise<Step> {
     );
   }
   return {
-    statements: statements.map((statement) => db.run(statement)),
+    statements,
     rows: received + sent,
     progress: {},
     done: received < batch && sent < batch,
