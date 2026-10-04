@@ -1,7 +1,7 @@
 # SPEC: Sending controls — pause switch, agent kill switch, daily caps
 
 Stage 9 (trust and safety), slice 4 of 5. Depends on `docs/archive/SPEC-audit-log.md` (events) and
-`SPEC-send-idempotency.md` (shared boundary code in the send routes). Label `minor`.
+`docs/archive/SPEC-send-idempotency.md` (shared boundary code in the send routes). Label `minor`.
 
 ## Why
 
