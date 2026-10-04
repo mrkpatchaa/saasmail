@@ -1,3 +1,5 @@
+import { currentAuditActor } from "./audit/context";
+import { trainMessages } from "./spam/filter";
 import { auditMailSent } from "./audit/mail-events";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
@@ -318,6 +320,9 @@ export async function sendEmail(
  * can back both the HTTP route and the MCP tool; only the inbox permission
  * check throws (HTTPException), matching the routers' existing behavior.
  */
+/** Actors whose reply is a person's judgement (for the learning filter). */
+const HUMAN_ACTORS = new Set(["user", "api_key", "mcp", "jmap"]);
+
 export async function replyToEmail(
   params: ReplyEmailParams,
 ): Promise<ReplyEmailResult> {
@@ -605,6 +610,19 @@ export async function replyToEmail(
         );
     } catch (err) {
       console.warn(`[reply] Reply-To not stored for ${emailId}:`, err);
+    }
+  }
+
+  // A person answering a received message says it is not junk: that trains
+  // the inbox's learning filter. Never a rule, the agent or the system.
+  if (receivedRow.length > 0) {
+    const actor = currentAuditActor();
+    if (HUMAN_ACTORS.has(actor.actorType)) {
+      await trainMessages(db, {
+        refs: [{ kind: "received", id: emailId }],
+        label: "ham",
+        userId: actor.actorUserId,
+      });
     }
   }
 

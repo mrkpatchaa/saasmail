@@ -126,3 +126,35 @@ access), tests.
   `docs/automations.md` (the condition), `docs/mailbox-state.md` (the probability field),
   `AGENTS.md` (the `spam_training` cascade line next to `deleteMessageState()`).
 - CHANGELOG `### Added`: **A spam filter that learns from your junk marks.** …
+
+## Spec changes (implementation)
+
+The five decisions are unchanged. What the code does differently, and why:
+
+1. **Token lists are bound as one JSON value** (`json_each`), as the house rules allow, so a lookup, a
+   decrement and an increment are one statement each whatever the token count, instead of four
+   40-token statements.
+2. **The filter is turned on and off by `PUT /api/admin/inboxes/{email}/spam-filter` `{ enabled }`**,
+   not by `PATCH /api/admin/inboxes/{email}`: that route manages the sender identity row (and deletes it
+   when every field is back to its default), while the filter lives in `spam_models`. The reset is
+   `POST …/spam-filter/reset` as specified; both record `inbox.updated` (`spamFilterEnabled`,
+   `spamFilterReset`).
+3. Training statements run one after another (Drizzle's batch does not take raw statements); training
+   is best-effort, so a failure is logged and can leave one message's counts half applied.
+4. Training inside `setMailboxState` is inline (the service has no execution context), runs only when
+   some inbox has its filter on, and is bounded to the first 50 received messages of a call. It reads
+   the stored messages through `queryMessages`, loaded lazily to avoid an import cycle with the state
+   services.
+5. A reply trains not-junk when it goes through `replyToEmail` (the web, the API, MCP's
+   `reply_email`); a JMAP client's reply is an `EmailSubmission` of a new draft, not linked to the
+   original by id, so it does not train.
+6. The tokenizer keeps a leading currency sign (`$500` is a token) and drops a word's trailing
+   punctuation; it reads up to 12,000 characters before trimming the quoted tail, then keeps 3,000.
+   The scorer caps each token's junk and not-junk frequencies at 1 (Graham's `min`).
+7. **Create the junk rule** shows "Junk rule in place" instead when any rule scoped to the inbox already
+   has a `spam_probability` condition. The rule opens prefilled in Automations
+   (`/automations?prefill=junk&inbox=…`), named "Junk (learned filter)".
+8. The prune deletes up to 10 batches of 1,000 per inbox per hourly pass, rarest then oldest tokens
+   first, and takes the cap as a parameter.
+9. `/api/messages` declares `spamProbability`; the agent's tools see it on `UnifiedMessage` where they
+   pass messages through.

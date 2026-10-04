@@ -82,6 +82,35 @@ one, give it a sender identity or assign members. Also:
 - Each refusal writes one audit row (kept 180 days by default), so a
   dictionary attack shows up there in volume.
 
+## Learning spam filter
+
+Each inbox can have a spam filter that learns from your team: **Learn from junk
+marks** under Spam threshold on the **Inboxes** page (off by default). It is a
+naive-Bayes filter in the style of SpamAssassin's and Thunderbird's, one per
+inbox, kept in D1.
+
+- **What trains it**: a person marking a message as junk (spam), taking a
+  message out of Junk (not spam), or replying to a received message (not
+  spam), from the web app, the API, MCP or JMAP. Rules, the spam threshold,
+  the agent, auto-replies and imports never train it, so it cannot learn from
+  its own output. A message counts once; changing its label moves it. A bulk
+  mark trains its first 50 messages.
+- **When it scores**: once it has seen 20 junk and 20 not-junk messages, each
+  new message gets a spam probability from 0 to 1 (shown in the reading pane
+  as "Spam probability 0.97 (learned filter)" and on the message as
+  `spamProbability`). A message with too little evidence gets none.
+- **Acting on it is a rule**: the condition `spam_probability ≥ 0.9` with Mark
+  as spam. **Create the junk rule** opens Automations with that rule
+  prefilled for the inbox. The filter itself never files anything.
+- **Reset** forgets everything it learned (it stays on or off). Each inbox keeps
+  at most 100,000 tokens; the hourly pass removes the rarest, oldest ones.
+
+The API: `GET /api/admin/inboxes` returns `spamFilter: { enabled,
+spamMessages, hamMessages, ready }`, `PUT /api/admin/inboxes/{email}/spam-filter`
+with `{ enabled }` turns it on or off, and
+`POST /api/admin/inboxes/{email}/spam-filter/reset` empties it; both are
+recorded as `inbox.updated`.
+
 ## Per-inbox forwarding
 
 Give any inbox a **Forward to** address and every message it receives is re-sent to
