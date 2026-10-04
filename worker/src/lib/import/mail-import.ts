@@ -6,7 +6,6 @@ import { users } from "../../db/auth.schema";
 import { emails } from "../../db/emails.schema";
 import { mailboxes } from "../../db/mailboxes.schema";
 import { senderIdentities } from "../../db/sender-identities.schema";
-import { sentEmails } from "../../db/sent-emails.schema";
 import { AUDIT_ACTIONS } from "../audit/events";
 import { runWithAudit, type AuditActor } from "../audit/context";
 import { recordAudit } from "../audit/record";
@@ -987,7 +986,6 @@ async function importSlice(
         cursor = end;
         continue;
       }
-      read = { messages: [], nextOffset: cursor };
       const whole = await env.R2.get(key, {
         range: { offset: cursor, length: end - cursor },
       });
