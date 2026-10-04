@@ -77,7 +77,7 @@ export const emails = sqliteTable(
       table.receivedAt,
     ),
     index("emails_conversation_idx").on(table.conversationId),
-    index("emails_recipient_thread_idx").on(table.recipient, table.threadKey),
+    index("emails_thread_key_idx").on(table.threadKey),
     // One row per Message-ID per inbox: a message addressed to two inboxes is
     // stored in both, and a redelivery to the same inbox is dropped.
     uniqueIndex("emails_message_id_recipient_unique").on(

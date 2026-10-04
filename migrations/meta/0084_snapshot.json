@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "7f433f37-d196-4dcf-b528-aa8721a98038",
+  "id": "2d658e88-e76b-4e9d-9fdb-c153a5f0dd1d",
   "prevId": "8bca2de7-9291-421f-ad40-0afaecf30dc8",
   "tables": {
     "accounts": {
@@ -1523,10 +1523,9 @@
           ],
           "isUnique": false
         },
-        "emails_recipient_thread_idx": {
-          "name": "emails_recipient_thread_idx",
+        "emails_thread_key_idx": {
+          "name": "emails_thread_key_idx",
           "columns": [
-            "recipient",
             "thread_key"
           ],
           "isUnique": false
@@ -1749,10 +1748,9 @@
           ],
           "isUnique": false
         },
-        "sent_emails_from_thread_idx": {
-          "name": "sent_emails_from_thread_idx",
+        "sent_emails_thread_key_idx": {
+          "name": "sent_emails_thread_key_idx",
           "columns": [
-            "from_address",
             "thread_key"
           ],
           "isUnique": false
