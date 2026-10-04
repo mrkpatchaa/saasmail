@@ -26,7 +26,10 @@ export const adminRulesRouter = new OpenAPIHono<{
   Variables: Variables;
 }>();
 
-const ErrorSchema = z.object({ error: z.string() });
+const ErrorSchema = z.object({
+  error: z.string(),
+  code: z.string().optional(),
+});
 const RuleWarningSchema = z.object({
   actionIndex: z.number().int().nonnegative(),
   code: z.enum(["missing_folder", "assignee_unavailable"]),
@@ -189,8 +192,11 @@ async function computeRuleWarnings(
   return result;
 }
 
-function mapRuleError(error: unknown): { error: string } | null {
-  return error instanceof InvalidRuleError ? { error: error.message } : null;
+function mapRuleError(error: unknown): { error: string; code?: string } | null {
+  if (!(error instanceof InvalidRuleError)) return null;
+  return error.code
+    ? { error: error.message, code: error.code }
+    : { error: error.message };
 }
 
 const listRoute = createRoute({

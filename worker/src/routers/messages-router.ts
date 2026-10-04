@@ -26,6 +26,10 @@ import { listAssigneesForInbox } from "../lib/assignees";
 import { isInboxAllowed } from "../lib/inbox-permissions";
 import { bearerSecurity } from "../lib/openapi-auth";
 import { applyReplyGuard } from "../lib/reply-recipients";
+import { AUDIT_ACTIONS } from "../lib/audit/events";
+import { recordBulkAudit } from "../lib/audit/record";
+import { triageModel, type AiFileMessage } from "../lib/triage/ai-file";
+import { describedFolders } from "../lib/triage/folders";
 import type { Variables } from "../variables";
 
 export const messagesRouter = new OpenAPIHono<{
@@ -515,4 +519,106 @@ messagesRouter.openapi(mailboxMembershipRoute, async (c) => {
     if (mapped) return c.json({ error: mapped.message }, mapped.status);
     throw error;
   }
+});
+
+const aiFileRoute = createRoute({
+  method: "post",
+  path: "/ai-file",
+  tags: ["Messages"],
+  security: bearerSecurity,
+  description:
+    "Asks the AI to file received messages (at most 50) into the described folders of their inbox, in the background. Folders appear a few seconds later; nothing is archived.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({ refs: z.array(z.string()).min(1).max(50) }),
+        },
+      },
+    },
+  },
+  responses: {
+    500: { description: "Internal server error" },
+    202: {
+      description: "Queued",
+      content: {
+        "application/json": { schema: z.object({ queued: z.number().int() }) },
+      },
+    },
+    400: {
+      description:
+        "Invalid refs, a sent message, no model configured (`NO_MODEL`), or an inbox without a described folder (`NO_AI_FOLDERS`)",
+      content: {
+        "application/json": {
+          schema: z.object({ error: z.string(), code: z.string().optional() }),
+        },
+      },
+    },
+    404: errorResponse("A message was not found or is not accessible"),
+  },
+});
+
+messagesRouter.openapi(aiFileRoute, async (c) => {
+  const db = c.get("db");
+  const allowed = c.get("allowedInboxes")!;
+  let refs: MessageRef[];
+  try {
+    refs = parseRefs([...new Set(c.req.valid("json").refs)]);
+  } catch (error) {
+    const mapped = stateError(error);
+    if (mapped) return c.json({ error: mapped.message }, 400);
+    throw error;
+  }
+  if (refs.some((ref) => ref.kind !== "received")) {
+    return c.json({ error: "Only received messages can be filed" }, 400);
+  }
+  if (!triageModel(c.env).ok) {
+    return c.json(
+      { error: "No AI model is configured on this server", code: "NO_MODEL" },
+      400,
+    );
+  }
+
+  // Access per message: one the caller cannot see answers as not found.
+  const page = await queryMessages(db, allowed, {
+    messageRefs: refs,
+    limit: null,
+    includeArchived: true,
+    includeSnoozed: true,
+  });
+  if (page.messages.length !== refs.length) {
+    return c.json({ error: "Message not found" }, 404);
+  }
+  const inboxes = [
+    ...new Set(page.messages.map((message) => message.inbox.toLowerCase())),
+  ];
+  for (const inbox of inboxes) {
+    if ((await describedFolders(db, inbox)).length === 0) {
+      return c.json(
+        {
+          error: `${inbox} has no folder with a description to file into`,
+          code: "NO_AI_FOLDERS",
+        },
+        400,
+      );
+    }
+  }
+
+  const jobs: AiFileMessage[] = page.messages.map((message) => ({
+    type: "ai_file",
+    emailId: message.ref.id,
+    inbox: message.inbox.toLowerCase(),
+    ruleId: null,
+    archiveWhenFiled: false,
+  }));
+  await c.env.EMAIL_QUEUE.sendBatch(jobs.map((body) => ({ body })));
+  await recordBulkAudit(db, {
+    action: AUDIT_ACTIONS.mailAiFileRequested,
+    targetType: "message",
+    inbox: inboxes.length === 1 ? inboxes[0] : null,
+    refs: page.messages.map((message) => serializeMessageRef(message.ref)),
+    summary: (count) =>
+      `Asked the AI to file ${count} ${count === 1 ? "message" : "messages"}`,
+  });
+  return c.json({ queued: jobs.length }, 202);
 });

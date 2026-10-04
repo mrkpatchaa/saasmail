@@ -3,10 +3,15 @@ import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { users } from "../../db/auth.schema";
 import { mailboxes } from "../../db/mailboxes.schema";
 import { isInboxAllowed, resolveAllowedInboxes } from "../inbox-permissions";
+import { describedFolders } from "../triage/folders";
 import type { RuleAction } from "./types";
 
 export class InvalidRuleError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** A machine-readable reason, for the HTTP answer. */
+    readonly code?: string,
+  ) {
     super(message);
     this.name = "InvalidRuleError";
   }
@@ -25,6 +30,21 @@ export async function validateRuleActions(
     throw new InvalidRuleError(
       "A reject action must be the rule's only action",
     );
+  }
+  const aiFilings = input.actions.filter((action) => action.type === "ai_file");
+  if (aiFilings.length > 1) {
+    throw new InvalidRuleError("A rule may have at most one ai_file action");
+  }
+  if (aiFilings.length > 0) {
+    if (!inbox) {
+      throw new InvalidRuleError("ai_file requires an inbox-scoped rule");
+    }
+    if ((await describedFolders(db, inbox)).length === 0) {
+      throw new InvalidRuleError(
+        "ai_file needs at least one folder with a description in this inbox: describe what belongs in a folder first",
+        "NO_AI_FOLDERS",
+      );
+    }
   }
   const autoReplies = input.actions.filter(
     (action) => action.type === "auto_reply",
