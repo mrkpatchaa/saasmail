@@ -15,7 +15,6 @@ CREATE TABLE `spam_tokens` (
 	PRIMARY KEY(`inbox`, `token`)
 );
 --> statement-breakpoint
-CREATE INDEX `spam_tokens_inbox_updated_idx` ON `spam_tokens` (`inbox`,`updated_at`);--> statement-breakpoint
 CREATE TABLE `spam_training` (
 	`inbox` text NOT NULL,
 	`email_id` text NOT NULL,
@@ -25,4 +24,5 @@ CREATE TABLE `spam_training` (
 	PRIMARY KEY(`inbox`, `email_id`)
 );
 --> statement-breakpoint
+CREATE INDEX `spam_training_email_idx` ON `spam_training` (`email_id`);--> statement-breakpoint
 ALTER TABLE `emails` ADD `spam_probability` real;

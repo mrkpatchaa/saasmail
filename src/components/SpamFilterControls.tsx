@@ -87,9 +87,9 @@ export default function SpamFilterControls({
       >
         {status}
       </p>
-      {filter.enabled && (
-        <div className="flex flex-wrap gap-2 text-[11px]">
-          {hasJunkRule ? (
+      <div className="flex flex-wrap gap-2 text-[11px]">
+        {filter.enabled &&
+          (hasJunkRule ? (
             <span className="text-text-tertiary">Junk rule in place</span>
           ) : (
             <Link
@@ -98,31 +98,31 @@ export default function SpamFilterControls({
             >
               Create the junk rule
             </Link>
-          )}
-          {(filter.spamMessages > 0 || filter.hamMessages > 0) && (
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    `Forget everything the filter learned for ${inbox.email}?`,
-                  )
-                ) {
-                  return;
-                }
-                void run(
-                  () => resetSpamFilter(inbox.email),
-                  "Couldn’t reset the learning filter",
-                );
-              }}
-              className="text-text-tertiary hover:text-red-600 disabled:opacity-60"
-            >
-              Reset
-            </button>
-          )}
-        </div>
-      )}
+          ))}
+        {/* What it learned stays when it is off: reset is offered either way. */}
+        {(filter.spamMessages > 0 || filter.hamMessages > 0) && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              if (
+                !window.confirm(
+                  `Forget everything the filter learned for ${inbox.email}?`,
+                )
+              ) {
+                return;
+              }
+              void run(
+                () => resetSpamFilter(inbox.email),
+                "Couldn’t reset the learning filter",
+              );
+            }}
+            className="text-text-tertiary hover:text-red-600 disabled:opacity-60"
+          >
+            Reset
+          </button>
+        )}
+      </div>
     </div>
   );
 }

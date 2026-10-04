@@ -653,9 +653,8 @@ const spamFilterRoute = createRoute({
 
 adminInboxesRouter.openapi(spamFilterRoute, async (c) => {
   const db = c.get("db");
-  const inbox = decodeURIComponent(c.req.valid("param").email)
-    .trim()
-    .toLowerCase();
+  // Hono already decoded the parameter.
+  const inbox = c.req.valid("param").email.trim().toLowerCase();
   const { enabled } = c.req.valid("json");
   await setSpamFilterEnabled(db, inbox, enabled);
   await recordAudit(db, {
@@ -688,9 +687,7 @@ const spamFilterResetRoute = createRoute({
 
 adminInboxesRouter.openapi(spamFilterResetRoute, async (c) => {
   const db = c.get("db");
-  const inbox = decodeURIComponent(c.req.valid("param").email)
-    .trim()
-    .toLowerCase();
+  const inbox = c.req.valid("param").email.trim().toLowerCase();
   await resetSpamFilter(db, inbox);
   await recordAudit(db, {
     action: AUDIT_ACTIONS.inboxUpdated,

@@ -28,10 +28,7 @@ export const spamTokens = sqliteTable(
     hamCount: integer("ham_count").notNull().default(0),
     updatedAt: integer("updated_at").notNull(),
   },
-  (table) => [
-    primaryKey({ columns: [table.inbox, table.token] }),
-    index("spam_tokens_inbox_updated_idx").on(table.inbox, table.updatedAt),
-  ],
+  (table) => [primaryKey({ columns: [table.inbox, table.token] })],
 );
 
 /**
@@ -49,5 +46,9 @@ export const spamTraining = sqliteTable(
     trainedBy: text("trained_by"),
     trainedAt: integer("trained_at").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.inbox, table.emailId] })],
+  (table) => [
+    primaryKey({ columns: [table.inbox, table.emailId] }),
+    // Deleting a message finds its row by id alone.
+    index("spam_training_email_idx").on(table.emailId),
+  ],
 );

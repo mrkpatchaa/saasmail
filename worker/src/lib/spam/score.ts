@@ -16,6 +16,14 @@ export const MIN_TRAINING_MESSAGES = 20;
 const INTERESTING_TOKENS = 15;
 /** Below this many known tokens there is not enough evidence. */
 const MIN_KNOWN_TOKENS = 5;
+/**
+ * Robinson's smoothing: a token seen n times moves from the neutral 0.5
+ * towards its observed probability only as n grows (strength s = 1).
+ */
+const STRENGTH = 1;
+const NEUTRAL = 0.5;
+/** Tokens this close to neutral say nothing and are left out. */
+const MIN_DEVIATION = 0.1;
 
 /** Whether a filter has enough training to score new mail. */
 export function modelReady(model: ModelCounts): boolean {
@@ -26,11 +34,27 @@ export function modelReady(model: ModelCounts): boolean {
 }
 
 /**
- * The probability that a message is junk, from its tokens' counts (Graham's
- * "A Plan for Spam"): each known token's junk probability, with not-junk
- * counts doubled to bias against false positives and clamped to
- * [0.01, 0.99]; the 15 farthest from 0.5 combined. Null with fewer than five
- * known tokens. Pure.
+ * One token's junk probability: Graham's ratio of its junk and not-junk
+ * frequencies (not-junk counted double, against false positives), smoothed
+ * towards 0.5 by how often it was seen (Robinson), clamped to [0.01, 0.99].
+ */
+export function tokenProbability(
+  count: TokenCounts,
+  model: ModelCounts,
+): number {
+  const bad = Math.min(1, count.spamCount / model.spamMessages);
+  const good = Math.min(1, (2 * count.hamCount) / model.hamMessages);
+  const observed = bad + good === 0 ? NEUTRAL : bad / (bad + good);
+  const seen = count.spamCount + count.hamCount;
+  const smoothed = (STRENGTH * NEUTRAL + seen * observed) / (STRENGTH + seen);
+  return Math.min(0.99, Math.max(0.01, smoothed));
+}
+
+/**
+ * The probability that a message is junk, from its tokens' counts: the 15
+ * telling tokens (farthest from 0.5, at least 0.1 away) combined as
+ * Π p / (Π p + Π (1 − p)). Null with fewer than five known tokens; 0.5 when
+ * none of them tells either way. Pure.
  */
 export function score(
   tokens: string[],
@@ -42,17 +66,16 @@ export function score(
   for (const token of tokens) {
     const count = counts.get(token);
     if (!count || count.spamCount + count.hamCount < 1) continue;
-    const bad = Math.min(1, count.spamCount / model.spamMessages);
-    const good = Math.min(1, (2 * count.hamCount) / model.hamMessages);
-    if (bad + good === 0) continue;
-    probabilities.push(Math.min(0.99, Math.max(0.01, bad / (bad + good))));
+    probabilities.push(tokenProbability(count, model));
   }
   if (probabilities.length < MIN_KNOWN_TOKENS) return null;
 
   const telling = probabilities
-    .sort((a, b) => Math.abs(b - 0.5) - Math.abs(a - 0.5))
+    .filter((p) => Math.abs(p - NEUTRAL) >= MIN_DEVIATION)
+    .sort((a, b) => Math.abs(b - NEUTRAL) - Math.abs(a - NEUTRAL))
     .slice(0, INTERESTING_TOKENS);
-  // Π p / (Π p + Π (1 − p)), in log space so many small factors stay exact.
+  if (telling.length === 0) return NEUTRAL;
+  // In log space, so many small factors stay exact.
   let logSpam = 0;
   let logHam = 0;
   for (const p of telling) {

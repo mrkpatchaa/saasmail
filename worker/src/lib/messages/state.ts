@@ -1,6 +1,6 @@
 import { spamTraining } from "../../db/spam-filter.schema";
 import { currentAuditActor } from "../audit/context";
-import { trainMessages } from "../spam/filter";
+import { HUMAN_ACTORS, trainMessages } from "../spam/filter";
 import {
   assertAiFolderRoom,
   normalizeAiDescription,
@@ -375,8 +375,9 @@ export async function setMailboxState(
 
   /**
    * A person's junk mark trains the inbox's learning filter; so does taking
-   * a message out of Junk. A rule, the system or an import never does: the
-   * filter must not learn from its own output or replay old state.
+   * a message out of Junk. A rule, the system, the agent or an import never
+   * does: the filter must not learn from its own output, from a model a
+   * message could talk into it, or replay old state.
    */
   async function trainSpamFilter(
     personId: string | null,
@@ -385,7 +386,10 @@ export async function setMailboxState(
     before: typeof flagsBefore,
   ) {
     if (personId === null || spam === undefined) return;
-    if (currentAuditActor().channel === "import") return;
+    const actor = currentAuditActor();
+    if (actor.channel === "import" || !HUMAN_ACTORS.has(actor.actorType)) {
+      return;
+    }
     const refs = messages
       .filter(
         (message) =>

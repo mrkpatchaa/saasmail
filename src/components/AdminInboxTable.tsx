@@ -67,9 +67,12 @@ export default function AdminInboxTable() {
             rules
               .filter(
                 (rule) =>
+                  rule.enabled &&
                   rule.inbox &&
                   rule.conditions.some(
-                    (condition) => condition.field === "spam_probability",
+                    (condition) =>
+                      condition.field === "spam_probability" &&
+                      condition.operator === "gte",
                   ),
               )
               .map((rule) => rule.inbox!.toLowerCase()),

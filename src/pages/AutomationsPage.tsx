@@ -306,7 +306,7 @@ export default function AutomationsPage() {
       actions: [{ type: "mark_spam" }],
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading]);
+  }, [loading, searchParams]);
 
   function openEdit(rule: AutomationRule) {
     setEditingId(rule.id);

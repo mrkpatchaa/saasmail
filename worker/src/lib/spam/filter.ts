@@ -7,7 +7,7 @@ import {
 } from "../../db/spam-filter.schema";
 import type { MessageRef } from "../messages/types";
 import { modelReady, score, type TokenCounts } from "./score";
-import { tokenize, type TokenizableMessage } from "./tokenize";
+import { MAX_TOKENS, tokenize, type TokenizableMessage } from "./tokenize";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
@@ -25,8 +25,8 @@ export interface SpamModel {
 export const MAX_TRAINED_PER_CALL = 50;
 /** Tokens kept per inbox; the hourly prune removes the least useful. */
 export const MAX_TOKENS_PER_INBOX = 100_000;
-const PRUNE_BATCH = 1000;
-const PRUNE_MAX_BATCHES = 10;
+/** Tokens one pass may delete per inbox. */
+const PRUNE_MAX_PER_PASS = 10_000;
 
 const normalized = (inbox: string) => inbox.trim().toLowerCase();
 
@@ -140,10 +140,22 @@ export async function scoreInbound(
   return score(tokens, await tokenCounts(db, inbox, tokens), model);
 }
 
+/** Actors whose marks and replies are a person's judgement. */
+export const HUMAN_ACTORS: ReadonlySet<string> = new Set([
+  "user",
+  "api_key",
+  "mcp",
+  "jmap",
+]);
+
+const changesOf = (result: D1Result) => Number(result.meta?.changes ?? 0);
+
 /**
  * Trains an inbox's filter with one message and the label a person gave it.
- * The same label again changes nothing; the other label takes the message's
- * counts off the old one first.
+ * The label is claimed first, so two concurrent identical marks count once:
+ * the same label again changes nothing, the other label moves the message's
+ * counts, and `onlyIfUntrained` (a reply) never overrides an explicit mark.
+ * The counts then change in one batch (one transaction).
  */
 export async function trainMessage(
   db: Db,
@@ -153,67 +165,102 @@ export async function trainMessage(
     label: SpamLabel;
     userId: string | null;
     message: TokenizableMessage;
+    onlyIfUntrained?: boolean;
   },
 ): Promise<boolean> {
+  const tokens = tokenize(input.message);
+  if (tokens.length === 0) return false;
+  const client = (db as unknown as { $client: D1Database }).$client;
   const inbox = normalized(input.inbox);
-  const [previous] = await db
-    .select({ label: spamTraining.label })
-    .from(spamTraining)
-    .where(
-      sql`${spamTraining.inbox} = ${inbox} AND ${spamTraining.emailId} = ${input.emailId}`,
-    )
-    .limit(1);
-  if (previous?.label === input.label) return false;
-
-  const tokens = JSON.stringify(tokenize(input.message));
   const now = Math.floor(Date.now() / 1000);
+  const other: SpamLabel = input.label === "spam" ? "ham" : "spam";
+
+  // A relabel from the other label, or a first label: whoever changes the
+  // row owns the counts.
+  let relabel = false;
+  if (!input.onlyIfUntrained) {
+    relabel =
+      changesOf(
+        await client
+          .prepare(
+            `UPDATE spam_training SET label = ?, trained_by = ?, trained_at = ?
+             WHERE inbox = ? AND email_id = ? AND label = ?`,
+          )
+          .bind(input.label, input.userId, now, inbox, input.emailId, other)
+          .run(),
+      ) === 1;
+  }
+  if (!relabel) {
+    const first =
+      changesOf(
+        await client
+          .prepare(
+            `INSERT INTO spam_training (inbox, email_id, label, trained_by, trained_at)
+             VALUES (?, ?, ?, ?, ?) ON CONFLICT (inbox, email_id) DO NOTHING`,
+          )
+          .bind(inbox, input.emailId, input.label, input.userId, now)
+          .run(),
+      ) === 1;
+    if (!first) return false;
+  }
+
+  const list = JSON.stringify(tokens);
   const spam = input.label === "spam" ? 1 : 0;
   const ham = 1 - spam;
-  if (previous) {
-    const column = previous.label === "spam" ? sql`spam_count` : sql`ham_count`;
-    await db.run(sql`
-      UPDATE spam_tokens SET ${column} = MAX(${column} - 1, 0), updated_at = ${now}
-      WHERE inbox = ${inbox}
-        AND token IN (SELECT value FROM json_each(${tokens}))
-    `);
+  const statements: D1PreparedStatement[] = [];
+  if (relabel) {
+    const column = other === "spam" ? "spam_count" : "ham_count";
+    statements.push(
+      client
+        .prepare(
+          `UPDATE spam_tokens SET ${column} = MAX(${column} - 1, 0), updated_at = ?
+           WHERE inbox = ? AND token IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(now, inbox, list),
+    );
   }
   // Every token in one statement: the list is bound as one JSON value.
-  await db.run(sql`
-    INSERT INTO spam_tokens (inbox, token, spam_count, ham_count, updated_at)
-    SELECT ${inbox}, value, ${spam}, ${ham}, ${now} FROM json_each(${tokens}) WHERE true
-    ON CONFLICT (inbox, token) DO UPDATE SET
-      spam_count = spam_count + excluded.spam_count,
-      ham_count = ham_count + excluded.ham_count,
-      updated_at = excluded.updated_at
-  `);
-  await db.run(sql`
-    INSERT INTO spam_models (inbox, enabled, spam_messages, ham_messages, updated_at)
-    VALUES (${inbox}, 0, ${spam}, ${ham}, ${now})
-    ON CONFLICT (inbox) DO UPDATE SET
-      spam_messages = MAX(spam_messages + ${spam} - ${previous?.label === "spam" ? 1 : 0}, 0),
-      ham_messages = MAX(ham_messages + ${ham} - ${previous?.label === "ham" ? 1 : 0}, 0),
-      updated_at = ${now}
-  `);
-  await db
-    .insert(spamTraining)
-    .values({
-      inbox,
-      emailId: input.emailId,
-      label: input.label,
-      trainedBy: input.userId,
-      trainedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: [spamTraining.inbox, spamTraining.emailId],
-      set: { label: input.label, trainedBy: input.userId, trainedAt: now },
-    });
+  statements.push(
+    client
+      .prepare(
+        `INSERT INTO spam_tokens (inbox, token, spam_count, ham_count, updated_at)
+         SELECT ?, value, ?, ?, ? FROM json_each(?) WHERE true
+         ON CONFLICT (inbox, token) DO UPDATE SET
+           spam_count = spam_count + excluded.spam_count,
+           ham_count = ham_count + excluded.ham_count,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(inbox, spam, ham, now, list),
+    client
+      .prepare(
+        `INSERT INTO spam_models (inbox, enabled, spam_messages, ham_messages, updated_at)
+         VALUES (?, 0, ?, ?, ?)
+         ON CONFLICT (inbox) DO UPDATE SET
+           spam_messages = MAX(spam_messages + ? - ?, 0),
+           ham_messages = MAX(ham_messages + ? - ?, 0),
+           updated_at = ?`,
+      )
+      .bind(
+        inbox,
+        spam,
+        ham,
+        now,
+        spam,
+        relabel && other === "spam" ? 1 : 0,
+        ham,
+        relabel && other === "ham" ? 1 : 0,
+        now,
+      ),
+  );
+  await client.batch(statements);
   return true;
 }
 
 /**
  * Trains the filters of the given received messages' inboxes, where on,
- * with a label a person gave them; at most the first 50. Best-effort: a
- * failure is logged, never thrown, so it cannot fail the person's action.
+ * with a label a person gave them: at most 50 messages per call, counted
+ * among those in an inbox whose filter is on. Best-effort: a failure is
+ * logged, never thrown, so it cannot fail the person's action.
  */
 export async function trainMessages(
   db: Db,
@@ -221,12 +268,12 @@ export async function trainMessages(
     refs: MessageRef[];
     label: SpamLabel;
     userId: string | null;
+    /** A reply: train only messages nobody labelled yet. */
+    onlyIfUntrained?: boolean;
   },
 ): Promise<number> {
   try {
-    const refs = input.refs
-      .filter((ref) => ref.kind === "received")
-      .slice(0, MAX_TRAINED_PER_CALL);
+    const refs = input.refs.filter((ref) => ref.kind === "received");
     if (refs.length === 0) return 0;
     const models = await readSpamModels(db);
     const enabled = [...models.values()].filter((model) => model.enabled);
@@ -240,7 +287,12 @@ export async function trainMessages(
       inboxes: enabled.map((model) => model.inbox),
     };
     let trained = 0;
-    for (let start = 0; start < refs.length; start += MESSAGE_REFS_PER_QUERY) {
+    let considered = 0;
+    for (
+      let start = 0;
+      start < refs.length && considered < MAX_TRAINED_PER_CALL;
+      start += MESSAGE_REFS_PER_QUERY
+    ) {
       const page = await queryMessages(db, scope, {
         messageRefs: refs.slice(start, start + MESSAGE_REFS_PER_QUERY),
         limit: null,
@@ -249,11 +301,14 @@ export async function trainMessages(
         withAttachmentCounts: true,
       });
       for (const message of page.messages) {
+        if (considered >= MAX_TRAINED_PER_CALL) break;
+        considered++;
         const changed = await trainMessage(db, {
           inbox: message.inbox,
           emailId: message.ref.id,
           label: input.label,
           userId: input.userId,
+          onlyIfUntrained: input.onlyIfUntrained,
           message: {
             fromAddress: message.from?.email ?? null,
             subject: message.subject,
@@ -274,34 +329,35 @@ export async function trainMessages(
 
 /**
  * Keeps each inbox under its token cap: the tokens seen least, and longest
- * ago, go first. Hourly; a bounded number of rows per pass.
+ * ago, go first. Hourly. Only inboxes trained on enough messages to reach
+ * the cap are counted (a message adds at most 150 tokens), and one pass
+ * deletes at most 10,000 rows per inbox.
  */
 export async function pruneSpamTokens(
   db: Db,
   cap: number = MAX_TOKENS_PER_INBOX,
 ): Promise<number> {
-  const over = await db.all<{ inbox: string; n: number }>(sql`
-    SELECT inbox, COUNT(*) AS n FROM spam_tokens GROUP BY inbox
-    HAVING COUNT(*) > ${cap}
+  const candidates = await db.all<{ inbox: string }>(sql`
+    SELECT inbox FROM spam_models
+    WHERE (spam_messages + ham_messages) * ${MAX_TOKENS} > ${cap}
   `);
   let deleted = 0;
-  for (const { inbox, n } of over) {
-    let excess = Number(n) - cap;
-    for (let batch = 0; batch < PRUNE_MAX_BATCHES && excess > 0; batch++) {
-      const take = Math.min(PRUNE_BATCH, excess);
-      const result = await db.run(sql`
-        DELETE FROM spam_tokens WHERE inbox = ${inbox} AND token IN (
-          SELECT token FROM spam_tokens WHERE inbox = ${inbox}
-          ORDER BY spam_count + ham_count ASC, updated_at ASC LIMIT ${take}
-        )
-      `);
-      const changes = Number(
-        (result as { meta?: { changes?: number } }).meta?.changes ?? 0,
-      );
-      deleted += changes;
-      excess -= changes;
-      if (changes < take) break;
-    }
+  for (const { inbox } of candidates) {
+    const [row] = await db.all<{ n: number }>(
+      sql`SELECT COUNT(*) AS n FROM spam_tokens WHERE inbox = ${inbox}`,
+    );
+    const excess = Number(row?.n ?? 0) - cap;
+    if (excess <= 0) continue;
+    const result = await db.run(sql`
+      DELETE FROM spam_tokens WHERE inbox = ${inbox} AND token IN (
+        SELECT token FROM spam_tokens WHERE inbox = ${inbox}
+        ORDER BY spam_count + ham_count ASC, updated_at ASC
+        LIMIT ${Math.min(excess, PRUNE_MAX_PER_PASS)}
+      )
+    `);
+    deleted += Number(
+      (result as { meta?: { changes?: number } }).meta?.changes ?? 0,
+    );
   }
   return deleted;
 }

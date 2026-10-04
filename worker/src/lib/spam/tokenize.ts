@@ -5,6 +5,8 @@ import { htmlToText } from "../html-to-text";
 export const MAX_TOKENS = 150;
 /** Characters of the body that are tokenized. */
 const BODY_LIMIT = 3000;
+/** Characters of HTML converted to text when there is no text body. */
+const HTML_LIMIT = 32_000;
 
 export interface TokenizableMessage {
   fromAddress: string | null;
@@ -50,10 +52,11 @@ export function tokenize(message: TokenizableMessage): string[] {
   }
   if (message.hasAttachments) add("h:attachments");
   for (const word of words(message.subject ?? "")) add(`s:${word}`);
+  // HTML is cut before it is converted: the conversion is the costly part.
   const body = message.bodyText?.trim()
     ? message.bodyText
     : message.bodyHtml
-      ? htmlToText(message.bodyHtml)
+      ? htmlToText(message.bodyHtml.slice(0, HTML_LIMIT))
       : "";
   for (const word of words(
     trimQuotedText(body.slice(0, BODY_LIMIT * 4)).slice(0, BODY_LIMIT),

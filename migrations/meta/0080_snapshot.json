@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "234a4b44-d82b-43ad-a59e-52dcbc0a864a",
+  "id": "35e4c132-f8a6-4eaa-9cfc-113597c026da",
   "prevId": "b2f33811-3839-45ba-b739-124252c34019",
   "tables": {
     "accounts": {
@@ -6258,16 +6258,7 @@
           "autoincrement": false
         }
       },
-      "indexes": {
-        "spam_tokens_inbox_updated_idx": {
-          "name": "spam_tokens_inbox_updated_idx",
-          "columns": [
-            "inbox",
-            "updated_at"
-          ],
-          "isUnique": false
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "spam_tokens_inbox_token_pk": {
@@ -6320,7 +6311,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "spam_training_email_idx": {
+          "name": "spam_training_email_idx",
+          "columns": [
+            "email_id"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "spam_training_inbox_email_id_pk": {

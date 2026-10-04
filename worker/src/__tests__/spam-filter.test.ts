@@ -104,19 +104,35 @@ describe("tokenize", () => {
 describe("score", () => {
   const model = { spamMessages: 20, hamMessages: 20 };
 
-  it("combines the most telling tokens", () => {
+  it("smooths each token by how often it was seen, and combines the telling ones", () => {
     const counts = new Map([
-      ["a", { spamCount: 10, hamCount: 0 }], // 0.99
-      ["b", { spamCount: 10, hamCount: 5 }], // 0.5 / (0.5 + 0.5) = 0.5
-      ["c", { spamCount: 0, hamCount: 10 }], // 0.01
-      ["d", { spamCount: 20, hamCount: 0 }], // 0.99
-      ["e", { spamCount: 15, hamCount: 0 }], // 0.99
+      ["a", { spamCount: 10, hamCount: 0 }], // (0.5 + 10·1) / 11
+      ["b", { spamCount: 10, hamCount: 5 }], // 0.5: says nothing
+      ["c", { spamCount: 0, hamCount: 10 }], // (0.5 + 10·0) / 11
+      ["d", { spamCount: 20, hamCount: 0 }], // (0.5 + 20) / 21
+      ["e", { spamCount: 15, hamCount: 0 }], // (0.5 + 15) / 16
     ]);
-    // 0.99³·0.5·0.01 / (0.99³·0.5·0.01 + 0.01³·0.5·0.99)
-    const expected = (0.99 ** 3 * 0.01) / (0.99 ** 3 * 0.01 + 0.01 ** 3 * 0.99);
+    const telling = [10.5 / 11, 0.5 / 11, 20.5 / 21, 15.5 / 16];
+    const spam = telling.reduce((product, p) => product * p, 1);
+    const ham = telling.reduce((product, p) => product * (1 - p), 1);
     expect(
       score(["a", "b", "c", "d", "e", "unknown"], counts, model),
-    ).toBeCloseTo(expected, 10);
+    ).toBeCloseTo(spam / (spam + ham), 10);
+  });
+
+  it("keeps a token seen once close to neutral", () => {
+    const once = new Map(
+      ["a", "b", "c", "d", "e"].map((token) => [
+        token,
+        { spamCount: 1, hamCount: 0 },
+      ]),
+    );
+    // Each is (0.5 + 1) / 2 = 0.75, not 0.99: five of them are not proof.
+    expect(score(["a", "b", "c", "d", "e"], once, model)).toBeLessThan(0.999);
+    expect(score(["a", "b", "c", "d", "e"], once, model)).toBeCloseTo(
+      0.75 ** 5 / (0.75 ** 5 + 0.25 ** 5),
+      10,
+    );
   });
 
   it("needs five known tokens", () => {
@@ -223,6 +239,88 @@ describe("training", () => {
       setMailboxState(getDb(), admin, "u1", ref, { spam: false }),
     );
     expect(await tokenCount("cheap")).toEqual({ spam: 0, ham: 1 });
+  });
+
+  it("never learns from the agent, which a message could talk into it", async () => {
+    const { agentActor } = await import("../lib/audit/actors");
+    await runWithAudit(
+      agentActor({ id: "u1", email: "jane@acme.com" }, "session-1"),
+      () =>
+        setMailboxState(
+          getDb(),
+          admin,
+          "u1",
+          [{ kind: "received", id: "e1" }],
+          { spam: true },
+        ),
+    );
+    expect(await tokenCount("cheap")).toBeNull();
+  });
+
+  it("counts two identical marks at the same time once", async () => {
+    const train = () =>
+      trainMessage(getDb(), {
+        inbox: INBOX,
+        emailId: "e1",
+        label: "spam",
+        userId: "u1",
+        message,
+      });
+    const results = await Promise.all([train(), train(), train()]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await tokenCount("cheap")).toEqual({ spam: 1, ham: 0 });
+    expect(await readSpamModel(getDb(), INBOX)).toMatchObject({
+      spamMessages: 1,
+    });
+  });
+
+  it("does not let a reply undo a junk mark", async () => {
+    await trainMessage(getDb(), {
+      inbox: INBOX,
+      emailId: "e1",
+      label: "spam",
+      userId: "u1",
+      message,
+    });
+    expect(
+      await trainMessage(getDb(), {
+        inbox: INBOX,
+        emailId: "e1",
+        label: "ham",
+        userId: "u1",
+        message,
+        onlyIfUntrained: true,
+      }),
+    ).toBe(false);
+    expect(await tokenCount("cheap")).toEqual({ spam: 1, ham: 0 });
+  });
+
+  it("trains at most 50 messages per mark", async () => {
+    for (let i = 0; i < 55; i++) {
+      await createTestEmail({
+        id: `bulk-${i}`,
+        personId: "p1",
+        recipient: INBOX,
+        messageId: `<bulk-${i}@example.com>`,
+        subject: "Cheap pills",
+        bodyText: "buy cheap pills now",
+      });
+    }
+    await runWithAudit(userActor({ id: "u1", email: "jane@acme.com" }), () =>
+      setMailboxState(
+        getDb(),
+        admin,
+        "u1",
+        Array.from({ length: 55 }, (_, i) => ({
+          kind: "received" as const,
+          id: `bulk-${i}`,
+        })),
+        { spam: true },
+      ),
+    );
+    expect(await readSpamModel(getDb(), INBOX)).toMatchObject({
+      spamMessages: 50,
+    });
   });
 
   it("never learns from a rule, the system or an import", async () => {
@@ -415,6 +513,11 @@ describe("scoring new mail", () => {
 
 describe("pruning", () => {
   it("keeps the cap, dropping the rarest and oldest tokens first", async () => {
+    // Only inboxes trained on enough mail to reach the cap are counted.
+    await getDb().run(sql`
+      INSERT INTO spam_models (inbox, enabled, spam_messages, ham_messages, updated_at)
+      VALUES (${INBOX}, 1, 1, 0, 1)
+    `);
     await getDb().run(sql`
       INSERT INTO spam_tokens (inbox, token, spam_count, ham_count, updated_at) VALUES
         (${INBOX}, 'rare-old', 1, 0, 1),
