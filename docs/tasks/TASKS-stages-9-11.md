@@ -35,20 +35,20 @@ uses `yarn db:generate --custom` and a hand-chained snapshot (AGENTS.md).
 Updated by whoever works a spec (the loop prompt in `LOOP-stages-9-11.md` does it each run). States:
 `todo` → `branch spec/<slug>` → `PR #N open` → `merged <sha>` → `archived`.
 
-| #   | Spec                       | Status                    |
-| --- | -------------------------- | ------------------------- |
-| 1   | `SPEC-reply-to.md`         | archived                  |
-| 2   | `SPEC-audit-log.md`        | archived                  |
-| 3   | `SPEC-send-idempotency.md` | archived                  |
-| 4   | `SPEC-send-controls.md`    | archived                  |
-| 5   | `SPEC-two-factor.md`       | archived                  |
-| 6   | `SPEC-reject-inbound.md`   | archived                  |
-| 7   | `SPEC-ai-folders.md`       | archived                  |
-| 8   | `SPEC-spam-learning.md`    | branch spec/spam-learning |
-| 9   | `SPEC-mail-export.md`      | todo                      |
-| 10  | `SPEC-mail-import.md`      | todo                      |
-| 11  | `SPEC-backups.md`          | todo                      |
-| 12  | `SPEC-header-threading.md` | todo                      |
+| #   | Spec                       | Status      |
+| --- | -------------------------- | ----------- |
+| 1   | `SPEC-reply-to.md`         | archived    |
+| 2   | `SPEC-audit-log.md`        | archived    |
+| 3   | `SPEC-send-idempotency.md` | archived    |
+| 4   | `SPEC-send-controls.md`    | archived    |
+| 5   | `SPEC-two-factor.md`       | archived    |
+| 6   | `SPEC-reject-inbound.md`   | archived    |
+| 7   | `SPEC-ai-folders.md`       | archived    |
+| 8   | `SPEC-spam-learning.md`    | PR #74 open |
+| 9   | `SPEC-mail-export.md`      | todo        |
+| 10  | `SPEC-mail-import.md`      | todo        |
+| 11  | `SPEC-backups.md`          | todo        |
+| 12  | `SPEC-header-threading.md` | todo        |
 
 ## Shared conventions the specs rely on
 
