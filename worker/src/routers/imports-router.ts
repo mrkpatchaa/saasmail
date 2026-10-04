@@ -138,8 +138,24 @@ const createImportRoute = createRoute({
 
 importsRouter.openapi(createImportRoute, async (c) => {
   const input = c.req.valid("json");
-  const job = await startMailImport(c.get("db"), c.env, {
+  const db = c.get("db");
+  const inbox = input.inbox.toLowerCase();
+  // Only into an inbox: an address with a sender identity or mail.
+  const known = await db.all(sql`
+    SELECT 1 FROM sender_identities WHERE lower(email) = ${inbox}
+    UNION ALL
+    SELECT 1 FROM emails WHERE recipient = ${inbox}
+    LIMIT 1
+  `);
+  if (known.length === 0) {
+    return c.json(
+      { error: `${inbox} is not an inbox`, code: "UNKNOWN_INBOX" },
+      400,
+    );
+  }
+  const job = await startMailImport(db, c.env, {
     ...input,
+    inbox,
     userId: c.get("user").id,
   });
   return c.json(serializeImport(job), 201);

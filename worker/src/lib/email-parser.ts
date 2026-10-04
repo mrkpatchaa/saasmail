@@ -24,6 +24,11 @@ export interface ParsedEmail {
   bcc: ParsedEmailAddress[];
   /** The Date header, as written. */
   date: string | null;
+  /**
+   * Addresses in every `Delivered-To` and `X-Original-To` header, lowercased:
+   * where a copy of the message was delivered.
+   */
+  deliveredTo: string[];
   /** Where the sender asked for replies (Reply-To); empty when absent. */
   replyTo: ParsedEmailAddress[];
   subject: string;
@@ -224,16 +229,22 @@ function flattened(
  * first To address.
  */
 export async function parseRawEmail(
-  rawEmail: ArrayBuffer,
+  rawEmail: ArrayBuffer | Uint8Array,
   envelope: { from?: string; to?: string } = {},
 ): Promise<ParsedEmail> {
   const parser = new PostalMime();
   const parsed = await parser.parse(rawEmail);
 
   const headers: Record<string, string> = {};
+  const deliveredTo: string[] = [];
   if (parsed.headers) {
     for (const header of parsed.headers) {
       headers[header.key] = header.value;
+      if (header.key === "delivered-to" || header.key === "x-original-to") {
+        deliveredTo.push(
+          ...parseAddressHeader(header.value).map((entry) => entry.email),
+        );
+      }
     }
   }
 
@@ -266,7 +277,8 @@ export async function parseRawEmail(
   );
 
   return {
-    raw: new Uint8Array(rawEmail),
+    // A view of an import's file is kept as it is, not copied.
+    raw: rawEmail instanceof Uint8Array ? rawEmail : new Uint8Array(rawEmail),
     from: {
       address: parsed.from?.address || envelope.from || "",
       name: parsed.from?.name || "",
@@ -276,6 +288,7 @@ export async function parseRawEmail(
     toList,
     bcc,
     date: parsed.date || headers["date"] || null,
+    deliveredTo,
     replyTo,
     subject: parsed.subject || "",
     bodyHtml: bodyHtml ? trimQuotedHtml(bodyHtml) : null,

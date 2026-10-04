@@ -70,18 +70,30 @@ export interface ImportParams extends SliceState {
   format: "mbox" | "eml" | null;
   /** The uploaded file is gone (24 hours after the import ended). */
   sourceDeleted?: boolean;
+  /** Messages skipped because every attempt at them failed. */
+  stuckSkips?: number;
 }
 
 /** The browser uploads the file in parts of this size (the last smaller). */
 export const IMPORT_PART_BYTES = 32 * 1024 * 1024;
 /** The largest file an import takes. */
 export const MAX_IMPORT_BYTES = 5 * 1000 * 1000 * 1000;
-/** How much of the file a slice reads at a time. */
-const WINDOW_BYTES = 8 * 1024 * 1024;
-/** A message larger than this is skipped, with a note. */
-export const MAX_MESSAGE_BYTES = 64 * 1024 * 1024;
-const SLICE_MESSAGES = 200;
-const SLICE_MS = 20_000;
+/**
+ * How a slice reads and when it stops. A slice holds one window, or one
+ * message read on its own, at a time; `maxMessage` keeps a message and its
+ * parse inside the Worker's 128 MB. `sliceOps` is a budget of D1 and R2 calls
+ * (about six per message plus two per attachment), well inside one
+ * invocation's limits. Mutable for tests.
+ */
+export const IMPORT_LIMITS = {
+  window: 8 * 1024 * 1024,
+  maxMessage: 32 * 1024 * 1024,
+  sliceMessages: 200,
+  sliceOps: 450,
+  sliceMs: 20_000,
+};
+/** Messages skipped because they kept failing, before the import fails. */
+const MAX_STUCK_SKIPS = 10;
 /** Notes kept in `error_summary`. */
 const MAX_NOTES = 50;
 /** The uploaded file is kept this long after the import ends. */
@@ -316,7 +328,7 @@ export async function completeImportUpload(
 /** `<import-<sha256>@saasmail.local>`: re-importing the same file finds it. */
 async function syntheticMessageId(bytes: Uint8Array): Promise<string> {
   const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", bytes.slice()),
+    await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>),
   );
   const hex = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(
     "",
@@ -398,16 +410,51 @@ export interface LabelState {
   folders: string[];
 }
 
+const utf8 = new TextDecoder();
+
+/**
+ * The labels an exporter wrote above the message's own headers: the block of
+ * `X-GM-*`, `X-Gmail-*` and `X-Saasmail-*` lines Gmail Takeout and saasmail's
+ * export put first. A labels header further down was written by the sender
+ * and is never trusted. saasmail's own wins over Gmail's.
+ */
+export function exporterLabels(message: Uint8Array): string | undefined {
+  const head = utf8.decode(message.subarray(0, 65_536));
+  const found: Record<string, string> = {};
+  let current: string | null = null;
+  for (const line of head.split(/\r?\n/)) {
+    if (line === "") break;
+    if (/^[ \t]/.test(line)) {
+      if (current) found[current] += ` ${line.trim()}`;
+      continue;
+    }
+    const match = /^([A-Za-z0-9-]+):[ \t]?(.*)$/.exec(line);
+    if (!match) break;
+    const name = match[1].toLowerCase();
+    if (!/^x-(gm|gmail|saasmail)-/.test(name)) break;
+    current = name in found ? null : name;
+    if (current) found[current] = match[2];
+  }
+  return found["x-saasmail-labels"] ?? found["x-gmail-labels"];
+}
+
+/** A draft (Gmail's `Draft` label): never sent, so never imported. */
+export function isDraft(header: string | undefined): boolean {
+  if (header === undefined) return false;
+  return parseLabels(header).some((label) =>
+    ["draft", "drafts"].includes(label.toLowerCase()),
+  );
+}
+
 /**
  * What a message's labels say about its state: Spam/Junk → junk, Trash →
  * trash, no Inbox (and not Sent) → archived, Starred → starred, other
  * labels → custom folders. Without a labels header: Inbox.
  */
 export function labelState(
-  headers: Record<string, string>,
+  header: string | undefined,
   direction: "received" | "sent",
 ): LabelState {
-  const header = headers["x-saasmail-labels"] ?? headers["x-gmail-labels"];
   if (header === undefined) {
     return {
       archived: false,
@@ -443,13 +490,16 @@ export function labelState(
 
 /** Whether a message's headers address it to the inbox. */
 function addressedTo(parsed: ParsedEmail, inbox: string): boolean {
-  const listed = [...parsed.toList, ...parsed.cc, ...parsed.bcc].some(
-    (address) => address.email === inbox,
+  return (
+    [...parsed.toList, ...parsed.cc, ...parsed.bcc].some(
+      (address) => address.email === inbox,
+    ) || parsed.deliveredTo.includes(inbox)
   );
-  if (listed) return true;
-  return ["delivered-to", "x-original-to"].some((name) =>
-    (parsed.headers[name] ?? "").toLowerCase().includes(inbox),
-  );
+}
+
+/** A label as a folder name: trimmed, at most 100 characters. */
+function folderName(label: string): string {
+  return label.trim().slice(0, 100).trim();
 }
 
 /** When the message happened: its Date, else the separator's, else now. */
@@ -480,8 +530,14 @@ class LabelBatch {
     if (state.trashed) this.trashed.push(ref);
     if (state.starred) this.starred.push(ref);
     if (createFolders) {
-      for (const name of state.folders.slice(0, 20)) {
-        const key = name.slice(0, 100);
+      for (const label of state.folders.slice(0, 20)) {
+        const name = folderName(label);
+        if (!name) continue;
+        // One folder per name, whatever its case.
+        const key =
+          [...this.folders.keys()].find(
+            (existing) => existing.toLowerCase() === name.toLowerCase(),
+          ) ?? name;
         this.folders.set(key, [...(this.folders.get(key) ?? []), ref]);
       }
     }
@@ -512,7 +568,7 @@ class LabelBatch {
         .where(
           and(
             eq(mailboxes.inbox, inbox),
-            eq(mailboxes.name, name),
+            sql`lower(${mailboxes.name}) = lower(${name})`,
             isNull(mailboxes.parentId),
           ),
         )
@@ -528,6 +584,56 @@ class LabelBatch {
     this.starred = [];
     this.folders.clear();
   }
+}
+
+/** Whether D1 refused a row as too large, through Drizzle's wrapping. */
+function tooBig(error: unknown): boolean {
+  for (let current = error, depth = 0; current && depth < 5; depth++) {
+    if (
+      String((current as Error).message ?? current).includes("SQLITE_TOOBIG")
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * A message already in the inbox: received mail by Message-ID, mail the
+ * inbox sent by Message-ID or, for a JMAP send (whose row keeps the
+ * provider's id), by its own. `importJobId` tells a row this import stored
+ * on an earlier attempt from one that was there before.
+ */
+async function existingMessage(
+  db: Db,
+  inbox: string,
+  messageId: string,
+  sent: boolean,
+): Promise<{ id: string; importJobId: string | null } | null> {
+  if (!sent) {
+    const [row] = await db
+      .select({ id: emails.id, importJobId: emails.importJobId })
+      .from(emails)
+      .where(and(eq(emails.messageId, messageId), eq(emails.recipient, inbox)))
+      .limit(1);
+    return row ?? null;
+  }
+  const bare = messageId.replace(/^<|>$/g, "");
+  const [row] = await db.all<{ id: string; import_job_id: string | null }>(sql`
+    SELECT se.id AS id, se.import_job_id AS import_job_id
+    FROM sent_emails se
+    WHERE se.from_address = ${inbox}
+      AND (
+        se.message_id = ${messageId}
+        OR EXISTS (
+          SELECT 1 FROM jmap_message_content c
+          WHERE c.id = se.jmap_content_id AND c.message_id = ${bare}
+        )
+      )
+    LIMIT 1
+  `);
+  return row ? { id: row.id, importJobId: row.import_job_id } : null;
 }
 
 /** Who an import acts as: its admin, on the `import` channel. */
@@ -618,22 +724,32 @@ async function importSlice(
     });
   };
 
+  /** D1 and R2 calls this slice has made, roughly (see IMPORT_LIMITS). */
+  let ops = 0;
+
   /** Stores one message, or counts it as skipped. */
   async function importOne(
     bytes: Uint8Array,
     separatorDate: Date | null,
   ): Promise<void> {
     processed++;
+    ops += 6;
     let parsed: ParsedEmail;
     try {
-      parsed = await parseRawEmail(bytes.slice().buffer);
+      parsed = await parseRawEmail(bytes);
     } catch {
       skipped++;
       note("could not be read as a message");
       return;
     }
-    parsed.messageId ??= await syntheticMessageId(bytes);
+    const labelHeader = exporterLabels(bytes);
     const subject = parsed.subject.slice(0, 80);
+    if (isDraft(labelHeader)) {
+      skipped++;
+      note(`a draft, never sent: ${subject}`);
+      return;
+    }
+    parsed.messageId ??= await syntheticMessageId(bytes);
     const from = parsed.from.address.trim().toLowerCase();
     const at = occurredAt(parsed, separatorDate, nowSeconds);
     const sent = from === params.inbox;
@@ -651,36 +767,34 @@ async function importSlice(
       note(`not addressed to ${params.inbox}: ${subject}`);
       return;
     }
+    const state = labelState(labelHeader, sent ? "sent" : "received");
 
-    // Already in the inbox: a re-import, or mail that arrived live.
-    const [duplicate] = sent
-      ? await db
-          .select({ id: sentEmails.id })
-          .from(sentEmails)
-          .where(
-            and(
-              eq(sentEmails.messageId, parsed.messageId),
-              eq(sentEmails.fromAddress, params.inbox),
-            ),
-          )
-          .limit(1)
-      : await db
-          .select({ id: emails.id })
-          .from(emails)
-          .where(
-            and(
-              eq(emails.messageId, parsed.messageId),
-              eq(emails.recipient, params.inbox),
-            ),
-          )
-          .limit(1);
-    if (duplicate) {
-      skipped++;
+    // Already in the inbox: a re-import, or mail that arrived live. A row
+    // this import stored on an attempt that died before saving its progress
+    // still counts as imported, and still gets its labels.
+    const existing = await existingMessage(
+      db,
+      params.inbox,
+      parsed.messageId,
+      sent,
+    );
+    if (existing) {
+      if (existing.importJobId === job.id) {
+        imported++;
+        labels.add(
+          { kind: sent ? "sent" : "received", id: existing.id },
+          state,
+          params.createFoldersFromLabels,
+        );
+      } else {
+        skipped++;
+      }
       return;
     }
 
     let ref: MessageRef;
     let dropped: number;
+    ops += 2 * parsed.attachments.length;
     if (sent) {
       const stored = await storeSentMessage(db, env, {
         parsed,
@@ -688,6 +802,7 @@ async function importSlice(
         sentAt: at,
         now: nowSeconds,
         ourDomains,
+        importJobId: job.id,
       });
       if (!stored) {
         skipped++;
@@ -705,6 +820,7 @@ async function importSlice(
         now: nowSeconds,
         source: "import",
         ourDomains,
+        importJobId: job.id,
       });
       ref = { kind: "received", id: stored.emailId };
       dropped = stored.droppedAttachments;
@@ -715,11 +831,39 @@ async function importSlice(
         `${dropped} ${dropped === 1 ? "attachment" : "attachments"} over the limits dropped: ${subject}`,
       );
     }
-    labels.add(
-      ref,
-      labelState(parsed.headers, sent ? "sent" : "received"),
-      params.createFoldersFromLabels,
-    );
+    labels.add(ref, state, params.createFoldersFromLabels);
+  }
+
+  /** Whether the slice has done its share. */
+  const full = () =>
+    processed >= IMPORT_LIMITS.sliceMessages ||
+    ops >= IMPORT_LIMITS.sliceOps ||
+    now() - started >= IMPORT_LIMITS.sliceMs;
+
+  /** Imports one message, or skips it when it can never be stored. */
+  async function importAt(message: {
+    offset: number;
+    end: number;
+    bytes: Uint8Array;
+    separatorDate: Date | null;
+  }): Promise<void> {
+    try {
+      await importOne(message.bytes, message.separatorDate);
+    } catch (error) {
+      if (tooBig(error)) {
+        // Too big for a row even cut down: retrying cannot help.
+        skipped++;
+        note("too large to store (its headers or bodies)");
+        cursor = message.end;
+        return;
+      }
+      // Keep what this slice did; the retry of this slice starts at this
+      // message.
+      processed--;
+      await commit(message.offset, params.slice, false).catch(() => {});
+      throw error;
+    }
+    cursor = message.end;
   }
 
   /**
@@ -791,79 +935,75 @@ async function importSlice(
 
   // One message: the whole file.
   if (format === "eml") {
-    if (params.size > MAX_MESSAGE_BYTES) {
+    if (params.size > IMPORT_LIMITS.maxMessage) {
       processed++;
       skipped++;
-      note("the message is larger than 64 MB");
+      note(`the message is larger than ${megabytes(IMPORT_LIMITS.maxMessage)}`);
     } else {
       const object = await env.R2.get(key);
       if (!object) {
         throw new Error(`import ${job.id}: the uploaded file is missing`);
       }
-      await importOne(new Uint8Array(await object.arrayBuffer()), null);
+      await importAt({
+        offset: 0,
+        end: params.size,
+        bytes: new Uint8Array(await object.arrayBuffer()),
+        separatorDate: null,
+      });
     }
     await commit(params.size, params.slice, true);
     return null;
   }
 
-  let window = WINDOW_BYTES;
-  while (
-    cursor < params.size &&
-    processed < SLICE_MESSAGES &&
-    now() - started < SLICE_MS
-  ) {
-    const length = Math.min(window, params.size - cursor);
+  while (cursor < params.size && !full()) {
+    const length = Math.min(IMPORT_LIMITS.window, params.size - cursor);
     const object = await env.R2.get(key, {
       range: { offset: cursor, length },
     });
     if (!object) {
       throw new Error(`import ${job.id}: the uploaded file is missing`);
     }
-    const final = cursor + length >= params.size;
-    const read = readMessages(
+    ops++;
+    let read = readMessages(
       new Uint8Array(await object.arrayBuffer()),
       cursor,
-      final,
+      cursor + length >= params.size,
     );
     if (read.messages.length === 0) {
-      // A message starts here but does not end in the window: read more of
-      // it, up to the largest message an import takes.
+      // No message ends in the window. Find where the next one starts
+      // without holding more than a window, then read this one alone, or
+      // skip it when it is too large (or not a message).
       const atMessage = read.nextOffset === cursor;
-      if (atMessage && !final && window < MAX_MESSAGE_BYTES) {
-        window = Math.min(window * 2, MAX_MESSAGE_BYTES);
+      const end = await nextSeparator(env, key, cursor + 1, params.size);
+      ops += Math.ceil((end - cursor) / IMPORT_LIMITS.window);
+      if (!atMessage || end - cursor > IMPORT_LIMITS.maxMessage) {
+        processed++;
+        skipped++;
+        note(
+          atMessage
+            ? `a message larger than ${megabytes(IMPORT_LIMITS.maxMessage)} was skipped`
+            : "data that is not a message was skipped",
+        );
+        cursor = end;
         continue;
       }
-      processed++;
-      skipped++;
-      note(
-        atMessage
-          ? "a message larger than 64 MB was skipped"
-          : "data that is not a message was skipped",
-      );
-      cursor = await nextSeparator(env, key, cursor + 1, params.size);
-      window = WINDOW_BYTES;
-      continue;
-    }
-    window = WINDOW_BYTES;
-    for (const message of read.messages) {
-      if (processed >= SLICE_MESSAGES || now() - started >= SLICE_MS) break;
-      try {
-        await importOne(message.bytes, message.separatorDate);
-      } catch (error) {
-        if (String(error).includes("SQLITE_TOOBIG")) {
-          // Too big for a row even cut down: retrying cannot help.
-          skipped++;
-          note("too large to store (its headers or bodies)");
-          cursor = message.end;
-          continue;
-        }
-        // Keep what this slice did; the retry of this slice starts at this
-        // message.
-        processed--;
-        await commit(message.offset, params.slice, false).catch(() => {});
-        throw error;
+      read = { messages: [], nextOffset: cursor };
+      const whole = await env.R2.get(key, {
+        range: { offset: cursor, length: end - cursor },
+      });
+      if (!whole) {
+        throw new Error(`import ${job.id}: the uploaded file is missing`);
       }
-      cursor = message.end;
+      ops++;
+      read = readMessages(
+        new Uint8Array(await whole.arrayBuffer()),
+        cursor,
+        true,
+      );
+    }
+    for (const message of read.messages) {
+      if (full()) break;
+      await importAt(message);
     }
   }
 
@@ -885,8 +1025,9 @@ async function nextSeparator(
 ): Promise<number> {
   const OVERLAP = 1024;
   const decoder = new TextDecoder("latin1");
-  for (let at = from; at < size; at += WINDOW_BYTES - OVERLAP) {
-    const length = Math.min(WINDOW_BYTES, size - at);
+  const window = IMPORT_LIMITS.window;
+  for (let at = from; at < size; at += window - OVERLAP) {
+    const length = Math.min(window, size - at);
     const object = await env.R2.get(key, { range: { offset: at, length } });
     if (!object) break;
     const text = decoder.decode(await object.arrayBuffer());
@@ -896,6 +1037,68 @@ async function nextSeparator(
     if (at + length >= size) break;
   }
   return size;
+}
+
+function megabytes(bytes: number): string {
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
+/**
+ * The last attempt at a slice failed, at the message its progress stopped
+ * at: skip that message with a note and let the import go on. Ten such
+ * skips fail the import (something is wrong with more than one message).
+ * Returns the slice to queue, or null.
+ */
+export async function skipStuckMessage(
+  db: Db,
+  env: CloudflareBindings,
+  jobId: string,
+  reason: string,
+): Promise<number | null> {
+  const job = await importJobById(db, jobId);
+  if (!job || job.status !== "running") return null;
+  const params = importParams(job);
+  const skips = (params.stuckSkips ?? 0) + 1;
+  if (params.format === null || skips > MAX_STUCK_SKIPS) {
+    await failMailImport(db, jobId, reason);
+    return null;
+  }
+  const claim = await claimSlice<ImportParams>(
+    db,
+    job,
+    params.slice,
+    Date.now(),
+  );
+  if (claim === "stale" || claim === "busy") return null;
+  const cursor = Number(job.cursor ?? "0");
+  const end =
+    params.format === "eml"
+      ? params.size
+      : await nextSeparator(env, job.storageKey!, cursor + 1, params.size);
+  const notes = [
+    ...notesOf(job),
+    {
+      row: job.processedRows + 1,
+      reason: `could not be stored and was skipped: ${reason}`.slice(0, 300),
+    },
+  ].slice(0, MAX_NOTES);
+  const result = await db
+    .update(asyncJobs)
+    .set({
+      cursor: String(end),
+      processedRows: job.processedRows + 1,
+      skippedCount: job.skippedCount + 1,
+      errorSummary: JSON.stringify(notes),
+      params: JSON.stringify({
+        ...claim.params,
+        stuckSkips: skips,
+        lease: null,
+        leaseUntil: null,
+      }),
+      updatedAt: Math.floor(Date.now() / 1000),
+    })
+    .where(stillClaimed(job.id, claim.raw));
+  return changesOf(result) === 1 ? params.slice : null;
 }
 
 /** Ends an import that cannot finish. */

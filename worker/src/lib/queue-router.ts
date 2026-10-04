@@ -22,8 +22,8 @@ import { drainHeldOutbox, type OutboxDrainMessage } from "./outbox";
 import { fileWithAi, type AiFileMessage } from "./triage/ai-file";
 import { SliceBusyError } from "./jobs/slices";
 import {
-  failMailImport,
   runMailImportSlice,
+  skipStuckMessage,
   type MailImportMessage,
 } from "./import/mail-import";
 import {
@@ -252,11 +252,28 @@ export async function handleQueueBatch(
         );
         const jobId = (msg.body as MailExportMessage | MailImportMessage).jobId;
         const reason = err instanceof Error ? err.message : `${kind} failed`;
-        await (
-          kind === "mail_export"
-            ? failMailExport(db, env, jobId, reason)
-            : failMailImport(db, jobId, reason)
-        ).catch((error) => console.error(`[queue] ${kind} not failed:`, error));
+        if (kind === "mail_export") {
+          await failMailExport(db, env, jobId, reason).catch((error) =>
+            console.error("[queue] export not failed:", error),
+          );
+        } else {
+          // One message that can never be stored must not stop the rest of
+          // the file: skip it with a note and go on.
+          const next = await skipStuckMessage(db, env, jobId, reason).catch(
+            (error) => {
+              console.error("[queue] import message not skipped:", error);
+              return null;
+            },
+          );
+          if (next !== null) {
+            const message: MailImportMessage = {
+              type: "mail_import",
+              jobId,
+              slice: next,
+            };
+            await env.EMAIL_QUEUE.send(message);
+          }
+        }
         msg.ack();
       } else if (
         kind === "suggest_reply" &&

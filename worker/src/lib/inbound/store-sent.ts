@@ -5,6 +5,7 @@ import { computeConversationId, externalsOnly } from "../conversation-id";
 import type { ParsedAttachment, ParsedEmail } from "../email-parser";
 import { findOrCreatePersonId } from "../sent-bookkeeping";
 import {
+  discardStoredFiles,
   keptAttachments,
   storeAttachments,
   storedBody,
@@ -39,6 +40,8 @@ export async function storeSentMessage(
     now: number;
     /** Domains of our inboxes (see `domainsOf`). */
     ourDomains: string[];
+    /** The import storing it; recorded on the row. */
+    importJobId?: string | null;
   },
 ): Promise<StoredSent | null> {
   const { parsed, inbox, sentAt, now } = input;
@@ -66,7 +69,7 @@ export async function storeSentMessage(
     now,
   });
 
-  await db.insert(sentEmails).values({
+  const row = {
     id: sentId,
     personId,
     fromAddress: inbox,
@@ -76,14 +79,21 @@ export async function storeSentMessage(
     bodyText: storedBody(parsed.bodyText),
     inReplyTo: parsed.headers["in-reply-to"]?.trim() || null,
     messageId: parsed.messageId,
-    status: "sent",
+    status: "sent" as const,
     cc: parsed.cc.length > 0 ? JSON.stringify(parsed.cc) : null,
     additionalTo: additionalTo.length > 0 ? JSON.stringify(additionalTo) : null,
     bcc: parsed.bcc.length > 0 ? JSON.stringify(parsed.bcc) : null,
     conversationId,
+    importJobId: input.importJobId ?? null,
     sentAt,
     createdAt: now,
-  });
+  };
+  try {
+    await db.insert(sentEmails).values(row);
+  } catch (error) {
+    await discardStoredFiles(db, env, sentId, null);
+    throw error;
+  }
 
   return {
     sentId,

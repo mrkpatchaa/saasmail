@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ApiError,
   completeImport,
   deleteImport,
   fetchImports,
@@ -16,6 +17,10 @@ const POLL_MS = 3_000;
 export const MAX_IMPORT_BYTES = 5 * 1000 * 1000 * 1000;
 /** Tries per part before the upload gives up. */
 const PART_ATTEMPTS = 3;
+/** The wait before trying a part again, times the attempt. Mutable for tests. */
+export const UPLOAD_TIMING = { retryMs: 1_000 };
+
+class UploadCancelled extends Error {}
 
 function statusLine(item: MailImport, uploadingHere: boolean): string {
   const counts = `${item.importedMessages} imported, ${item.skippedMessages} skipped`;
@@ -56,6 +61,7 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const cancelled = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -95,6 +101,7 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
       return;
     }
     setProgress(0);
+    cancelled.current = false;
     let created: MailImport | null = null;
     try {
       created = await startImport({
@@ -107,6 +114,7 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
       setUploadingId(created.id);
       await refresh();
       for (let n = 1; n <= created.partsExpected; n++) {
+        if (cancelled.current) throw new UploadCancelled();
         const part = file.slice(
           (n - 1) * created.partSize,
           n * created.partSize,
@@ -116,7 +124,15 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
             await uploadImportPart(created.id, n, part);
             break;
           } catch (err) {
-            if (attempt >= PART_ATTEMPTS) throw err;
+            // The server refused it (cancelled elsewhere, a wrong size):
+            // sending the same part again cannot help.
+            const refused =
+              err instanceof ApiError && err.status >= 400 && err.status < 500;
+            if (refused || attempt >= PART_ATTEMPTS) throw err;
+            await new Promise((resolve) =>
+              setTimeout(resolve, UPLOAD_TIMING.retryMs * attempt),
+            );
+            if (cancelled.current) throw new UploadCancelled();
           }
         }
         setProgress(n / created.partsExpected);
@@ -125,9 +141,15 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
       setFile(null);
       if (fileInput.current) fileInput.current.value = "";
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "The file could not be uploaded.",
-      );
+      if (err instanceof UploadCancelled) {
+        if (created) await deleteImport(created.id).catch(() => {});
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : "The file could not be uploaded.",
+        );
+      }
     } finally {
       setProgress(null);
       setUploadingId(null);
@@ -255,6 +277,17 @@ export default function DataImports({ inboxes }: { inboxes: string[] }) {
         >
           {busy ? "Uploading…" : "Import"}
         </button>
+        {progress !== null && (
+          <button
+            type="button"
+            onClick={() => {
+              cancelled.current = true;
+            }}
+            className="rounded-[6px] px-2 py-1 text-xs text-text-secondary hover:bg-bg-muted hover:text-text-primary"
+          >
+            Cancel upload
+          </button>
+        )}
         {progress !== null && (
           <div
             role="progressbar"

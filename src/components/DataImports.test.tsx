@@ -22,7 +22,8 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   ...api,
 }));
 
-import DataImports from "@/components/DataImports";
+import DataImports, { UPLOAD_TIMING } from "@/components/DataImports";
+import { ApiError } from "@/lib/api";
 import { dispatchImportDone } from "@/lib/export-events";
 
 function importRow(overrides: Partial<MailImport> = {}): MailImport {
@@ -58,6 +59,7 @@ function pickFile(content: string, name = "mail.mbox") {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  UPLOAD_TIMING.retryMs = 0;
   api.fetchImports.mockResolvedValue([]);
   api.startImport.mockResolvedValue(
     importRow({ status: "uploading", partsUploaded: 0 }),
@@ -116,6 +118,37 @@ describe("DataImports", () => {
     );
     expect(api.uploadImportPart).toHaveBeenCalledTimes(3);
     expect(api.completeImport).not.toHaveBeenCalled();
+  });
+
+  it("does not resend a part the server refused", async () => {
+    api.uploadImportPart.mockRejectedValue(
+      new ApiError("This import is not uploading", 400, "NOT_UPLOADING"),
+    );
+    render(<DataImports inboxes={INBOXES} />);
+    pickFile("abcdef");
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "This import is not uploading",
+    );
+    expect(api.uploadImportPart).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an upload, deleting the import", async () => {
+    let release: () => void = () => {};
+    api.uploadImportPart.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+    render(<DataImports inboxes={INBOXES} />);
+    pickFile("abcdef");
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Cancel upload" }),
+    );
+    release();
+    await waitFor(() => expect(api.deleteImport).toHaveBeenCalledWith("i1"));
+    expect(api.uploadImportPart).toHaveBeenCalledTimes(1);
+    expect(api.completeImport).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("refuses an empty file", async () => {

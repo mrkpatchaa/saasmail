@@ -1,5 +1,13 @@
 // docs/specs/SPEC-mail-import.md: import mail from mbox and .eml.
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+} from "vitest";
 import { env } from "cloudflare:workers";
 import { eq, sql } from "drizzle-orm";
 import { asyncJobs } from "../db/async-jobs.schema";
@@ -17,8 +25,10 @@ import {
   separatorDate,
 } from "../lib/import/mbox-reader";
 import {
+  IMPORT_LIMITS,
   IMPORT_PART_BYTES,
   completeImportUpload,
+  exporterLabels,
   deleteMailImport,
   expectedParts,
   importJobById,
@@ -27,10 +37,12 @@ import {
   parseLabels,
   reapMailImports,
   runMailImportSlice,
+  skipStuckMessage,
   startMailImport,
   uploadImportPart,
 } from "../lib/import/mail-import";
 import { setSpamFilterEnabled } from "../lib/spam/filter";
+import { classifyQueueMessage } from "../lib/queue-router";
 import {
   applyMigrations,
   authFetch,
@@ -65,6 +77,10 @@ function message(options: {
   headers?: string[];
 }): string {
   const lines = [
+    // Gmail Takeout writes its labels first, above the message's own headers.
+    ...(options.labels !== undefined
+      ? [`X-Gmail-Labels: ${options.labels}`]
+      : []),
     `From: ${options.from ?? "Alice <alice@example.com>"}`,
     `To: ${options.to ?? INBOX}`,
     ...(options.cc ? [`Cc: ${options.cc}`] : []),
@@ -75,9 +91,6 @@ function message(options: {
           `Message-ID: <${options.id ?? `${crypto.randomUUID()}@example.com`}>`,
         ]),
     `Date: ${options.date ?? "Mon, 01 Jun 2026 10:00:00 +0000"}`,
-    ...(options.labels !== undefined
-      ? [`X-Gmail-Labels: ${options.labels}`]
-      : []),
     ...(options.headers ?? []),
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=utf-8",
@@ -233,7 +246,7 @@ describe("labels", () => {
     const state = (
       labels: string,
       direction: "received" | "sent" = "received",
-    ) => labelState({ "x-gmail-labels": labels }, direction);
+    ) => labelState(labels, direction);
     expect(state("Inbox,Starred,Clients")).toEqual({
       archived: false,
       spam: false,
@@ -248,9 +261,11 @@ describe("labels", () => {
     expect(state("Spam")).toMatchObject({ spam: true, archived: false });
     expect(state("Trash,Spam")).toMatchObject({ trashed: true, spam: false });
     expect(state("Sent", "sent")).toMatchObject({ archived: false });
-    expect(labelState({}, "received")).toMatchObject({ archived: false });
+    expect(labelState(undefined, "received")).toMatchObject({
+      archived: false,
+    });
     // Our own export's header reads the same way.
-    expect(labelState({ "x-saasmail-labels": "" }, "received")).toMatchObject({
+    expect(labelState("", "received")).toMatchObject({
       archived: true,
     });
   });
@@ -525,6 +540,11 @@ describe("the import job", () => {
   });
 
   it("works through a large file in slices at the byte cursor", async () => {
+    const ops = IMPORT_LIMITS.sliceOps;
+    IMPORT_LIMITS.sliceOps = 100_000;
+    onTestFinished(() => {
+      IMPORT_LIMITS.sliceOps = ops;
+    });
     const file = mbox(
       Array.from({ length: 230 }, (_, i) =>
         message({ subject: `Bulk ${i}`, id: `bulk-${i}@example.com` }),
@@ -554,6 +574,54 @@ describe("the import job", () => {
       status: "completed",
       importedCount: 230,
     });
+  });
+
+  it("stops a slice on its budget of D1 and R2 calls", async () => {
+    const job = await importFile(
+      mbox(
+        Array.from({ length: 100 }, (_, i) =>
+          message({ subject: `Budget ${i}`, id: `budget-${i}@example.com` }),
+        ),
+      ),
+    );
+    expect(await runMailImportSlice(getDb(), env, job.id, 0)).toBe(1);
+    expect((await jobRow(job.id)).processedRows).toBe(
+      Math.ceil(IMPORT_LIMITS.sliceOps / 6),
+    );
+    let slice: number | null = importParams(await jobRow(job.id)).slice;
+    while (slice !== null) {
+      slice = await runMailImportSlice(getDb(), env, job.id, slice);
+    }
+    expect(await jobRow(job.id)).toMatchObject({
+      status: "completed",
+      importedCount: 100,
+    });
+  });
+
+  it("skips a message larger than the limit, and goes on", async () => {
+    const limits = { ...IMPORT_LIMITS };
+    IMPORT_LIMITS.window = 256 * 1024;
+    IMPORT_LIMITS.maxMessage = 1024 * 1024;
+    onTestFinished(() => {
+      Object.assign(IMPORT_LIMITS, limits);
+    });
+    const big = "z".repeat(76).concat("\r\n").repeat(20_000); // ~1.5 MB
+    const job = await importFile(
+      mbox([
+        message({ subject: "Before" }),
+        message({ subject: "Huge", body: big }),
+        message({ subject: "After" }),
+      ]),
+    );
+    await runAll(job.id);
+    const done = await jobRow(job.id);
+    expect(done).toMatchObject({ importedCount: 2, skippedCount: 1 });
+    expect(JSON.parse(done.errorSummary!)).toEqual([
+      { row: 2, reason: "a message larger than 1 MB was skipped" },
+    ]);
+    expect(
+      (await getDb().select().from(emails)).map((r) => r.subject).sort(),
+    ).toEqual(["After", "Before"]);
   });
 
   it("reads a message larger than the window", async () => {
@@ -642,6 +710,244 @@ describe("the import job", () => {
       importedCount: 3,
       skippedCount: 0,
     });
+    const [alice] = await getDb()
+      .select()
+      .from(people)
+      .where(eq(people.email, "alice@example.com"));
+    expect(alice.totalCount).toBe(3);
+  });
+
+  it("skips a message too large for a row, leaving nothing of it", async () => {
+    const job = await importFile(
+      mbox([
+        message({ subject: "One", id: "one@example.com" }),
+        message({ subject: "Two", id: "two@example.com" }),
+        message({ subject: "Three", id: "three@example.com" }),
+      ]),
+    );
+    const rawsBefore = (await env.R2.list({ prefix: "inbound-raw/" })).objects
+      .length;
+    const db = getDb();
+    let batches = 0;
+    const tooBig = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "batch") {
+          return (queries: Parameters<typeof db.batch>[0]) => {
+            if (++batches === 2) {
+              // What Drizzle throws: the D1 error is the cause.
+              throw new Error("Failed query: insert into emails …", {
+                cause: new Error(
+                  "D1_ERROR: string or blob too big: SQLITE_TOOBIG",
+                ),
+              });
+            }
+            return target.batch(queries);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(await runMailImportSlice(tooBig, env, job.id, 0)).toBeNull();
+    const done = await jobRow(job.id);
+    expect(done).toMatchObject({
+      status: "completed",
+      importedCount: 2,
+      skippedCount: 1,
+    });
+    expect(JSON.parse(done.errorSummary!)).toEqual([
+      { row: 2, reason: "too large to store (its headers or bodies)" },
+    ]);
+    const rows = await getDb().select().from(emails);
+    expect(rows.map((r) => r.subject).sort()).toEqual(["One", "Three"]);
+    // Only the two stored messages left their raw bytes.
+    expect((await env.R2.list({ prefix: "inbound-raw/" })).objects.length).toBe(
+      rawsBefore + 2,
+    );
+    expect(rows.every((row) => row.importJobId === job.id)).toBe(true);
+    const [alice] = await getDb()
+      .select()
+      .from(people)
+      .where(eq(people.email, "alice@example.com"));
+    expect(alice.totalCount).toBe(2);
+  });
+
+  it("labels and counts mail a crashed slice stored, on the retry", async () => {
+    const job = await importFile(
+      mbox([
+        message({ subject: "A", id: "a@example.com", labels: "Opened" }),
+        message({ subject: "B", id: "b@example.com", labels: "Opened" }),
+        message({ subject: "C", id: "c@example.com", labels: "Opened" }),
+      ]),
+    );
+    // The run dies after storing two messages, before saving anything.
+    let calls = 0;
+    const dying = () => {
+      if (++calls === 6) throw new Error("exceeded CPU");
+      return Date.now();
+    };
+    await expect(
+      runMailImportSlice(getDb(), env, job.id, 0, dying),
+    ).rejects.toThrow("exceeded CPU");
+    expect(await getDb().select().from(emails)).toHaveLength(2);
+    expect((await jobRow(job.id)).processedRows).toBe(0);
+
+    expect(await runMailImportSlice(getDb(), env, job.id, 0)).toBeNull();
+    expect(await jobRow(job.id)).toMatchObject({
+      importedCount: 3,
+      skippedCount: 0,
+    });
+    const archived = await getDb().all(
+      sql`SELECT 1 FROM mailbox_message_state WHERE archived_at IS NOT NULL`,
+    );
+    expect(archived).toHaveLength(3);
+    const [alice] = await getDb()
+      .select()
+      .from(people)
+      .where(eq(people.email, "alice@example.com"));
+    expect(alice.totalCount).toBe(3);
+  });
+
+  it("trusts only the labels an exporter put first, and skips drafts", async () => {
+    const job = await importFile(
+      mbox([
+        message({
+          subject: "Gmail said spam",
+          labels: "Spam",
+          headers: ["X-Gmail-Labels: Inbox,Starred,Pwned"],
+        }),
+        message({
+          subject: "Sender says trash",
+          headers: ["X-Saasmail-Labels: Trash"],
+        }),
+        message({
+          from: INBOX,
+          to: "bob@example.com",
+          subject: "Unsent",
+          labels: "Draft",
+        }),
+      ]),
+    );
+    await runAll(job.id);
+    const done = await jobRow(job.id);
+    expect(done).toMatchObject({ importedCount: 2, skippedCount: 1 });
+    expect(JSON.parse(done.errorSummary!)).toEqual([
+      { row: 3, reason: "a draft, never sent: Unsent" },
+    ]);
+    const rows = await getDb().all<{
+      subject: string;
+      spam_at: number | null;
+      trashed_at: number | null;
+    }>(sql`
+      SELECT e.subject, s.spam_at, s.trashed_at FROM emails e
+      LEFT JOIN mailbox_message_state s ON s.message_kind = 'received' AND s.message_id = e.id
+      ORDER BY e.subject
+    `);
+    expect(rows[0]).toMatchObject({ subject: "Gmail said spam" });
+    expect(rows[0].spam_at).not.toBeNull();
+    expect(rows[1]).toMatchObject({
+      subject: "Sender says trash",
+      trashed_at: null,
+    });
+    expect(await getDb().select().from(sentEmails)).toEqual([]);
+    expect(
+      await getDb().all(sql`SELECT 1 FROM mailboxes WHERE name = 'Pwned'`),
+    ).toEqual([]);
+    expect(
+      exporterLabels(
+        encoder.encode(
+          "X-GM-THRID: 1\r\nX-Gmail-Labels: Inbox,\r\n Work\r\nFrom: a@b.c\r\n",
+        ),
+      ),
+    ).toBe("Inbox, Work");
+  });
+
+  it("matches Delivered-To exactly", async () => {
+    const job = await importFile(
+      mbox([
+        message({
+          to: "list@example.com",
+          subject: "Delivered here",
+          headers: [`Delivered-To: ${INBOX}`],
+        }),
+        message({
+          to: "list@example.com",
+          subject: "Delivered elsewhere",
+          headers: [`Delivered-To: x${INBOX}`],
+        }),
+      ]),
+    );
+    await runAll(job.id);
+    expect((await getDb().select().from(emails)).map((r) => r.subject)).toEqual(
+      ["Delivered here"],
+    );
+  });
+
+  it("knows a JMAP send by its own Message-ID", async () => {
+    await getDb().run(sql`
+      INSERT INTO jmap_message_content (id, inbox, from_json, to_json, cc_json, bcc_json, subject, message_id, sent_at, parts_json, text_body_json, html_body_json, attachments_json, body_values_json, preview, thread_key, raw_r2_key, size, created_at)
+      VALUES ('c1', ${INBOX}, '{}', '[]', '[]', '[]', 'Hi', 'jmap-1@saasmail.test', '2026-06-01T10:00:00Z', '{}', '[]', '[]', '[]', '{}', '', 't1', 'k', 1, 0)
+    `);
+    await getDb().run(sql`
+      INSERT INTO sent_emails (id, from_address, to_address, subject, message_id, status, jmap_content_id, sent_at, created_at)
+      VALUES ('s1', ${INBOX}, 'bob@example.com', 'Hi', '<provider-id@mail.example>', 'sent', 'c1', 1, 1)
+    `);
+    const job = await importFile(
+      mbox([
+        message({
+          from: INBOX,
+          to: "bob@example.com",
+          subject: "Hi",
+          id: "jmap-1@saasmail.test",
+        }),
+      ]),
+    );
+    await runAll(job.id);
+    expect(await jobRow(job.id)).toMatchObject({
+      importedCount: 0,
+      skippedCount: 1,
+    });
+  });
+
+  it("skips a message that kept failing, and goes on", async () => {
+    const file = mbox([
+      message({ subject: "First", id: "first@example.com" }),
+      message({ subject: "Poison", id: "poison@example.com" }),
+      message({ subject: "Last", id: "last@example.com" }),
+    ]);
+    const job = await importFile(file);
+    const db = getDb();
+    let batches = 0;
+    const failing = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === "batch") {
+          return (queries: Parameters<typeof db.batch>[0]) => {
+            if (++batches === 2) throw new Error("D1 timed out");
+            return target.batch(queries);
+          };
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    await expect(runMailImportSlice(failing, env, job.id, 0)).rejects.toThrow(
+      "D1 timed out",
+    );
+    // The queue gave up on it: the message is skipped with a note.
+    expect(await skipStuckMessage(getDb(), env, job.id, "D1 timed out")).toBe(
+      0,
+    );
+    expect(await runMailImportSlice(getDb(), env, job.id, 0)).toBeNull();
+    const done = await jobRow(job.id);
+    expect(done).toMatchObject({
+      status: "completed",
+      importedCount: 2,
+      skippedCount: 1,
+    });
+    expect(JSON.parse(done.errorSummary!)).toEqual([
+      { row: 2, reason: "could not be stored and was skipped: D1 timed out" },
+    ]);
+    expect(
+      (await getDb().select().from(emails)).map((r) => r.subject).sort(),
+    ).toEqual(["First", "Last"]);
   });
 
   it("stops when cancelled, keeping what it imported", async () => {
@@ -653,10 +959,12 @@ describe("the import job", () => {
       ),
     );
     expect(await runMailImportSlice(getDb(), env, job.id, 0)).toBe(1);
+    const kept = (await jobRow(job.id)).importedCount;
+    expect(kept).toBeGreaterThan(0);
     await deleteMailImport(getDb(), env, await jobRow(job.id));
     expect(await runMailImportSlice(getDb(), env, job.id, 1)).toBeNull();
     expect(await env.R2.head(job.storageKey!)).toBeNull();
-    expect(await getDb().select().from(emails)).toHaveLength(200);
+    expect(await getDb().select().from(emails)).toHaveLength(kept);
   });
 
   it("deletes the file a day after, and gives up unfinished uploads", async () => {
@@ -713,6 +1021,9 @@ describe("the import API", () => {
     await getDb()
       .insert(inboxPermissions)
       .values({ userId: "user-aa", email: INBOX, createdAt: 1 });
+    await getDb().run(
+      sql`INSERT INTO sender_identities (email, created_at, updated_at) VALUES (${INBOX}, 1, 1)`,
+    );
   });
 
   afterEach(() => {
@@ -731,6 +1042,23 @@ describe("the import API", () => {
     expect(
       (await authFetch("/api/admin/imports", { apiKey: memberKey })).status,
     ).toBe(403);
+  });
+
+  it("imports only into an inbox", async () => {
+    const res = await authFetch("/api/admin/imports", {
+      method: "POST",
+      apiKey: adminKey,
+      body: JSON.stringify({
+        inbox: "nobody@saasmail.test",
+        filename: "x.mbox",
+        size: 10,
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code: string }).code).toBe("UNKNOWN_INBOX");
+    expect(
+      classifyQueueMessage({ type: "mail_import", jobId: "j", slice: 0 }),
+    ).toBe("mail_import");
   });
 
   it("lists the newest first, also within one second", async () => {

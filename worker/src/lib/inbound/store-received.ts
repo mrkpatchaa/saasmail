@@ -119,6 +119,29 @@ export async function storeAttachments(
   return bodyHtml;
 }
 
+/**
+ * Removes the attachments (rows and R2 objects) and the raw message stored
+ * for a message whose row was then not written. Best-effort.
+ */
+export async function discardStoredFiles(
+  db: Db,
+  env: CloudflareBindings,
+  emailId: string,
+  rawKey: string | null,
+): Promise<void> {
+  try {
+    const rows = await db
+      .select({ r2Key: attachments.r2Key })
+      .from(attachments)
+      .where(eq(attachments.emailId, emailId));
+    const keys = [...rows.map((row) => row.r2Key), ...(rawKey ? [rawKey] : [])];
+    if (keys.length > 0) await env.R2.delete(keys);
+    await db.delete(attachments).where(eq(attachments.emailId, emailId));
+  } catch (error) {
+    console.warn(`[import] files of ${emailId} not discarded:`, error);
+  }
+}
+
 export interface StoreReceivedInput {
   parsed: ParsedEmail;
   /** Canonical (lowercased) inbox address. */
@@ -137,6 +160,8 @@ export interface StoreReceivedInput {
   ourDomains: string[];
   /** The inbox's learning filter's score; live mail only. */
   spamProbability?: number | null;
+  /** The import storing it; recorded on the row. */
+  importJobId?: string | null;
 }
 
 export interface StoredReceived {
@@ -170,38 +195,59 @@ export async function storeReceivedMessage(
     parsed.auth.dmarc === "pass";
   const name = parsed.from.name || null;
 
-  // Upsert person — only update name if sender passes authentication. An
-  // import only fills a missing name: an old message must not rename them.
-  await db
-    .insert(people)
-    .values({
-      id: nanoid(),
-      email: fromAddress,
-      name,
-      lastEmailAt: receivedAt,
-      unreadCount: imported ? 0 : 1,
-      totalCount: 1,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: people.email,
-      set: {
-        ...(senderAuthenticated
-          ? {
-              name: imported
-                ? sql`COALESCE(${people.name}, ${name})`
-                : sql`COALESCE(${name}, ${people.name})`,
-            }
-          : {}),
-        lastEmailAt: imported
-          ? sql`MAX(${people.lastEmailAt}, ${receivedAt})`
-          : receivedAt,
-        ...(imported ? {} : { unreadCount: sql`${people.unreadCount} + 1` }),
-        totalCount: sql`${people.totalCount} + 1`,
+  if (imported) {
+    // The person without counting yet: the count goes up with the message
+    // row, in one batch, so a retried import never counts a message twice.
+    // An import only fills a missing name: an old message must not rename
+    // them.
+    await db
+      .insert(people)
+      .values({
+        id: nanoid(),
+        email: fromAddress,
+        name,
+        lastEmailAt: receivedAt,
+        unreadCount: 0,
+        totalCount: 0,
+        createdAt: now,
         updatedAt: now,
-      },
-    });
+      })
+      .onConflictDoUpdate({
+        target: people.email,
+        set: {
+          ...(senderAuthenticated
+            ? { name: sql`COALESCE(${people.name}, ${name})` }
+            : {}),
+          updatedAt: now,
+        },
+      });
+  } else {
+    // Upsert person — only update name if sender passes authentication
+    await db
+      .insert(people)
+      .values({
+        id: nanoid(),
+        email: fromAddress,
+        name,
+        lastEmailAt: receivedAt,
+        unreadCount: 1,
+        totalCount: 1,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: people.email,
+        set: {
+          ...(senderAuthenticated
+            ? { name: sql`COALESCE(${name}, ${people.name})` }
+            : {}),
+          lastEmailAt: receivedAt,
+          unreadCount: sql`${people.unreadCount} + 1`,
+          totalCount: sql`${people.totalCount} + 1`,
+          updatedAt: now,
+        },
+      });
+  }
 
   // Get the actual person ID (could be existing). Lookup by the
   // canonical (lowercased) email so legacy mixed-case rows still
@@ -255,7 +301,7 @@ export async function storeReceivedMessage(
   // Insert email (with rewritten HTML and auth results). Store the
   // canonical (lowercased) recipient so it matches the conversation
   // group key.
-  await db.insert(emails).values({
+  const row = {
     id: emailId,
     personId,
     recipient: inbox,
@@ -279,9 +325,31 @@ export async function storeReceivedMessage(
     cc: parsed.cc.length > 0 ? JSON.stringify(parsed.cc) : null,
     replyTo: parsed.replyTo.length ? JSON.stringify(parsed.replyTo) : null,
     conversationId,
+    importJobId: imported ? (input.importJobId ?? null) : null,
     receivedAt,
     createdAt: now,
-  });
+  };
+  if (imported) {
+    try {
+      await db.batch([
+        db.insert(emails).values(row),
+        db
+          .update(people)
+          .set({
+            totalCount: sql`${people.totalCount} + 1`,
+            lastEmailAt: sql`MAX(${people.lastEmailAt}, ${receivedAt})`,
+            updatedAt: now,
+          })
+          .where(eq(people.id, personId)),
+      ]);
+    } catch (error) {
+      // Nothing of a message that was not stored stays behind.
+      await discardStoredFiles(db, env, emailId, rawR2Key);
+      throw error;
+    }
+  } else {
+    await db.insert(emails).values(row);
+  }
 
   return {
     emailId,
