@@ -117,3 +117,50 @@ composers can render without an admin call.
   or a new `docs/sending.md` (pause, caps, what counts). `docs/mcp.md`: the kill switch and the cap
   error. `docs/jmap.md`: `forbiddenToSend` when over the cap.
 - CHANGELOG `### Added`: **Pause outbound sending, agent kill switch and daily send caps.** …
+
+## Spec changes (implementation)
+
+The four decisions are unchanged. What the code does differently, and why:
+
+1. **The pause sits at the provider call, not only in `sendViaOutbox`.** `sendWithSuppressionCheck`, which
+   every send path goes through, swaps in a sender that answers a temporary failure marked `paused`
+   (`pausedSender`). The outbox holds that like any temporary failure. Two sends have no outbox row and
+   are not sent while paused: the campaign test send answers `sent: false` (it answered `true` for any
+   recipient that was not suppressed, even when the provider refused), and a list subscription
+   confirmation is not recorded as sent (it was, even when the provider refused); the membership stays
+   pending and the subscriber can submit the form again. A held row records no attempt
+   (`attempts = 0`), and a one-shot send (a rule auto-reply) is held instead of dropped.
+2. **A held row keeps the outbox's one-minute cool-down** (`next_retry_at = now + 60`, not `now`): the
+   cool-down protects the caller's own write of the Sent row. A message accepted in the last minute
+   before a resume therefore goes at the next hourly run.
+3. **A retry while paused gives its attempt back** (`attemptOutboxRow`), so pressing Retry, or a run
+   that started before the pause, can never use up a held message's 24 attempts and fail it.
+4. **The delayed JMAP release does not start while paused** (`releaseScheduledSubmission` answers
+   `notDue` before its claim) instead of being held in the outbox: the submission stays `scheduled`,
+   and can still be canceled. The resume runs `processOutbox` and then `releaseOverdueSubmissions`, as
+   the system (`cron` channel) rather than as the admin who resumed.
+5. **Inbox forwarding is skipped while paused** (logged): a forward is built from the raw inbound
+   message and has no outbox row to wait in. The message itself is in the inbox.
+6. `setSendingPaused(db, paused)` takes the actor from the audit context, like every other audit
+   writer. The pause is read once per database handle (one request, queue batch or cron pass).
+7. **The toggle records only `sending.paused` / `sending.resumed`**, not also `settings.changed`; a
+   limit change records `settings.changed` per channel changed.
+8. **`GET /api/config` exposes `outboundPaused` only.** The route needs no sign-in, and nothing in the
+   app needs the limits before an admin opens Settings. Who paused and when, and the limits, are in a
+   new `GET /api/admin/settings` (there was no GET); `PATCH` answers the same shape.
+9. `GET /api/outbox/count` gains `paused` as well as `held` (`held` is the pending count while paused,
+   0 otherwise), so Settings → Sending needs one call.
+10. **`reserveDailySend(db, { userId, channel })` reads the limit itself.** The HTTP check lives once in
+    `respondIdempotently`, shared by the three send routes (inside the idempotency claim, so a replay
+    never counts and a 429 frees the key); MCP counts in `sendOnce` with channel `mcp`; JMAP counts in
+    `createSubmission` after every validation and before scheduling (a delayed send counts when it is
+    submitted). `enroll_sequence` is not counted (sequences are not). A send refused after the
+    reservation (no access, a missing template, a 4xx, a thrown error) gives its slot back; one that
+    failed after the provider accepted it gives it back too, so the count can run one short then.
+11. The MCP error is `DAILY_SEND_LIMIT_REACHED: <the HTTP error text>`, like `MCP_SEND_DISABLED: …`.
+    `0` reads "Sending through <channel> is turned off on this server by its administrator."
+12. `send.limit_reached` is deduplicated by its target id `<userId>:<channel>:<day>`.
+13. Limits are whole numbers from 0 to 1,000,000; `null` (stored as `"null"`) is an explicit
+    unlimited, an absent row the default.
+14. Settings → Sending lists the top 20 counts of the day for everyone, not "the signed-in admin's
+    team" (there are no teams).

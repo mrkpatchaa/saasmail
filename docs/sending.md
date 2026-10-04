@@ -28,6 +28,9 @@ auto-replying in a loop, an agent with a bad prompt, a leaked API key.
   `held`, the number of messages waiting.
 - Inbox forwarding is skipped. A forward has no outbox entry to wait in; the
   message itself is still in the inbox.
+- A campaign test send answers `sent: false`, and a list subscription
+  confirmation is not sent (the membership stays pending; the subscriber can
+  submit the form again). Neither has an outbox entry.
 - Admins see a banner on every page with who paused and since when, and a
   **Resume** button. Everybody sees "Sending is paused; your message will be
   queued" above the Send button.

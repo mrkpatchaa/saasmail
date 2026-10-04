@@ -207,6 +207,33 @@ describe("pausing outbound sending", () => {
     });
   });
 
+  it("does not record a subscription confirmation it could not send", async () => {
+    const { sendConfirmationEmail } =
+      await import("../lib/subscribe-confirmation");
+    const confirm = () =>
+      sendConfirmationEmail({
+        db: getDb(),
+        env: bindings,
+        to: "new@example.com",
+        fromAddress: "news@saasmail.test",
+        listName: "News",
+        confirmUrl: "https://mail.example.com/subscribe/confirm/t",
+        templateSlug: null,
+      });
+    (env as any).DEMO_MODE = "1";
+    try {
+      await setSendingPaused(getDb(), true);
+      expect(await confirm()).toEqual({ sent: false });
+      expect(await getDb().select().from(sentEmails)).toHaveLength(0);
+
+      await setSendingPaused(getDb(), false);
+      expect(await confirm()).toEqual({ sent: true });
+      expect(await getDb().select().from(sentEmails)).toHaveLength(1);
+    } finally {
+      (env as any).DEMO_MODE = "0";
+    }
+  });
+
   it("keeps a delayed JMAP send scheduled until sending resumes", async () => {
     const { authorId } = await seedAccount();
     const drafted = (await jmapCall(authorId, [

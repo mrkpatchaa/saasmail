@@ -162,7 +162,12 @@ export async function sendConfirmationEmail(opts: {
     transactional: false,
   });
 
-  if (result.delivered.length === 0) return { sent: false };
+  // Not recorded as sent unless the provider took it: a confirmation has no
+  // outbox row, so one refused or held by a pause is simply not sent, and the
+  // subscriber can submit the form again.
+  if (result.delivered.length === 0 || result.result?.error) {
+    return { sent: false };
+  }
 
   await db.insert(sentEmails).values({
     id: nanoid(),
