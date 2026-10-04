@@ -10,12 +10,15 @@ interface Branding {
   passkeyRequired: boolean;
   brandName: string;
   webmcpEnabled: boolean;
+  /** An admin paused outbound sending: sends are queued until it resumes. */
+  outboundPaused: boolean;
 }
 
 const DEFAULT_BRANDING: Branding = {
   passkeyRequired: true,
   brandName: "saasmail",
   webmcpEnabled: true,
+  outboundPaused: false,
 };
 
 interface BrandingContextValue extends Branding {
@@ -56,6 +59,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
           typeof b.webmcpEnabled === "boolean"
             ? b.webmcpEnabled
             : DEFAULT_BRANDING.webmcpEnabled,
+        outboundPaused: b.outboundPaused === true,
         loaded: true,
       });
     } catch {
