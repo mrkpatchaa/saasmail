@@ -122,3 +122,26 @@ inbox, ruleId, archiveWhenFiled }))`; skipped with a log line when `selectModel(
   `docs/mailbox-state.md` (colour, description, chips), `docs/agent.md` or `docs/configuration.md`
   (`TRIAGE_MODEL`).
 - CHANGELOG `### Added`: **AI filing into folders.** …
+
+## Spec changes (implementation)
+
+The seven decisions are unchanged. What the code does differently, and why:
+
+1. **The folder dialog is new.** Renaming used `window.prompt`; the pencil now opens a folder settings
+   dialog (name, colour, "What belongs here?" with a 0/300 counter). The inline "New folder" field
+   stays, so a folder gets its colour and description through the dialog after it is created. The rail
+   also marks described folders with **AI**.
+2. A colour or a description can be set on custom folders only (`role` null); a system mailbox answers
+   `400`. The 30-folder cap is checked when a description is added, not when one is changed or removed.
+3. The job reads the message through `queryMessages` with archived and snoozed mail included; mail in
+   Junk or Trash is not filed. The model call has a 30-second timeout. Filing passes no user id, so the
+   state services write no audit row, as for a rule's routine filing; the job runs as the queue's
+   system actor rather than as the rule.
+4. **The manual route refuses what cannot work**: a sent message (`400`), no configured model
+   (`400 NO_MODEL`), or an inbox without a described folder (`400 NO_AI_FOLDERS`), so the button's
+   disabled state is enforced by the server too. A message the caller cannot see answers `404` and
+   nothing is queued.
+5. `mail_refresh` goes through the existing `/realtime` path of the notifications hub; the client
+   reloads the list as for `email_received`, without the notification prompt.
+6. The web decides whether **File with AI** is available from `GET /api/agent/status` (`configured`)
+   and the inbox's folder list, and says why in the button's title when it is not.
