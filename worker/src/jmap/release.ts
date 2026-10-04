@@ -457,6 +457,9 @@ export async function releaseOverdueSubmissions(
   sender?: EmailSender,
 ): Promise<number> {
   const db = createDb(env) as unknown as Db;
+  // Checked once here, not once per submission: nothing is released while
+  // sending is paused.
+  if (await isSendingPaused(db)) return 0;
   let released = 0;
   const tried = new Set<string>();
   for (let batch = 0; batch < SWEEP_MAX_BATCHES; batch++) {

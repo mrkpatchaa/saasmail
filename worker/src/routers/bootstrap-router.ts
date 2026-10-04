@@ -84,6 +84,8 @@ bootstrapRouter.openapi(configRoute, async (c) => {
     brandName,
     webmcpEnabled,
     // Only whether: who paused and when is for admins (GET /api/admin/settings).
-    outboundPaused: rows.some((r) => r.key === OUTBOUND_PAUSED_KEY),
+    outboundPaused: rows.some(
+      (r) => r.key === OUTBOUND_PAUSED_KEY && r.value !== null,
+    ),
   });
 });

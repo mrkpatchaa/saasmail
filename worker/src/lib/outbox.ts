@@ -1,7 +1,7 @@
-import { isSendingPaused } from "./sending-controls";
+import { SENDING_PAUSED_MESSAGE, isSendingPaused } from "./sending-controls";
 import { notifySendAccepted } from "./send-idempotency";
 import { nanoid } from "nanoid";
-import { and, eq, lte, sql } from "drizzle-orm";
+import { and, eq, lte, min, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { outboxEmails } from "../db/outbox-emails.schema";
 import { sentEmails } from "../db/sent-emails.schema";
@@ -309,7 +309,7 @@ export async function sendViaOutbox(
 export async function processOutbox(env: CloudflareBindings): Promise<void> {
   if (isDemoMode(env)) return;
   const db = createDb(env) as unknown as Db;
-  // Held mail waits for the resume, which runs this at once.
+  // Held mail waits for the resume, which drains it through the queue.
   if (await isSendingPaused(db)) return;
   const sender = createEmailSender(env);
   const now = Math.floor(Date.now() / 1000);
@@ -338,6 +338,56 @@ export async function processOutbox(env: CloudflareBindings): Promise<void> {
     }
   }
   console.log(`[outbox] processed ${claimed}/${due.length} due rows`);
+}
+
+/** Held rows tried per `outbox_drain` queue message. */
+export const OUTBOX_DRAIN_BATCH = 50;
+/** A later run further off than this is left to the hourly processor. */
+const OUTBOX_DRAIN_MAX_WAIT = 120;
+
+/** Delivers what a pause held, after the resume (see `drainHeldOutbox`). */
+export type OutboxDrainMessage = { type: "outbox_drain" };
+
+/**
+ * After a resume: tries the rows the pause held, a batch at a time. Returns
+ * the seconds until the next batch is due (0: now), or null when nothing held
+ * is left, or when the next one is further off than the hourly run would be
+ * worth waiting for. A try replaces the row's pause marker with its outcome,
+ * so each held row is tried by the drain at most once; the rest is the hourly
+ * processor's, as for any retry.
+ */
+export async function drainHeldOutbox(
+  env: CloudflareBindings,
+  sender: EmailSender = createEmailSender(env),
+): Promise<number | null> {
+  const db = createDb(env) as unknown as Db;
+  if (await isSendingPaused(db)) return null;
+  const held = and(
+    eq(outboxEmails.status, "pending"),
+    eq(outboxEmails.lastError, SENDING_PAUSED_MESSAGE),
+  );
+  const due = await db
+    .select({ id: outboxEmails.id })
+    .from(outboxEmails)
+    .where(
+      and(held, lte(outboxEmails.nextRetryAt, Math.floor(Date.now() / 1000))),
+    )
+    .limit(OUTBOX_DRAIN_BATCH);
+  for (const row of due) {
+    try {
+      await attemptOutboxRow(db, env, sender, row.id);
+    } catch (err) {
+      // As in processOutbox: the claim keeps it an hour, then it is retried.
+      console.error(`[outbox] held row ${row.id} failed to send:`, err);
+    }
+  }
+  const [next] = await db
+    .select({ at: min(outboxEmails.nextRetryAt) })
+    .from(outboxEmails)
+    .where(held);
+  if (next?.at === null || next?.at === undefined) return null;
+  const wait = Math.max(0, next.at - Math.floor(Date.now() / 1000));
+  return wait <= OUTBOX_DRAIN_MAX_WAIT ? wait : null;
 }
 
 /**

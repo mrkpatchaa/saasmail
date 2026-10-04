@@ -11,13 +11,19 @@ import type {
   SendEmailParams,
   SendEmailResult,
 } from "../lib/email-sender";
+import { appSettings } from "../db/app-settings.schema";
 import {
   MAX_OUTBOX_ATTEMPTS,
   attemptOutboxRow,
+  drainHeldOutbox,
   processOutbox,
   sendViaOutbox,
 } from "../lib/outbox";
-import { releaseScheduledSubmission } from "../jmap/release";
+import { classifyQueueMessage } from "../lib/queue-router";
+import {
+  releaseOverdueSubmissions,
+  releaseScheduledSubmission,
+} from "../jmap/release";
 import { parseSubmissionId } from "../jmap/public-ids";
 import {
   SENDING_PAUSED_MESSAGE,
@@ -38,6 +44,12 @@ import {
   getDb,
 } from "./helpers";
 import { acct, idn } from "./jmap-ids";
+import {
+  type Credentials,
+  Jar,
+  createUserWithPassword,
+  signIn,
+} from "./mcp-helpers";
 import {
   INBOX as JMAP_INBOX,
   draftCreate,
@@ -113,6 +125,52 @@ async function seedDueRow(attempts = 1) {
       updatedAt: now - 100,
     });
 }
+
+/** A pending outbox row with no Sent row (enough for the drain). */
+async function seedOutboxRow(
+  id: string,
+  opts: { lastError: string; nextRetryAt: number },
+) {
+  const now = Math.floor(Date.now() / 1000);
+  await getDb()
+    .insert(outboxEmails)
+    .values({
+      id,
+      sentEmailId: `se-${id}`,
+      fromAddress: "me@saasmail.test",
+      toAddress: `${id}@example.com`,
+      subject: "Hi",
+      bodyHtml: "<p>Hi</p>",
+      transactional: 1,
+      status: "pending",
+      attempts: 0,
+      lastError: opts.lastError,
+      nextRetryAt: opts.nextRetryAt,
+      createdAt: now - 100,
+      updatedAt: now - 100,
+    });
+}
+
+const SESSION_ADMIN: Credentials = {
+  name: "Owner",
+  email: "owner@saasmail.test",
+  password: "correct-horse-battery",
+};
+
+/** A signed-in admin's cookie header. */
+async function adminSession(): Promise<string> {
+  await createUserWithPassword(SESSION_ADMIN, "admin");
+  const jar = new Jar();
+  await signIn(jar, SESSION_ADMIN);
+  return jar.header;
+}
+
+const patchAsSession = (cookie: string, body: Record<string, unknown>) =>
+  authFetch("/api/admin/settings", {
+    method: "PATCH",
+    headers: { Cookie: cookie },
+    body: JSON.stringify(body),
+  });
 
 async function outboxRow() {
   const [row] = await getDb().select().from(outboxEmails);
@@ -207,7 +265,65 @@ describe("pausing outbound sending", () => {
     });
   });
 
-  it("does not record a subscription confirmation it could not send", async () => {
+  it("drains held mail after a resume, each held row once, a batch at a time", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await seedOutboxRow("held-1", {
+      lastError: SENDING_PAUSED_MESSAGE,
+      nextRetryAt: now - 5,
+    });
+    await seedOutboxRow("held-2", {
+      lastError: SENDING_PAUSED_MESSAGE,
+      nextRetryAt: now - 5,
+    });
+    // Held in the last minute before the resume: due in 30 seconds.
+    await seedOutboxRow("held-3", {
+      lastError: SENDING_PAUSED_MESSAGE,
+      nextRetryAt: now + 30,
+    });
+    // An ordinary retry is the hourly processor's, not the drain's.
+    await seedOutboxRow("other", {
+      lastError: "quota exceeded",
+      nextRetryAt: now - 5,
+    });
+    const { sender, calls } = fakeSender({
+      id: null,
+      error: { message: "quota exceeded", transient: true },
+    });
+
+    await setSendingPaused(getDb(), true);
+    expect(await drainHeldOutbox(bindings, sender)).toBeNull();
+    expect(calls).toHaveLength(0);
+
+    await setSendingPaused(getDb(), false);
+    const wait = await drainHeldOutbox(bindings, sender);
+    expect(calls.map((call) => call.to).sort()).toEqual([
+      "held-1@example.com",
+      "held-2@example.com",
+    ]);
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThanOrEqual(30);
+
+    // Both failed: no longer held, so the drain does not try them again.
+    expect(await drainHeldOutbox(bindings, sender)).toBe(wait);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("is a queue message of its own", () => {
+    expect(classifyQueueMessage({ type: "outbox_drain" })).toBe("outbox_drain");
+  });
+
+  it("reads a pause row without a value as running", async () => {
+    await getDb().insert(appSettings).values({
+      key: "outbound_paused",
+      value: null,
+      updatedAt: 1,
+      updatedBy: null,
+    });
+    const config = await authFetch("/api/config");
+    expect(await config.json()).toMatchObject({ outboundPaused: false });
+  });
+
+  it("holds a subscription confirmation in the outbox while paused", async () => {
     const { sendConfirmationEmail } =
       await import("../lib/subscribe-confirmation");
     const confirm = () =>
@@ -223,12 +339,20 @@ describe("pausing outbound sending", () => {
     (env as any).DEMO_MODE = "1";
     try {
       await setSendingPaused(getDb(), true);
-      expect(await confirm()).toEqual({ sent: false });
-      expect(await getDb().select().from(sentEmails)).toHaveLength(0);
+      expect(await confirm()).toEqual({ sent: true });
+      const [held] = await getDb().select().from(sentEmails);
+      expect(held.status).toBe("retrying");
+      expect(await outboxRow()).toMatchObject({
+        status: "pending",
+        lastError: SENDING_PAUSED_MESSAGE,
+      });
 
       await setSendingPaused(getDb(), false);
       expect(await confirm()).toEqual({ sent: true });
-      expect(await getDb().select().from(sentEmails)).toHaveLength(1);
+      const statuses = (await getDb().select().from(sentEmails))
+        .map((row) => row.status)
+        .sort();
+      expect(statuses).toEqual(["retrying", "sent"]);
     } finally {
       (env as any).DEMO_MODE = "0";
     }
@@ -282,6 +406,9 @@ describe("pausing outbound sending", () => {
         now: row.sendAt,
       }),
     ).toBe("notDue");
+    expect(
+      await releaseOverdueSubmissions(bindings, row.sendAt + 10, sender),
+    ).toBe(0);
     expect(calls).toHaveLength(0);
     const [held] = await getDb()
       .select()
@@ -343,14 +470,60 @@ describe("pausing outbound sending", () => {
         outboundPause: { byLabel: body.outboundPause.byLabel },
       });
 
-      const resumed = await patchSettings({ outboundPaused: false });
-      expect(await resumed.json()).toMatchObject({
-        outboundPaused: false,
-        outboundPause: null,
-      });
+      // An API key can pause, not resume.
+      const refused = await patchSettings({ outboundPaused: false });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ code: "SESSION_REQUIRED" });
+      expect(await auditActions("sending.resumed")).toHaveLength(0);
+
+      // A signed-in admin can, and the resume starts the drain on the queue.
+      const cookie = await adminSession();
+      const queue = (env as any).EMAIL_QUEUE;
+      const queued: unknown[] = [];
+      (env as any).EMAIL_QUEUE = {
+        send: async (message: unknown) => {
+          queued.push(message);
+        },
+      };
+      try {
+        const resumed = await patchAsSession(cookie, { outboundPaused: false });
+        expect(resumed.status).toBe(200);
+        expect(await resumed.json()).toMatchObject({
+          outboundPaused: false,
+          outboundPause: null,
+        });
+      } finally {
+        (env as any).EMAIL_QUEUE = queue;
+      }
+      expect(queued).toEqual([{ type: "outbox_drain" }]);
       expect(await auditActions("sending.resumed")).toHaveLength(1);
       const after = await authFetch("/api/config");
       expect(await after.json()).toMatchObject({ outboundPaused: false });
+    });
+
+    it("refuses a limit change from an API key", async () => {
+      const res = await patchSettings({ dailySendLimits: { mcp: null } });
+      expect(res.status).toBe(403);
+      expect(await res.json()).toMatchObject({ code: "SESSION_REQUIRED" });
+      expect(await auditActions("settings.changed")).toHaveLength(0);
+    });
+
+    it("lets an admin cancel a message the pause is holding, at once", async () => {
+      await patchSettings({ outboundPaused: true });
+      await authFetch("/api/send", {
+        apiKey: adminKey,
+        method: "POST",
+        body: buildSendForm(compose()),
+      });
+      const row = await outboxRow();
+      const res = await authFetch(`/api/outbox/${row.id}`, {
+        apiKey: adminKey,
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(await outboxRow()).toBeUndefined();
+      const [sent] = await getDb().select().from(sentEmails);
+      expect(sent.status).toBe("failed");
     });
 
     it("refuses a member", async () => {
@@ -607,11 +780,10 @@ describe("daily send limits", () => {
         id: "admin-2",
         email: "admin2@example.com",
       });
-      const patched = await authFetch("/api/admin/settings", {
-        apiKey: adminKey,
-        method: "PATCH",
-        body: JSON.stringify({ dailySendLimits: { api: 3, mcp: null } }),
+      const patched = await patchAsSession(await adminSession(), {
+        dailySendLimits: { api: 3, mcp: null },
       });
+      expect(patched.status).toBe(200);
       expect(await patched.json()).toMatchObject({
         dailySendLimits: { web: null, api: 3, mcp: null, jmap: null },
       });

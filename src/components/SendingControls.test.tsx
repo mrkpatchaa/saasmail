@@ -216,6 +216,26 @@ describe("Settings → Sending", () => {
     expect(screen.getByRole("button", { name: "Resume sending" })).toBeTruthy();
   });
 
+  it("reloads when sending is paused or resumed elsewhere", async () => {
+    branding.outboundPaused = true;
+    api.fetchAdminSettings.mockResolvedValue(
+      settings({
+        outboundPaused: true,
+        outboundPause: { since: SINCE, byLabel: "jane@acme.com" },
+      }),
+    );
+    const { rerender } = render(<SendingSettings />);
+    await screen.findByText(/^Paused since /);
+    expect(api.fetchAdminSettings).toHaveBeenCalledTimes(1);
+
+    // Resumed from the banner: the context flips, the card follows.
+    branding.outboundPaused = false;
+    api.fetchAdminSettings.mockResolvedValue(settings());
+    rerender(<SendingSettings />);
+    await screen.findByText("Sending is running.");
+    expect(api.fetchAdminSettings).toHaveBeenCalledTimes(2);
+  });
+
   it("lists today's counts against the limits", async () => {
     api.fetchSendUsage.mockResolvedValue({
       day: "2026-10-04",

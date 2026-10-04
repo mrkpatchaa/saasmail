@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useBranding } from "@/lib/branding";
 import {
   fetchAdminSettings,
@@ -50,7 +50,7 @@ function parseDrafts(drafts: LimitDrafts): DailySendLimits | string {
 
 /** Settings → Sending (admins): the outbound pause and the daily limits. */
 export default function SendingSettings() {
-  const { refresh: refreshBranding } = useBranding();
+  const { outboundPaused, refresh: refreshBranding } = useBranding();
   const [settings, setSettings] = useState<AdminSettings | null>(null);
   const [held, setHeld] = useState(0);
   const [usage, setUsage] = useState<SendUsage | null>(null);
@@ -80,6 +80,16 @@ export default function SendingSettings() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Paused or resumed elsewhere (the banner, another admin): reload.
+  const firstPauseState = useRef(true);
+  useEffect(() => {
+    if (firstPauseState.current) {
+      firstPauseState.current = false;
+      return;
+    }
+    void load();
+  }, [outboundPaused, load]);
 
   async function togglePause() {
     if (!settings) return;
@@ -193,6 +203,7 @@ export default function SendingSettings() {
                 </label>
                 <input
                   id={`send-limit-${channel}`}
+                  aria-describedby={`send-limit-${channel}-hint`}
                   type="number"
                   inputMode="numeric"
                   min={0}
@@ -205,7 +216,10 @@ export default function SendingSettings() {
                   }
                   className="h-10 w-full rounded-[6px] border border-border bg-bg-subtle px-3 text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-text-primary/30"
                 />
-                <p className="text-[11px] font-light text-text-tertiary">
+                <p
+                  id={`send-limit-${channel}-hint`}
+                  className="text-[11px] font-light text-text-tertiary"
+                >
                   {hint}
                 </p>
               </div>
@@ -278,7 +292,11 @@ export default function SendingSettings() {
         </p>
       )}
       {success && (
-        <p className="text-xs text-emerald-600" data-testid="sending-success">
+        <p
+          role="status"
+          className="text-xs text-emerald-600"
+          data-testid="sending-success"
+        >
           {success}
         </p>
       )}

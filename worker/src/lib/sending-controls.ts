@@ -23,8 +23,13 @@ export interface SendingPause {
   byLabel: string;
 }
 
-// One read per database handle, i.e. per request, queue batch or cron pass.
-const pauseCache = new WeakMap<object, Promise<SendingPause | null>>();
+// Read at most every few seconds per database handle (a request, a queue
+// batch, a cron pass), so a pass already running stops soon after a pause.
+const PAUSE_CACHE_MS = 5_000;
+const pauseCache = new WeakMap<
+  object,
+  { at: number; read: Promise<SendingPause | null> }
+>();
 
 function parsePause(value: string | null | undefined): SendingPause | null {
   if (!value) return null;
@@ -45,14 +50,14 @@ function parsePause(value: string | null | undefined): SendingPause | null {
 /** Who paused outbound sending and when, or null while it runs. */
 export function readSendingPause(db: Db): Promise<SendingPause | null> {
   const cached = pauseCache.get(db);
-  if (cached) return cached;
+  if (cached && Date.now() - cached.at < PAUSE_CACHE_MS) return cached.read;
   const read = db
     .select({ value: appSettings.value })
     .from(appSettings)
     .where(eq(appSettings.key, OUTBOUND_PAUSED_KEY))
     .limit(1)
     .then((rows: { value: string | null }[]) => parsePause(rows[0]?.value));
-  pauseCache.set(db, read);
+  pauseCache.set(db, { at: Date.now(), read });
   // A failed read must not stick: the next caller reads again.
   read.catch(() => pauseCache.delete(db));
   return read;

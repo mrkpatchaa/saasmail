@@ -8,9 +8,7 @@ import { appSettings } from "../db/app-settings.schema";
 import { resolveBrandName } from "../lib/brand-name";
 import { json200Response, json201Response } from "../lib/helpers";
 import type { Variables } from "../variables";
-import { runWithAudit, systemActor } from "../lib/audit/context";
-import { processOutbox } from "../lib/outbox";
-import { releaseOverdueSubmissions } from "../jmap/release";
+import type { OutboxDrainMessage } from "../lib/outbox";
 import {
   SEND_CHANNELS,
   readDailySendLimits,
@@ -402,6 +400,15 @@ const updateSettingsRoute = createRoute({
       description: "Invalid request",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    403: {
+      description:
+        "Resuming outbound sending or changing a daily send limit with an API key (`SESSION_REQUIRED`): sign in instead. An API key may pause.",
+      content: {
+        "application/json": {
+          schema: z.object({ error: z.string(), code: z.string() }),
+        },
+      },
+    },
   },
 });
 
@@ -423,22 +430,6 @@ async function readSettings(
       : null,
     dailySendLimits: await readDailySendLimits(db),
   };
-}
-
-/**
- * Delivers what accumulated while sending was paused: the outbox, then the
- * delayed JMAP sends that came due. As the hourly processor would, not as the
- * admin who resumed.
- */
-function deliverHeldMail(env: CloudflareBindings): Promise<unknown> {
-  return runWithAudit(systemActor("cron"), () =>
-    processOutbox(env)
-      .catch((err) => console.error("[sending] held outbox run failed:", err))
-      .then(() => releaseOverdueSubmissions(env, Math.floor(Date.now() / 1000)))
-      .catch((err) =>
-        console.error("[sending] held JMAP release failed:", err),
-      ),
-  );
 }
 
 const getSettingsRoute = createRoute({
@@ -518,6 +509,23 @@ adminRouter.openapi(updateSettingsRoute, async (c) => {
   const currentUser = c.get("user");
   const body = c.req.valid("json");
 
+  // The incident controls must not be undone with a leaked key: an API key
+  // may pause, but resuming and changing a limit take a signed-in admin
+  // (whose session passed the passkey gate). Checked before any change.
+  if (
+    c.get("authMethod") === "apiKey" &&
+    (body.outboundPaused === false || body.dailySendLimits !== undefined)
+  ) {
+    return c.json(
+      {
+        error:
+          "Resuming outbound sending or changing a daily send limit needs a signed-in admin, not an API key.",
+        code: "SESSION_REQUIRED",
+      },
+      403,
+    );
+  }
+
   // Only act on brand_name if the field is present in the body. `undefined`
   // means "no change", `null` means "reset to default".
   if ("brandName" in body) {
@@ -588,8 +596,14 @@ adminRouter.openapi(updateSettingsRoute, async (c) => {
   if (body.outboundPaused !== undefined) {
     const { changed } = await setSendingPaused(db, body.outboundPaused);
     if (changed && !body.outboundPaused) {
-      // Held mail goes out within seconds, not at the next hourly run.
-      c.executionCtx.waitUntil(deliverHeldMail(c.env));
+      // Held mail goes out through the queue, a batch per message, starting
+      // now rather than at the next hourly run (which is the fallback).
+      try {
+        const drain: OutboxDrainMessage = { type: "outbox_drain" };
+        await c.env.EMAIL_QUEUE.send(drain);
+      } catch (err) {
+        console.error("[sending] could not start delivering held mail:", err);
+      }
     }
   }
 

@@ -7,7 +7,7 @@ auto-replying in a loop, an agent with a bad prompt, a leaked API key.
 
 | Control                  | Who sets it             | What it stops                                                    |
 | ------------------------ | ----------------------- | ---------------------------------------------------------------- |
-| Pause outbound sending   | An admin, at run time   | Every message, from every path, without losing any               |
+| Pause outbound sending   | An admin, at run time   | Every message; all but forwards are held, not lost               |
 | `MCP_SEND_ENABLED=false` | The deployer, at deploy | The MCP tools that send mail, for every connected agent at once  |
 | Daily send limits        | An admin, at run time   | One person's messages through one channel, past a number per day |
 
@@ -16,31 +16,36 @@ auto-replying in a loop, an agent with a bad prompt, a leaked API key.
 **Settings → Sending → Pause sending** (admins). While sending is paused:
 
 - Every send is still accepted and recorded. The composer, the API, MCP, JMAP,
-  rules, sequences and campaigns go on as before; the message shows in Sent as
-  **retrying** and waits in the outbox. Nothing is refused and nothing is lost.
-- No provider is called. The hourly outbox run does nothing, and a manual
-  **Retry** in the outbox keeps the message waiting without using up one of its
-  attempts.
+  rules, sequences, campaigns and list subscription confirmations go on as
+  before; the message shows in Sent as **retrying** and waits in the outbox.
+  Nothing is refused.
+- No provider is called. The hourly outbox run does nothing (one already
+  running stops within seconds), and a manual **Retry** in the outbox keeps the
+  message waiting without using up one of its attempts. A held message can be
+  canceled from the outbox right away.
 - A delayed JMAP send (`FUTURERELEASE`) stays scheduled, and can still be
   canceled.
 - Answers say so: the send routes and MCP tools answer `"status": "retrying"`
   with `"paused": true`, and `GET /api/outbox/count` gives `"paused": true` and
   `held`, the number of messages waiting.
-- Inbox forwarding is skipped. A forward has no outbox entry to wait in; the
-  message itself is still in the inbox.
-- A campaign test send answers `sent: false`, and a list subscription
-  confirmation is not sent (the membership stays pending; the subscriber can
-  submit the form again). Neither has an outbox entry.
+- Two sends are not held, because they have no outbox entry to wait in: inbox
+  forwarding is skipped (the message itself is still in the inbox), and a
+  campaign test send answers `sent: false`.
 - Admins see a banner on every page with who paused and since when, and a
   **Resume** button. Everybody sees "Sending is paused; your message will be
   queued" above the Send button.
 
-**Resume** delivers what was held at once: the outbox runs, then the delayed
-JMAP sends that came due. A message accepted in the last minute before the
-resume goes out at the next hourly run instead (the outbox gives every new
-message a minute before any retry may claim it).
+**Resume** starts delivering what was held straight away, through the queue:
+50 messages per queue message, one after the other, then the delayed JMAP sends
+that came due. A message accepted in the last minute before the resume goes
+once its minute is up (the outbox gives every new message a minute before a
+retry may claim it). Each held message is tried once this way; one that fails
+then is retried by the hourly outbox run, like any other.
 
-The audit log records `sending.paused` and `sending.resumed` with who did it.
+An API key can pause sending but cannot resume it or change a limit: that takes
+a signed-in admin (`403` with `code: "SESSION_REQUIRED"`), so a leaked key
+cannot undo the controls. The audit log records `sending.paused` and
+`sending.resumed` with who did it.
 
 ## Agents: `MCP_SEND_ENABLED`
 
@@ -97,13 +102,13 @@ the audit log, once per person and channel.
 
 ## API
 
-| Route                       | What it does                                                                                 |
-| --------------------------- | -------------------------------------------------------------------------------------------- |
-| `GET /api/admin/settings`   | `outboundPaused`, `outboundPause` (`since`, `byLabel`), `dailySendLimits`, `brandName`       |
-| `PATCH /api/admin/settings` | Takes `outboundPaused: boolean` and `dailySendLimits: { web, api, mcp, jmap }` (any of them) |
-| `GET /api/admin/send-usage` | Today's counts per channel and person, at most 20                                            |
-| `GET /api/config`           | `outboundPaused` (whether only), for the web app; no sign-in needed                          |
-| `GET /api/outbox/count`     | `pending`, `held` and `paused`                                                               |
+| Route                       | What it does                                                                                                                             |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/admin/settings`   | `outboundPaused`, `outboundPause` (`since`, `byLabel`), `dailySendLimits`, `brandName`                                                   |
+| `PATCH /api/admin/settings` | Takes `outboundPaused: boolean` and `dailySendLimits: { web, api, mcp, jmap }` (any of them); resuming and limits need a signed-in admin |
+| `GET /api/admin/send-usage` | Today's counts per channel and person, at most 20                                                                                        |
+| `GET /api/config`           | `outboundPaused` (whether only), for the web app; no sign-in needed                                                                      |
+| `GET /api/outbox/count`     | `pending`, `held` and `paused`                                                                                                           |
 
 ---
 

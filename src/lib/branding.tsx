@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -30,6 +31,18 @@ interface BrandingContextValue extends Branding {
   refresh: () => Promise<void>;
 }
 
+/** How often an open tab re-reads the config, mainly for the sending pause. */
+const CONFIG_REFRESH_MS = 60_000;
+
+function sameBranding(a: Branding, b: Branding): boolean {
+  return (
+    a.passkeyRequired === b.passkeyRequired &&
+    a.brandName === b.brandName &&
+    a.webmcpEnabled === b.webmcpEnabled &&
+    a.outboundPaused === b.outboundPaused
+  );
+}
+
 const BrandingContext = createContext<BrandingContextValue>({
   ...DEFAULT_BRANDING,
   loaded: false,
@@ -42,11 +55,14 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
     loaded: false,
   });
 
+  const lastRefresh = useRef(0);
+
   const refresh = useCallback(async () => {
+    lastRefresh.current = Date.now();
     try {
       const res = await fetch("/api/config");
       const b = (await res.json()) as Partial<Branding>;
-      setBranding({
+      const next = {
         passkeyRequired:
           typeof b.passkeyRequired === "boolean"
             ? b.passkeyRequired
@@ -61,7 +77,12 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
             : DEFAULT_BRANDING.webmcpEnabled,
         outboundPaused: b.outboundPaused === true,
         loaded: true,
-      });
+      };
+      // Unchanged: keep the same object, so a periodic re-read re-renders
+      // nothing.
+      setBranding((prev) =>
+        prev.loaded && sameBranding(prev, next) ? prev : next,
+      );
     } catch {
       setBranding((prev) => ({ ...prev, loaded: true }));
     }
@@ -69,6 +90,24 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  // Another admin may pause or resume sending while this tab is open: re-read
+  // when the tab comes back into view, and every minute while it is visible.
+  useEffect(() => {
+    function refreshIfStale() {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - lastRefresh.current < 5_000) return;
+      void refresh();
+    }
+    const timer = window.setInterval(refreshIfStale, CONFIG_REFRESH_MS);
+    window.addEventListener("focus", refreshIfStale);
+    document.addEventListener("visibilitychange", refreshIfStale);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshIfStale);
+      document.removeEventListener("visibilitychange", refreshIfStale);
+    };
   }, [refresh]);
 
   return (
