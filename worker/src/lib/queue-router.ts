@@ -20,8 +20,8 @@ import {
 } from "../jmap/release";
 import { drainHeldOutbox, type OutboxDrainMessage } from "./outbox";
 import { fileWithAi, type AiFileMessage } from "./triage/ai-file";
+import { SliceBusyError } from "./jobs/slices";
 import {
-  ExportSliceBusyError,
   failMailExport,
   runMailExportSlice,
   type MailExportMessage,
@@ -234,7 +234,7 @@ export async function handleQueueBatch(
       }
       msg.ack();
     } catch (err) {
-      if (kind === "mail_export" && err instanceof ExportSliceBusyError) {
+      if (kind === "mail_export" && err instanceof SliceBusyError) {
         // Another run holds the slice; it queues the next one itself. Come
         // back once its claim has run out, in case it died (if this message
         // runs out of attempts, the hourly run queues the export again).

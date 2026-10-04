@@ -18,6 +18,12 @@ export interface ParsedEmail {
   to: string;
   /** Additional recipients on the Cc: line, parsed from the MIME headers. */
   cc: ParsedEmailAddress[];
+  /** The To header's addresses (groups flattened), cleaned like Cc. */
+  toList: ParsedEmailAddress[];
+  /** The Bcc header's addresses, when the message carries one (sent copies). */
+  bcc: ParsedEmailAddress[];
+  /** The Date header, as written. */
+  date: string | null;
   /** Where the sender asked for replies (Reply-To); empty when absent. */
   replyTo: ParsedEmailAddress[];
   subject: string;
@@ -197,6 +203,30 @@ export async function parseEmail(
   message: ForwardableEmailMessage,
 ): Promise<ParsedEmail> {
   const rawEmail = await new Response(message.raw).arrayBuffer();
+  return parseRawEmail(rawEmail, { from: message.from, to: message.to });
+}
+
+/** Address list fields of postal-mime, with groups flattened. */
+function flattened(
+  list: Array<{ address?: string; name?: string; group?: unknown }> | undefined,
+): Array<{ address?: string; name?: string }> {
+  return (list ?? []).flatMap((entry) =>
+    "group" in entry && Array.isArray(entry.group)
+      ? (entry.group as Array<{ address?: string; name?: string }>)
+      : [entry],
+  );
+}
+
+/**
+ * Parses a message from its bytes: what `parseEmail` does for live mail, and
+ * what an import does for a message read from a file. `envelope` gives the
+ * SMTP sender and recipient when there are any; without one, `to` is the
+ * first To address.
+ */
+export async function parseRawEmail(
+  rawEmail: ArrayBuffer,
+  envelope: { from?: string; to?: string } = {},
+): Promise<ParsedEmail> {
   const parser = new PostalMime();
   const parsed = await parser.parse(rawEmail);
 
@@ -222,6 +252,8 @@ export async function parseEmail(
   const cc = cleanAddresses(
     (parsed.cc as Array<{ address?: string; name?: string }> | undefined) ?? [],
   );
+  const toList = cleanAddresses(flattened(parsed.to));
+  const bcc = cleanAddresses(flattened(parsed.bcc));
 
   // Reply-To gets the Cc clean-up, with groups flattened; replies are
   // addressed from this list, so a duplicate would be mailed twice.
@@ -236,11 +268,14 @@ export async function parseEmail(
   return {
     raw: new Uint8Array(rawEmail),
     from: {
-      address: parsed.from?.address || message.from,
+      address: parsed.from?.address || envelope.from || "",
       name: parsed.from?.name || "",
     },
-    to: message.to,
+    to: envelope.to ?? toList[0]?.email ?? "",
     cc,
+    toList,
+    bcc,
+    date: parsed.date || headers["date"] || null,
     replyTo,
     subject: parsed.subject || "",
     bodyHtml: bodyHtml ? trimQuotedHtml(bodyHtml) : null,
