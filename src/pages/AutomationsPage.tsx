@@ -57,6 +57,7 @@ const ACTION_TYPES: Array<{ value: RuleAction["type"]; label: string }> = [
   { value: "snooze", label: "Snooze" },
   { value: "assign", label: "Assign" },
   { value: "auto_reply", label: "Auto-reply" },
+  { value: "reject", label: "Reject the message" },
 ];
 
 const OPERATORS: Record<RuleCondition["field"], string[]> = {
@@ -141,6 +142,7 @@ function actionSummary(action: RuleAction): string {
   if (action.type === "move_to_folder") return "move to folder";
   if (action.type === "snooze") return "snooze " + String(action.hours) + "h";
   if (action.type === "auto_reply") return "auto-reply";
+  if (action.type === "reject") return "reject";
   return action.type;
 }
 
@@ -418,7 +420,7 @@ export default function AutomationsPage() {
     setServerError(null);
     setTestResult(null);
     try {
-      setTestResult(await testRule(draft.conditions, emailId));
+      setTestResult(await testRule(draft.conditions, emailId, draft.actions));
     } catch (error) {
       setServerError(
         error instanceof Error ? error.message : "Couldn’t test automation",
@@ -812,7 +814,12 @@ export default function AutomationsPage() {
                 </div>
                 <button
                   type="button"
-                  disabled={draft.actions.length >= 5}
+                  // A reject rule has nothing else to run: the message is
+                  // never stored.
+                  disabled={
+                    draft.actions.length >= 5 ||
+                    draft.actions.some((action) => action.type === "reject")
+                  }
                   onClick={() =>
                     setDraft((current) => ({
                       ...current,
@@ -857,10 +864,12 @@ export default function AutomationsPage() {
                           key={type.value}
                           value={type.value}
                           disabled={
-                            !draft.inbox &&
-                            (type.value === "move_to_folder" ||
-                              type.value === "assign" ||
-                              type.value === "auto_reply")
+                            (!draft.inbox &&
+                              (type.value === "move_to_folder" ||
+                                type.value === "assign" ||
+                                type.value === "auto_reply")) ||
+                            (type.value === "reject" &&
+                              draft.actions.length > 1)
                           }
                         >
                           {type.label}
@@ -1003,6 +1012,34 @@ export default function AutomationsPage() {
                           </p>
                         </div>
                       )}
+                      {action.type === "reject" && (
+                        <div className="space-y-2">
+                          <input
+                            aria-label={
+                              "Action " + String(index + 1) + " reason"
+                            }
+                            maxLength={200}
+                            placeholder="Reason (optional): Rejected by mailbox policy"
+                            value={action.reason ?? ""}
+                            onChange={(event) =>
+                              updateAction(index, (current) =>
+                                current.type === "reject"
+                                  ? {
+                                      ...current,
+                                      reason: event.target.value || undefined,
+                                    }
+                                  : current,
+                              )
+                            }
+                            className="w-full rounded-[6px] border border-border bg-card px-2 py-1.5 text-xs text-text-primary"
+                          />
+                          <p className="text-[11px] leading-4 text-amber-700">
+                            The sender&apos;s server is told the message was
+                            refused. Nothing is stored. This must be the
+                            rule&apos;s only action.
+                          </p>
+                        </div>
+                      )}
                       {(action.type === "archive" ||
                         action.type === "mark_spam") && (
                         <span className="inline-flex h-8 items-center text-xs text-text-tertiary">
@@ -1075,6 +1112,8 @@ export default function AutomationsPage() {
                 <div className="mt-3 text-xs text-text-secondary">
                   <p className="font-medium text-text-primary">
                     {testResult.matched ? "Matched" : "Did not match"}
+                    {testResult.wouldReject &&
+                      " — this message would be rejected (nothing was rejected: testing never runs actions)"}
                   </p>
                   <ul className="mt-1 space-y-1">
                     {testResult.conditionResults.map((result, index) => (

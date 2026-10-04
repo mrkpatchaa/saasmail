@@ -55,6 +55,18 @@ To see the addresses beforehand, read `replyRecipients` on the message
 (`GET /api/emails/{id}`, MCP `read_email`). The web composers always send
 `recipient`, so a reply never goes to an address they did not show.
 
+## Unknown recipients
+
+An Email Routing catch-all rule sends mail for any address under your domain to
+saasmail, and by default all of it is stored, including mail to addresses no
+inbox has. Turn on **Reject mail to addresses that aren't inboxes** at the
+bottom of the **Inboxes** page (or `PATCH /api/admin/settings` with
+`{"rejectUnknownRecipients": true}`) and such mail is refused while the sending
+server is connected, with `No such mailbox`. Nothing is stored, and the audit
+log records `inbound.rejected` with the address. The check runs first, before
+the blocklist and the [rules](automations.md#rejecting-mail); an inbox's
+address is matched without regard to case.
+
 ## Per-inbox forwarding
 
 Give any inbox a **Forward to** address and every message it receives is re-sent to

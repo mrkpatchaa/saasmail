@@ -32,7 +32,8 @@ Supported conditions:
 - `header`: a header `name` plus `equals` or `contains`
 
 Supported actions are `archive`, `mark_spam`, `move_to_folder`,
-`snooze`, `assign`, and `auto_reply`. Snooze accepts 1–720 hours. Folder
+`snooze`, `assign`, `auto_reply` and `reject` ([below](#rejecting-mail)).
+Snooze accepts 1–720 hours. Folder
 moves require an inbox-scoped rule and a folder in that same inbox. Assignment
 also requires an inbox-scoped rule, and the assignee must have access to that
 inbox; admins have access to every inbox. Auto-reply also requires a specific
@@ -46,6 +47,37 @@ Mail already auto-filed to Junk by the inbox spam threshold does not enter the
 rules engine. If a rule itself marks a message as spam, the message follows
 the same silent path: it does not wake a snoozed conversation and does not
 fan out realtime or push notifications.
+
+## Rejecting mail
+
+A `reject` action refuses the message while the sending server is still
+connected: Cloudflare answers it with a `5xx` and the rule's reason, so a
+legitimate sender learns their mail did not land. Nothing is stored: no
+message, no contact, no attachment, and no forward, auto-reply, webhook or
+notification follows.
+
+```json
+{ "type": "reject", "reason": "We do not accept mail from this address" }
+```
+
+- The reason is optional (1–200 printable ASCII characters, one line); without
+  one the reply is `Rejected by mailbox policy`.
+- `reject` must be the rule's only action, since none could run on a message
+  that is never stored. It may be inbox-scoped or apply to every inbox.
+- Which rules match is decided before the message is stored, in the same order
+  and with the same conditions as always; the other rules' actions run once it
+  is stored. A matching rule with `stop_processing` before a reject rule keeps
+  the message. The first matching reject rule wins.
+- Blocked senders are still dropped silently, never rejected: a bounce would
+  tell a spammer the address is live. So are redeliveries of a message already
+  stored.
+- A rejection counts as a match of the rule (`match_count`,
+  `last_matched_at`) and is recorded in the [audit log](audit-log.md) as
+  `inbound.rejected`, by the rule, with the sender, recipient, subject and
+  Message-ID.
+
+Mail to an address that is not one of your inboxes can be refused the same way
+without a rule: see [Unknown recipients](inboxes.md#unknown-recipients).
 
 ## Assignment
 
@@ -114,7 +146,10 @@ right.
 **Screenshot (editor, described):** a rule dialog with name and scope at the top,
 stacked condition and action builders, a catch-all warning when conditions are
 empty, Stop processing, and a Test against a message panel that reports the
-overall match and each condition result.
+overall match and each condition result, and says when the message would be
+rejected (a test never rejects anything). Choosing **Reject the message**
+shows an optional reason and the warning that nothing is stored; it cannot sit
+next to another action.
 
 Assignment is also available directly in Mail. The reading pane and bulk
 selection bar expose an Assign menu containing only users who can access the
@@ -131,7 +166,9 @@ corresponding list row, and Assigned to me visible in the folder rail.
 Admins can list, create, partially update, delete, and reorder rules under
 `/api/admin/rules`. `POST /api/admin/rules/test` evaluates a supplied
 rule's conditions against an existing received email and returns the
-per-condition results without saving the rule or running any actions.
+per-condition results without saving the rule or running any actions. Pass the
+rule's `actions` too and the answer's `wouldReject` says whether it matched
+with a `reject` action.
 
 The remote MCP server exposes read-only `list_rules` under the
 `email:read` scope.

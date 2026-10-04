@@ -207,6 +207,52 @@ describe("AutomationsPage", () => {
     ).toBeTruthy();
   });
 
+  it("builds a reject rule: a reason, the warning, and no other action", async () => {
+    await openNew();
+    fireEvent.change(screen.getByLabelText("Action 1 type"), {
+      target: { value: "reject" },
+    });
+    const reason = screen.getByLabelText("Action 1 reason") as HTMLInputElement;
+    expect(reason.maxLength).toBe(200);
+    expect(
+      screen.getByText(
+        "The sender's server is told the message was refused. Nothing is stored. This must be the rule's only action.",
+      ),
+    ).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Add action" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+
+    // The dry run sends the actions and says the message would be rejected.
+    api.testRule.mockResolvedValue({
+      matched: true,
+      wouldReject: true,
+      conditionResults: [],
+    });
+    fireEvent.change(screen.getByLabelText("Message ref or id"), {
+      target: { value: "received:e1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    expect(
+      await screen.findByText(/this message would be rejected/),
+    ).toBeTruthy();
+    expect(api.testRule).toHaveBeenCalledWith([], "e1", [{ type: "reject" }]);
+  });
+
+  it("does not offer reject next to another action", async () => {
+    await openNew();
+    fireEvent.click(screen.getByRole("button", { name: "Add action" }));
+    const actionType = screen.getByLabelText("Action 1 type");
+    expect(
+      (
+        within(actionType).getByRole("option", {
+          name: "Reject the message",
+        }) as HTMLOptionElement
+      ).disabled,
+    ).toBe(true);
+  });
+
   it("shows a warning badge and dangling action message", async () => {
     api.fetchRules.mockResolvedValue([
       {
