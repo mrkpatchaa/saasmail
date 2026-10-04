@@ -11,6 +11,8 @@ import { applyMigrations, cleanDb, getDb } from "./helpers";
 import { createUserWithPassword } from "./mcp-helpers";
 
 const RULE = { window: 10, max: 3 };
+/** As if better-auth served every path these tests use. */
+const served = () => true;
 
 describe("the D1 rate-limit storage", () => {
   beforeAll(async () => {
@@ -22,7 +24,7 @@ describe("the D1 rate-limit storage", () => {
   });
 
   it("admits max requests in a window and refuses the next, with the wait", async () => {
-    const storage = d1RateLimitStorage(getDb());
+    const storage = d1RateLimitStorage(getDb(), served);
     for (let i = 0; i < RULE.max; i++) {
       expect(await storage.consume("1.2.3.4|/sign-in/email", RULE)).toEqual({
         allowed: true,
@@ -45,7 +47,7 @@ describe("the D1 rate-limit storage", () => {
   });
 
   it("starts the count again once the window has closed", async () => {
-    const storage = d1RateLimitStorage(getDb());
+    const storage = d1RateLimitStorage(getDb(), served);
     for (let i = 0; i <= RULE.max; i++) {
       await storage.consume("k", RULE);
     }
@@ -62,7 +64,7 @@ describe("the D1 rate-limit storage", () => {
   });
 
   it("counts every one of many concurrent requests", async () => {
-    const storage = d1RateLimitStorage(getDb());
+    const storage = d1RateLimitStorage(getDb(), served);
     const results = await Promise.all(
       Array.from({ length: 10 }, () => storage.consume("k", RULE)),
     );
@@ -74,7 +76,7 @@ describe("the D1 rate-limit storage", () => {
   });
 
   it("reads a live counter, and nothing once it expired", async () => {
-    const storage = d1RateLimitStorage(getDb());
+    const storage = d1RateLimitStorage(getDb(), served);
     await storage.consume("k", RULE);
     await storage.consume("k", RULE);
     expect(await storage.get("k")).toMatchObject({ key: "k", count: 2 });
@@ -84,14 +86,28 @@ describe("the D1 rate-limit storage", () => {
     expect(await storage.get("k")).toBeNull();
   });
 
+  it("counts made-up paths in one shared row per address", async () => {
+    const storage = d1RateLimitStorage(getDb(), (path) => path === "/real");
+    await storage.consume("9.9.9.9|/made-up-1", RULE);
+    await storage.consume("9.9.9.9|/made-up-2", RULE);
+    await storage.consume("9.9.9.9|/real", RULE);
+    const rows = await getDb().all<{ key: string; count: number }>(
+      sql`SELECT key, count FROM auth_rate_limits ORDER BY key`,
+    );
+    expect(rows.map((row) => [row.key, Number(row.count)])).toEqual([
+      ["9.9.9.9|/real", 1],
+      ["9.9.9.9|other", 2],
+    ]);
+  });
+
   it("prunes expired counters only", async () => {
-    const storage = d1RateLimitStorage(getDb());
+    const storage = d1RateLimitStorage(getDb(), served);
     await storage.consume("old", RULE);
     await storage.consume("live", RULE);
     await getDb().run(
       sql`UPDATE auth_rate_limits SET expires_at = ${Date.now() - 1} WHERE key = 'old'`,
     );
-    await pruneAuthRateLimits(getDb(), Date.now());
+    expect(await pruneAuthRateLimits(getDb(), Date.now())).toBe(1);
     const keys = await getDb().all<{ key: string }>(
       sql`SELECT key FROM auth_rate_limits`,
     );
@@ -143,6 +159,21 @@ describe("rate-limited sign-in", () => {
 
     // Another address is not held back by the first one's attempts.
     expect((await signIn("198.51.100.4", "right-password-1")).status).toBe(200);
+  });
+
+  it("keeps requests to paths better-auth does not serve in one row", async () => {
+    for (let i = 0; i < 5; i++) {
+      await exports.default.fetch(
+        `http://localhost/api/auth/no-such-endpoint-${i}`,
+        { method: "POST", headers: { "cf-connecting-ip": "203.0.113.9" } },
+      );
+    }
+    const rows = await getDb().all<{ key: string; count: number }>(
+      sql`SELECT key, count FROM auth_rate_limits WHERE key LIKE '203.0.113.9%'`,
+    );
+    expect(rows.map((row) => [row.key, Number(row.count)])).toEqual([
+      ["203.0.113.9|other", 5],
+    ]);
   });
 
   it("does not count reading the session", async () => {

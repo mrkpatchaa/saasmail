@@ -11,8 +11,28 @@ interface RateLimitEntry {
   lastRequest: number;
 }
 
-/** Expired rows deleted per hourly pass. */
+/** Expired rows deleted per batch, and batches per hourly pass. */
 const PRUNE_BATCH = 1000;
+const PRUNE_MAX_BATCHES = 20;
+/** Longest address kept in a key (an IPv6 address is at most 45). */
+const MAX_ADDRESS_LENGTH = 64;
+
+/**
+ * The row a request counts against. better-auth keys by `<address>|<path>`
+ * and counts before it looks the path up, so every made-up path under
+ * /api/auth would open a row of its own: those share one `<address>|other`
+ * row instead, and the table stays bounded by addresses times real paths.
+ */
+export function rateLimitBucket(
+  key: string,
+  isServedPath: (path: string) => boolean,
+): string {
+  const bar = key.indexOf("|");
+  if (bar === -1) return key.slice(0, MAX_ADDRESS_LENGTH);
+  const address = key.slice(0, bar).slice(0, MAX_ADDRESS_LENGTH);
+  const path = key.slice(bar + 1);
+  return isServedPath(path) ? `${address}|${path}` : `${address}|other`;
+}
 
 /**
  * better-auth's rate-limit storage, in D1. The library's default keeps
@@ -24,7 +44,11 @@ const PRUNE_BATCH = 1000;
  * all pass a stale read. The window is fixed: it opens with the first request
  * and the count starts again once it has closed.
  */
-export function d1RateLimitStorage(db: Db) {
+export function d1RateLimitStorage(
+  db: Db,
+  /** Whether better-auth has an endpoint at this path. */
+  isServedPath: (path: string) => boolean,
+) {
   return {
     async get(key: string): Promise<RateLimitEntry | null> {
       const [row] = await db.all<{
@@ -32,7 +56,7 @@ export function d1RateLimitStorage(db: Db) {
         window_start: number;
         expires_at: number;
       }>(
-        sql`SELECT count, window_start, expires_at FROM auth_rate_limits WHERE key = ${key}`,
+        sql`SELECT count, window_start, expires_at FROM auth_rate_limits WHERE key = ${rateLimitBucket(key, isServedPath)}`,
       );
       if (!row || Number(row.expires_at) <= Date.now()) return null;
       return {
@@ -44,14 +68,10 @@ export function d1RateLimitStorage(db: Db) {
 
     /**
      * Required by the storage contract, but only better-auth's non-atomic
-     * fallback calls it, and `consume` takes its place here.
+     * fallback calls it, which a storage with `consume` never reaches.
      */
-    async set(key: string, value: RateLimitEntry): Promise<void> {
-      await db.run(sql`
-        INSERT INTO auth_rate_limits (key, count, window_start, expires_at)
-        VALUES (${key}, ${value.count}, ${value.lastRequest}, ${value.lastRequest + 60_000})
-        ON CONFLICT (key) DO UPDATE SET count = excluded.count
-      `);
+    async set(): Promise<void> {
+      throw new Error("auth rate limits are counted by consume");
     },
 
     async consume(
@@ -60,12 +80,13 @@ export function d1RateLimitStorage(db: Db) {
     ): Promise<{ allowed: boolean; retryAfter: number | null }> {
       const now = Date.now();
       const closes = now + rule.window * 1000;
+      const bucket = rateLimitBucket(key, isServedPath);
       try {
         // SQLite evaluates every SET expression against the row as it was,
         // so the three CASEs agree on whether the window had closed.
         const [row] = await db.all<{ count: number; expires_at: number }>(sql`
           INSERT INTO auth_rate_limits (key, count, window_start, expires_at)
-          VALUES (${key}, 1, ${now}, ${closes})
+          VALUES (${bucket}, 1, ${now}, ${closes})
           ON CONFLICT (key) DO UPDATE SET
             count = CASE WHEN expires_at <= ${now} THEN 1 ELSE count + 1 END,
             window_start = CASE WHEN expires_at <= ${now} THEN ${now} ELSE window_start END,
@@ -92,15 +113,24 @@ export function d1RateLimitStorage(db: Db) {
   };
 }
 
-/** Deletes expired counters, a bounded batch per hourly pass. */
+/** Deletes expired counters, in bounded batches, each hourly pass. */
 export async function pruneAuthRateLimits(
   db: Db,
   nowMs: number,
-): Promise<void> {
-  await db.run(sql`
-    DELETE FROM auth_rate_limits WHERE key IN (
-      SELECT key FROM auth_rate_limits WHERE expires_at <= ${nowMs}
-      ORDER BY expires_at LIMIT ${PRUNE_BATCH}
-    )
-  `);
+): Promise<number> {
+  let deleted = 0;
+  for (let batch = 0; batch < PRUNE_MAX_BATCHES; batch++) {
+    const result = await db.run(sql`
+      DELETE FROM auth_rate_limits WHERE key IN (
+        SELECT key FROM auth_rate_limits WHERE expires_at <= ${nowMs}
+        ORDER BY expires_at LIMIT ${PRUNE_BATCH}
+      )
+    `);
+    const changes = Number(
+      (result as { meta?: { changes?: number } }).meta?.changes ?? 0,
+    );
+    deleted += changes;
+    if (changes < PRUNE_BATCH) break;
+  }
+  return deleted;
 }
