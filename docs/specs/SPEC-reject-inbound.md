@@ -108,3 +108,26 @@ message is refused at SMTP time with a 5xx and the reason.
   `docs/inboxes.md`: the unknown-recipient setting and the catch-all default. `docs/architecture.md`:
   the new inbound order (one diagram line).
 - CHANGELOG `### Added`: **Reject mail at the door.** …
+
+## Spec changes (implementation)
+
+The five decisions are unchanged. What the code does differently, and why:
+
+1. **Matching before storage reads the parsed HTML** (`parsed.bodyHtml`), not the copy with `cid:`
+   references rewritten to attachment URLs. The only condition that reads HTML, `body contains`, reads
+   the plain text when there is any and otherwise the HTML converted to text, which drops `src`
+   attributes; the matched set is the same.
+2. **The `sender_identities` read moves to the top**, and the `reject_unknown_recipients` setting is
+   read only when the recipient is not an inbox, so the common path costs no extra query.
+3. If selecting the rules fails (a D1 error), the message is stored with no rule actions and the
+   failure logged, as a failed `evaluateRules` did before: a rule never makes delivery fail.
+4. `recordRuleMatch` is shared by the rejection and the action pass; `runMatchedRules` no longer checks
+   `stop_processing`, since the selection already stopped there.
+5. The audit row's target is the rule (`target_type: "rule"`, its id) for a rule rejection and the
+   address (`target_type: "inbox"`) for an unknown recipient; `details.reason` is the SMTP reason or
+   `"unknown_recipient"`.
+6. The dry run takes the rule's `actions` (optional, alongside `conditions`) to answer `wouldReject`.
+7. The unknown-recipient toggle sits at the bottom of the **Inboxes** page, read and written through
+   `GET`/`PATCH /api/admin/settings` (`rejectUnknownRecipients`).
+8. `reject` is part of the shared action schema, so every surface that creates rules through it (the
+   HTTP API, the web, the agent's tools) can create one; validation is the same everywhere.
