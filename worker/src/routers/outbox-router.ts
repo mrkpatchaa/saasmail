@@ -18,6 +18,7 @@ import {
   webRestoreTarget,
 } from "../jmap/release";
 import { json200Response } from "../lib/helpers";
+import { isSendingPaused } from "../lib/sending-controls";
 import type { Variables } from "../variables";
 
 export const outboxRouter = new OpenAPIHono<{
@@ -55,9 +56,17 @@ const countRoute = createRoute({
   method: "get",
   path: "/count",
   tags: ["Outbox"],
-  description: "Count of sends still awaiting retry.",
+  description:
+    "Count of sends still awaiting retry. While outbound sending is paused every pending send is held: `held` counts them and `paused` is true.",
   responses: {
-    ...json200Response(z.object({ pending: z.number() }), "Pending count"),
+    ...json200Response(
+      z.object({
+        pending: z.number(),
+        held: z.number(),
+        paused: z.boolean(),
+      }),
+      "Pending count",
+    ),
   },
 });
 
@@ -73,7 +82,9 @@ outboxRouter.openapi(countRoute, async (c) => {
         ? and(eq(outboxEmails.status, "pending"), scope)
         : eq(outboxEmails.status, "pending"),
     );
-  return c.json({ pending: rows[0]?.n ?? 0 }, 200);
+  const pending = Number(rows[0]?.n ?? 0);
+  const paused = await isSendingPaused(db);
+  return c.json({ pending, held: paused ? pending : 0, paused }, 200);
 });
 
 // --- GET /api/outbox/scheduled ---
