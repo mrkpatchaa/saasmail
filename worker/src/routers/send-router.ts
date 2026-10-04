@@ -1,6 +1,5 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createEmailSender } from "../lib/email-sender";
-import { json201Response } from "../lib/helpers";
 import type { Variables } from "../variables";
 import { parseSendBody, sendParseErrorResponse } from "../lib/multipart-send";
 import { replyToEmail, sendEmail } from "../lib/send-email";
@@ -11,6 +10,7 @@ import { sendRequestFields } from "../lib/send-idempotency";
 import {
   idempotencyConflictResponses,
   idempotencyKeyHeader,
+  idempotent201Response,
   inboxForbiddenResponse,
   multipartParseErrorResponses,
   replyNotFoundResponse,
@@ -152,7 +152,7 @@ const sendEmailRoute = createRoute({
     },
   },
   responses: {
-    ...json201Response(SentEmailResponseSchema, "Email sent"),
+    ...idempotent201Response(SentEmailResponseSchema, "Email sent"),
     ...multipartParseErrorResponses,
     ...inboxForbiddenResponse,
     ...idempotencyConflictResponses,
@@ -301,7 +301,7 @@ const replyEmailRoute = createRoute({
     },
   },
   responses: {
-    ...json201Response(ReplyEmailResponseSchema, "Reply sent"),
+    ...idempotent201Response(ReplyEmailResponseSchema, "Reply sent"),
     ...replyValidationErrorResponse,
     413: multipartParseErrorResponses[413],
     ...inboxForbiddenResponse,

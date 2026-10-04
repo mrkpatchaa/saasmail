@@ -133,9 +133,10 @@ export default function ChatQuickReply({
   const followsReplyTo = replyRecipients.length > 0 && !replyToSender;
 
   // One key per message typed here: every attempt sends it, a sent message
-  // forgets it.
+  // forgets it. A reply shares its key with the full reply composer for the
+  // same message, so retrying there after a lost answer is still recognised.
   const sendContext = latestReceivedEmailId
-    ? `send:quick-reply:${latestReceivedEmailId}`
+    ? `send:reply:${latestReceivedEmailId}`
     : `send:quick:${inboxAddress}:${personEmail}`;
 
   async function handleSend() {

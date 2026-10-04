@@ -133,3 +133,27 @@ was left open:
 8. **The fingerprint normalises addresses** (trimmed, lowercased) the way the send path does, and leaves
    the key itself out. HTTP and MCP share the field builder (`sendRequestFields`).
 9. **CORS exposes `Idempotency-Replayed` and `Retry-After`**, so a browser client can read them.
+
+After an independent review of the first implementation (same day), the design changed where it could
+still send a message twice:
+
+10. **An accepted send never releases its key.** The outbox tells a keyed send the moment the provider
+    has the message (or its retries are the outbox's), before writing anything else
+    (`notifySendAccepted`), and the key is completed at once with `{ id, status, incomplete: true }`.
+    A failure after that point (a D1 error recording the send, a Worker that dies) leaves the key
+    answering with that send; a retry never sends a second copy. The request's full answer replaces
+    the provisional one when it finishes. Decision 4's "a request that fails releases the key" now
+    reads "a request refused before the provider has the message".
+11. **A running claim makes every request wait** (409), whatever it asks; the reuse error is only for a
+    completed key. An abandoned claim (pending after 5 minutes) never reached the provider, so any
+    request may take it over. A request still waiting on the provider after 5 minutes can still be
+    overtaken: a known limit.
+12. **The completion write is tried twice**, and the release after a refusal is guarded like the one
+    after a throw.
+13. **HTTP and MCP keys are separate** (the fingerprint names the surface): the two store differently
+    shaped answers for the same send.
+14. **The web forgets a key when the composer is closed** without sending, not only after a send: a
+    later, different message must not inherit it. A reload closes nothing and keeps it. The chat quick
+    reply shares the full reply composer's key for the same message. A reused key is worded as "this
+    message was not sent; an earlier attempt may already have gone out".
+15. **OpenAPI declares `Idempotency-Replayed` on the 201 and `Retry-After` on the 409.**

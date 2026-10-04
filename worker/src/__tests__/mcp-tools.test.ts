@@ -17,7 +17,6 @@ import { emails } from "../db/emails.schema";
 import { customerPeople, customers } from "../db/customers.schema";
 import { people } from "../db/people.schema";
 import { sentEmails } from "../db/sent-emails.schema";
-import { outboxEmails } from "../db/outbox-emails.schema";
 import {
   ALL_SCOPES,
   type Credentials,
@@ -700,10 +699,12 @@ describe("MCP tools", () => {
         (row) => row.subject === "Once only",
       );
       expect(sent).toHaveLength(1);
-      const outbox = (await getDb().select().from(outboxEmails)).filter(
-        (row) => row.subject === "Once only",
+      // One message handed to the provider: one audit row, not two.
+      const audited = (await getDb().select().from(auditEvents)).filter(
+        (event) =>
+          event.action === "mail.sent" && event.summary.includes("Once only"),
       );
-      expect(outbox.length).toBeLessThanOrEqual(1);
+      expect(audited).toHaveLength(1);
 
       const reused = await callTool(memberToken, "send_email", {
         ...args,

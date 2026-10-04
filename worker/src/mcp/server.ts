@@ -574,7 +574,11 @@ export function buildMcpServer(ctx: McpContext): McpServer {
         {
           userId: ctx.user.id,
           key,
-          fingerprint: await sendFingerprint(fields),
+          // A key used over HTTP answers there only: the two store
+          // different answers for the same send.
+          fingerprint: await sendFingerprint({ surface: "mcp", ...fields }),
+          // A send accepted before this call finished answers as a result.
+          acceptedStatus: 200,
         },
         async () => {
           const attempt = await run();

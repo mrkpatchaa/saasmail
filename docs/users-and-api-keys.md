@@ -31,9 +31,14 @@ every retry of that message.
 - The same key with a different request is `422` with
   `code: "IDEMPOTENCY_KEY_REUSED"`. Use a new key for a new message.
 - A retry while the first request is still running is `409` with
-  `code: "IDEMPOTENCY_IN_PROGRESS"` and `Retry-After: 2`.
-- A request that fails (a validation error, a missing template variable, an
-  error of the server) releases the key, so the corrected request can use it.
+  `code: "IDEMPOTENCY_IN_PROGRESS"` and `Retry-After: 2`, whatever it asks.
+- A request refused before anything was sent (a validation error, a missing
+  template variable, an inbox you may not send from) releases the key, so the
+  corrected request can use it.
+- Once the provider has the message, the key belongs to that send for good. If
+  the request fails after that point (a 5xx while saasmail records the send),
+  retrying with the key answers `{ id, status, incomplete: true }` instead of
+  sending a second copy.
 - Keys belong to the user behind the API key and are kept 24 hours. A key is 1
   to 255 printable ASCII characters without spaces; anything else is `400`
   with `code: "INVALID_IDEMPOTENCY_KEY"`.

@@ -27,7 +27,9 @@ describe("send keys of the web composers", () => {
   it("explains a refused key, and replaces a reused one", () => {
     const key = sendKeyFor("compose");
     const reused = new ApiError("used", 422, "IDEMPOTENCY_KEY_REUSED");
-    expect(sendKeyProblem(reused, "compose")).toContain("already sent");
+    expect(sendKeyProblem(reused, "compose")).toContain(
+      "This message was not sent",
+    );
     expect(sendKeyFor("compose")).not.toBe(key);
 
     const kept = sendKeyFor("compose");

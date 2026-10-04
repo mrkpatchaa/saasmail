@@ -90,7 +90,7 @@ describe("ChatQuickReply and Reply-To", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(
       await screen.findByText(
-        "An earlier attempt from this window was already sent. Check Sent before sending again.",
+        "This message was not sent: an earlier attempt from this window may already have gone out. Check Sent, then send again to send this one.",
       ),
     ).toBeTruthy();
 
@@ -101,6 +101,27 @@ describe("ChatQuickReply and Reply-To", () => {
       (call) => call[1].idempotencyKey,
     );
     expect(after).not.toBe(before);
+  });
+
+  it("retries with the same key, and shares it with the full reply composer", async () => {
+    sessionStorage.clear();
+    api.replyToEmail.mockRejectedValueOnce(new Error("network timeout"));
+    renderReply();
+    fireEvent.change(screen.getByPlaceholderText("Type a reply…"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Failed to send message");
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.replyToEmail).toHaveBeenCalledTimes(2));
+    const [attempt, retry] = api.replyToEmail.mock.calls.map(
+      (call) => call[1].idempotencyKey,
+    );
+    expect(retry).toBe(attempt);
+    // After the send it is forgotten; it was the reply composer's key too.
+    expect(
+      sessionStorage.getItem("saasmail:send-key:send:reply:email-1"),
+    ).toBeNull();
   });
 
   it('sends recipient: "sender" once the toggle is on', async () => {

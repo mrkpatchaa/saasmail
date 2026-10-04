@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import type { ParsedFile } from "./multipart-send";
@@ -133,7 +134,8 @@ export function sendRequestFields(payload: {
     bodyHtml: payload.bodyHtml,
     bodyText: payload.bodyText,
     replyTo: address(payload.replyTo),
-    transactional: payload.transactional,
+    // The HTTP schema defaults it to false; MCP leaves it out.
+    transactional: payload.transactional ?? false,
   };
 }
 
@@ -157,26 +159,85 @@ type StoredRow = {
   sent_email_id: string | null;
 };
 
+/** What the send path knows the moment the provider has the message. */
+export interface SendAcceptance {
+  /** The sent_emails id the send was given before the provider call. */
+  sentEmailId: string;
+  /** "sent", or "retrying" when the outbox now owns delivering it. */
+  outcome: string;
+}
+
+type AcceptanceListener = (acceptance: SendAcceptance) => Promise<void>;
+const acceptanceListener = new AsyncLocalStorage<AcceptanceListener>();
+
+/**
+ * Called by the outbox the moment a message is the provider's (or its
+ * retries are the outbox's), before anything else is written. Inside a keyed
+ * send this completes the key at once, so that a failure after this point,
+ * or a Worker that dies, can never lead a retry to send the message again.
+ * Outside one it does nothing.
+ */
+export async function notifySendAccepted(
+  acceptance: SendAcceptance,
+): Promise<void> {
+  const listener = acceptanceListener.getStore();
+  if (!listener) return;
+  try {
+    await listener(acceptance);
+  } catch (error) {
+    console.error("[idempotency] acceptance not recorded:", error);
+  }
+}
+
+/** The answer a key gives for a send accepted before its request finished. */
+function provisionalResponse(
+  acceptance: SendAcceptance,
+  status: number,
+): IdempotentResponse {
+  return {
+    status,
+    body: {
+      id: acceptance.sentEmailId,
+      status: acceptance.outcome,
+      // The request that sent it failed afterwards, or has not answered yet.
+      incomplete: true,
+    },
+    sentEmailId: acceptance.sentEmailId,
+  };
+}
+
 /**
  * Runs a send at most once per key. The first request with a key claims it
  * and runs; its 2xx answer is stored. A retry with the same key and the same
  * request gets that answer back (`replayed`); with a different request it
  * throws `IdempotencyReusedError`; while the first is still running it
- * throws `IdempotencyInProgressError`. A request that throws or answers with
- * an error releases the key, so a retry runs again. A key is remembered for
- * 24 hours, and a request still running after 5 minutes is taken to have
- * died: the same request may then take its key over.
+ * throws `IdempotencyInProgressError`.
+ *
+ * Once the provider has the message (`notifySendAccepted`), the key is
+ * completed at once with what is known; from then on it is never released,
+ * so no retry can send that message again. Before that, a request that throws
+ * or is refused releases the key, so a retry runs. A key is remembered for 24
+ * hours; a claim still running after 5 minutes, which never reached the
+ * provider, is taken to have died, and any request may take the key over.
  */
 export async function withIdempotency<T>(
   db: Db,
-  claim: { userId: string; key: string; fingerprint: string; now?: number },
+  claim: {
+    userId: string;
+    key: string;
+    fingerprint: string;
+    now?: number;
+    /** The status a send accepted before its request finished answers with. */
+    acceptedStatus?: number;
+  },
   run: () => Promise<IdempotentResponse<T>>,
 ): Promise<IdempotentOutcome<T>> {
   const { userId, key, fingerprint } = claim;
   const now = claim.now ?? Math.floor(Date.now() / 1000);
 
-  // One statement claims a free key, an expired one, or the same request's
-  // abandoned one; anything else is left as it is and read below.
+  // One statement claims a free key, an expired one, or an abandoned one
+  // (still pending after 5 minutes: an accepted send is never pending);
+  // anything else is left as it is and read below.
   const claimed = await db.all<{ key: string }>(sql`
     INSERT INTO send_idempotency (user_id, key, fingerprint, status, created_at)
     VALUES (${userId}, ${key}, ${fingerprint}, 'pending', ${now})
@@ -192,7 +253,6 @@ export async function withIdempotency<T>(
       OR (
         send_idempotency.status = 'pending'
         AND send_idempotency.created_at < ${now - IDEMPOTENCY_STALE_SECONDS}
-        AND send_idempotency.fingerprint = excluded.fingerprint
       )
     RETURNING key
   `);
@@ -206,8 +266,9 @@ export async function withIdempotency<T>(
     // Released between the claim and this read: the earlier request failed.
     // Try once more rather than refusing a request that may now run.
     if (!row) return withIdempotency(db, { ...claim, now }, run);
-    if (row.fingerprint !== fingerprint) throw new IdempotencyReusedError(key);
+    // Running: whatever this request is, it waits for that one's answer.
     if (row.status !== "completed") throw new IdempotencyInProgressError(key);
+    if (row.fingerprint !== fingerprint) throw new IdempotencyReusedError(key);
     return {
       status: row.response_status ?? 200,
       body: JSON.parse(row.response_body ?? "null") as T,
@@ -216,41 +277,67 @@ export async function withIdempotency<T>(
     };
   }
 
-  // Only this claim: a later takeover has a later created_at.
-  const ours = sql`user_id = ${userId} AND key = ${key}
-    AND status = 'pending' AND created_at = ${now}`;
-  const release = () => db.run(sql`DELETE FROM send_idempotency WHERE ${ours}`);
+  // This claim only: a takeover has a later created_at.
+  const ours = sql`user_id = ${userId} AND key = ${key} AND created_at = ${now}`;
+  const complete = async (response: IdempotentResponse<T>) => {
+    const write = () =>
+      db.run(sql`
+        UPDATE send_idempotency SET
+          status = 'completed',
+          response_status = ${response.status},
+          response_body = ${JSON.stringify(response.body)},
+          sent_email_id = ${response.sentEmailId ?? null},
+          completed_at = ${Math.floor(Date.now() / 1000)}
+        WHERE ${ours}
+      `);
+    // The message is out: failing here must not fail the request, but a key
+    // left pending could be taken over later, so try twice.
+    try {
+      await write();
+    } catch {
+      try {
+        await write();
+      } catch (error) {
+        console.error(`[idempotency] key ${key} not completed:`, error);
+      }
+    }
+  };
+  // Never deletes a completed claim: an accepted send keeps its key.
+  const release = async () => {
+    try {
+      await db.run(
+        sql`DELETE FROM send_idempotency WHERE ${ours} AND status = 'pending'`,
+      );
+    } catch (error) {
+      console.warn(`[idempotency] key ${key} not released:`, error);
+    }
+  };
+
+  let accepted: SendAcceptance | null = null;
+  const onAccepted: AcceptanceListener = async (acceptance) => {
+    accepted = acceptance;
+    await complete(
+      provisionalResponse(
+        acceptance,
+        claim.acceptedStatus ?? 201,
+      ) as IdempotentResponse<T>,
+    );
+  };
 
   let response: IdempotentResponse<T>;
   try {
-    response = await run();
+    response = await acceptanceListener.run(onAccepted, run);
   } catch (error) {
-    await release().catch((releaseError) =>
-      console.warn(`[idempotency] key ${key} not released:`, releaseError),
-    );
+    if (!accepted) await release();
     throw error;
   }
 
   if (response.status < 200 || response.status >= 300) {
-    await release();
+    if (!accepted) await release();
     return { ...response, replayed: false };
   }
 
-  // The message is out: failing here must not fail the request. A retry then
-  // finds the key still running for 5 minutes, then may send again.
-  try {
-    await db.run(sql`
-      UPDATE send_idempotency SET
-        status = 'completed',
-        response_status = ${response.status},
-        response_body = ${JSON.stringify(response.body)},
-        sent_email_id = ${response.sentEmailId ?? null},
-        completed_at = ${Math.floor(Date.now() / 1000)}
-      WHERE ${ours}
-    `);
-  } catch (error) {
-    console.error(`[idempotency] key ${key} not completed:`, error);
-  }
+  await complete(response);
   return { ...response, replayed: false };
 }
 

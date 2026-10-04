@@ -41,7 +41,12 @@ export async function respondIdempotently(
       {
         userId: c.get("user").id,
         key,
-        fingerprint: await sendFingerprint(request.fields, request.files),
+        // A key used over MCP answers there only: the two store different
+        // answers for the same send.
+        fingerprint: await sendFingerprint(
+          { surface: "http", ...request.fields },
+          request.files,
+        ),
       },
       run,
     );

@@ -97,8 +97,9 @@ Three scopes gate what a connected client may do:
 optional `idempotencyKey`: a UUID the client generates for each message it
 intends to send and passes again if it retries. A retry returns the first
 result with `replayed: true` and sends nothing; the same key with a different
-message is a tool error naming the key. Keys belong to the connected user and
-are kept 24 hours. An assistant should always pass one: a transport error after
+message is a tool error naming the key. Once the provider has a message its key
+never sends again, even if the call failed afterwards. Keys belong to the
+connected user and are kept 24 hours. An assistant should always pass one: a transport error after
 the server sent the message is indistinguishable from one before it.
 
 **Where `reply_email` sends.** A reply to a received message follows that

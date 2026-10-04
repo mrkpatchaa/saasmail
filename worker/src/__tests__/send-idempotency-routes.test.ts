@@ -3,7 +3,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { sql } from "drizzle-orm";
 import { auditEvents } from "../db/audit-events.schema";
-import { outboxEmails } from "../db/outbox-emails.schema";
 import { sentEmails } from "../db/sent-emails.schema";
 import {
   applyMigrations,
@@ -246,8 +245,76 @@ describe("idempotency keys on the send routes", () => {
       { "Idempotency-Key": KEY },
     );
     expect(reused.status).toBe(422);
-    expect((await getDb().select().from(outboxEmails)).length).toBe(0);
-    expect((await counts()).sent).toBe(1);
+    expect(await counts()).toEqual({ sent: 1, audited: 1 });
+  });
+
+  it("releases the key when the sending inbox is not allowed (403)", async () => {
+    const member = await createTestUser({
+      id: "member-1",
+      email: "member@example.com",
+      role: "member",
+    });
+    const refused = await authFetch("/api/send", {
+      apiKey: member.apiKey,
+      method: "POST",
+      headers: { "Idempotency-Key": KEY },
+      body: buildSendForm(compose()),
+    });
+    expect(refused.status).toBe(403);
+    expect(await getDb().all(sql`SELECT * FROM send_idempotency`)).toEqual([]);
+  });
+
+  it("does not send again when the first request failed after the provider took the message", async () => {
+    const { withIdempotency, sendFingerprint } =
+      await import("../lib/send-idempotency");
+    const { sendEmail } = await import("../lib/send-email");
+    const calls: string[] = [];
+    const sender = {
+      provider: "demo" as const,
+      async send(params: { to: string }) {
+        calls.push(params.to);
+        return { id: `provider-${calls.length}`, error: null };
+      },
+      maxAttachmentBytes: () => 25 * 1024 * 1024,
+      maxMessageBytes: () => 25 * 1024 * 1024,
+    };
+    // Recording the sent message fails: the provider already has it.
+    const real = getDb();
+    const failing = new Proxy(real, {
+      get(target, property, receiver) {
+        if (property === "insert") {
+          return (table: unknown) => {
+            if (table === sentEmails) throw new Error("D1 hiccup");
+            return target.insert(table as never);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const claim = {
+      userId: "test-user-1",
+      key: KEY,
+      fingerprint: await sendFingerprint({ any: "request" }),
+    };
+    const attempt = (db: typeof real) =>
+      withIdempotency(db, claim, async () => {
+        const result = await sendEmail({
+          db,
+          env: env as unknown as CloudflareBindings,
+          payload: compose(),
+          files: [],
+          allowed: { isAdmin: true },
+          sender: sender as never,
+        });
+        return { status: 201, body: { id: result.id }, sentEmailId: result.id };
+      });
+
+    await expect(attempt(failing)).rejects.toThrow("D1 hiccup");
+    const retry = await attempt(real);
+    expect(calls).toHaveLength(1);
+    expect(retry.replayed).toBe(true);
+    expect(retry.body).toMatchObject({ status: "sent", incomplete: true });
   });
 
   it("keeps each person's keys apart", async () => {

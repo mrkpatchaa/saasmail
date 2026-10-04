@@ -36,6 +36,12 @@ export const idempotencyConflictResponses = {
   409: {
     description:
       "A request with this idempotency key is still running (`IDEMPOTENCY_IN_PROGRESS`). Retry after the `Retry-After` seconds.",
+    headers: z.object({
+      "Retry-After": z.string().openapi({
+        description: "Seconds to wait before retrying with the same key.",
+        example: "2",
+      }),
+    }),
     content: { "application/json": { schema: IdempotencyErrorSchema } },
   },
   422: {
@@ -44,6 +50,26 @@ export const idempotencyConflictResponses = {
     content: { "application/json": { schema: IdempotencyErrorSchema } },
   },
 };
+
+/**
+ * The 201 of a send route that takes an `Idempotency-Key`, with the header
+ * that marks a replayed answer.
+ */
+export function idempotent201Response(schema: z.ZodType, description: string) {
+  return {
+    201: {
+      description: `${description}. A retry with the same key returns this same answer with \`Idempotency-Replayed: true\`; a send whose request failed after the provider accepted it answers \`{ id, status, incomplete: true }\`.`,
+      headers: z.object({
+        "Idempotency-Replayed": z.string().optional().openapi({
+          description:
+            "`true` when this is the stored answer to an earlier request with the same key.",
+          example: "true",
+        }),
+      }),
+      content: { "application/json": { schema } },
+    },
+  };
+}
 
 /** The `Idempotency-Key` request header, for the send routes' OpenAPI. */
 export const idempotencyKeyHeader = z.object({

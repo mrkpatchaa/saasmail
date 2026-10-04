@@ -17,6 +17,7 @@ import {
   ErrorSchema,
   idempotencyConflictResponses,
   idempotencyKeyHeader,
+  idempotent201Response,
   inboxForbiddenResponse,
   SendPathErrorSchema,
 } from "../lib/openapi-send-errors";
@@ -474,7 +475,7 @@ const sendTemplateRoute = createRoute({
     },
   },
   responses: {
-    ...json201Response(
+    ...idempotent201Response(
       z.object({
         id: z.string().nullable(),
         resendId: z.string().nullable(),

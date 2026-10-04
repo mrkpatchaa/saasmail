@@ -58,7 +58,8 @@ Generate one key per message you intend to send (a UUID) and pass it as the `Ide
 
 - Same key, different message → `422` `IDEMPOTENCY_KEY_REUSED`: you reused a key by mistake; make a new one.
 - Same key while the first attempt is still running → `409` `IDEMPOTENCY_IN_PROGRESS` with `Retry-After: 2`: wait and retry with the same key.
-- A failed request (400, 404, 5xx) releases the key; retrying with it is fine.
+- A request refused before anything was sent (400, 403, 404) releases the key; fix it and retry with the same key.
+- After a 5xx, retry with the same key: if the provider already had the message, you get `{ id, status, incomplete: true }` back instead of a second copy.
 - Keys are per user and kept 24 hours. If you can't set headers, put `idempotencyKey` in the payload JSON.
 
 ### Examples

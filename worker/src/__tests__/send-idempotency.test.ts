@@ -9,6 +9,7 @@ import {
   IdempotencyReusedError,
   type IdempotentResponse,
   idempotencyKeyOf,
+  notifySendAccepted,
   pruneSendIdempotency,
   sendFingerprint,
   withIdempotency,
@@ -185,34 +186,140 @@ describe("withIdempotency", () => {
     expect((await first).body).toEqual({ id: "a" });
   });
 
-  it("lets the same request take over a claim abandoned for 5 minutes", async () => {
+  it("lets any request take over a claim abandoned for 5 minutes", async () => {
     await getDb().run(sql`
       INSERT INTO send_idempotency (user_id, key, fingerprint, status, created_at)
       VALUES (${USER}, 'key-1', 'fp-1', 'pending', ${NOW})
     `);
-    // Not yet stale.
-    await expect(
-      withIdempotency(
-        getDb(),
-        claim("fp-1", NOW + IDEMPOTENCY_STALE_SECONDS - 1),
-        async () => ({ status: 201, body: {} }),
-      ),
-    ).rejects.toBeInstanceOf(IdempotencyInProgressError);
-    // Stale, but a different request may not take it.
-    await expect(
-      withIdempotency(
-        getDb(),
-        claim("fp-2", NOW + IDEMPOTENCY_STALE_SECONDS + 1),
-        async () => ({ status: 201, body: {} }),
-      ),
-    ).rejects.toBeInstanceOf(IdempotencyReusedError);
-    // Stale and the same request: it runs.
+    // Not yet stale: any request, the same or another, waits.
+    for (const fingerprint of ["fp-1", "fp-2"]) {
+      await expect(
+        withIdempotency(
+          getDb(),
+          claim(fingerprint, NOW + IDEMPOTENCY_STALE_SECONDS - 1),
+          async () => ({ status: 201, body: {} }),
+        ),
+      ).rejects.toBeInstanceOf(IdempotencyInProgressError);
+    }
+    // Stale: it never reached the provider (an accepted send is never
+    // pending), so nothing was sent and the key is free again.
     const taken = await withIdempotency(
       getDb(),
-      claim("fp-1", NOW + IDEMPOTENCY_STALE_SECONDS + 1),
+      claim("fp-2", NOW + IDEMPOTENCY_STALE_SECONDS + 1),
       async () => ({ status: 201, body: { id: "retried" } }),
     );
     expect(taken).toMatchObject({ replayed: false, body: { id: "retried" } });
+  });
+
+  it("does not let the original's late answer touch a takeover's claim", async () => {
+    let finishOriginal: () => void = () => {};
+    const original = withIdempotency(
+      getDb(),
+      claim("fp-1", NOW),
+      () =>
+        new Promise<IdempotentResponse>((resolve) => {
+          finishOriginal = () =>
+            resolve({ status: 201, body: { id: "late" }, sentEmailId: "late" });
+        }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Five minutes later another request takes the key over and completes.
+    const takeover = await withIdempotency(
+      getDb(),
+      claim("fp-2", NOW + IDEMPOTENCY_STALE_SECONDS + 1),
+      async () => ({ status: 201, body: { id: "new" }, sentEmailId: "new" }),
+    );
+    expect(takeover.body).toEqual({ id: "new" });
+
+    // Then the original finishes: its completion matches nothing.
+    finishOriginal();
+    await original;
+    const replay = await withIdempotency(
+      getDb(),
+      claim("fp-2", NOW + IDEMPOTENCY_STALE_SECONDS + 2),
+      async () => ({ status: 201, body: { id: "never" } }),
+    );
+    expect(replay).toMatchObject({ replayed: true, body: { id: "new" } });
+  });
+
+  it("never releases a send the provider accepted, even when its request then fails", async () => {
+    await expect(
+      withIdempotency(getDb(), claim(), async () => {
+        await notifySendAccepted({ sentEmailId: "sent-9", outcome: "sent" });
+        throw new Error("D1 hiccup writing sent_emails");
+      }),
+    ).rejects.toThrow("D1 hiccup");
+
+    let ran = false;
+    const retry = await withIdempotency(
+      getDb(),
+      claim("fp-1", NOW + 30),
+      async () => {
+        ran = true;
+        return { status: 201, body: {} };
+      },
+    );
+    expect(ran).toBe(false);
+    expect(retry).toEqual({
+      status: 201,
+      body: { id: "sent-9", status: "sent", incomplete: true },
+      sentEmailId: "sent-9",
+      replayed: true,
+    });
+  });
+
+  it("answers from the acceptance while the request is still finishing", async () => {
+    let finish: () => void = () => {};
+    const first = withIdempotency(getDb(), claim(), async () => {
+      await notifySendAccepted({ sentEmailId: "sent-7", outcome: "retrying" });
+      await new Promise<void>((resolve) => (finish = resolve));
+      return {
+        status: 201,
+        body: { id: "sent-7", status: "retrying", full: true },
+        sentEmailId: "sent-7",
+      };
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Accepted already: a retry is answered, not told to wait.
+    const meanwhile = await withIdempotency(
+      getDb(),
+      claim("fp-1", NOW + 1),
+      async () => ({
+        status: 201,
+        body: {},
+      }),
+    );
+    expect(meanwhile.body).toEqual({
+      id: "sent-7",
+      status: "retrying",
+      incomplete: true,
+    });
+
+    // Once it finishes, the full answer replaces the provisional one.
+    finish();
+    await first;
+    const after = await withIdempotency(
+      getDb(),
+      claim("fp-1", NOW + 2),
+      async () => ({
+        status: 201,
+        body: {},
+      }),
+    );
+    expect(after.body).toEqual({
+      id: "sent-7",
+      status: "retrying",
+      full: true,
+    });
+  });
+
+  it("ignores an acceptance outside a keyed send", async () => {
+    await expect(
+      notifySendAccepted({ sentEmailId: "x", outcome: "sent" }),
+    ).resolves.toBeUndefined();
+    expect(await rows()).toEqual([]);
   });
 
   it("forgets a key after 24 hours", async () => {

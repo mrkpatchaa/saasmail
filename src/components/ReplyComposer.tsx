@@ -253,8 +253,10 @@ export default function ReplyComposer({
       .finally(() => setTemplatesLoading(false));
   }, [tab, templates.length]);
 
-  // One key per reply: every attempt sends it, a sent reply forgets it.
+  // One key per reply: every attempt sends it; sending it or closing the
+  // composer forgets it. (A reload closes nothing, so a retry keeps it.)
   const sendContext = `send:reply:${emailId}`;
+  useEffect(() => () => forgetSendKey(sendContext), [sendContext]);
 
   async function handleSend() {
     setSending(true);

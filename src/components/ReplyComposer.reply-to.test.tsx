@@ -176,6 +176,9 @@ describe("ReplyComposer and Reply-To", () => {
     expect(attempt).toMatch(/^[0-9a-f-]{36}$/);
     expect(retry).toBe(attempt);
     first.unmount();
+    expect(
+      sessionStorage.getItem("saasmail:send-key:send:reply:email-1"),
+    ).toBeNull();
 
     // The next reply to the same message is a new message: a new key.
     renderComposer();
@@ -183,6 +186,26 @@ describe("ReplyComposer and Reply-To", () => {
     fireEvent.click(screen.getByTestId("reply-send-button"));
     await waitFor(() => expect(api.replyToEmail).toHaveBeenCalledTimes(3));
     expect(api.replyToEmail.mock.calls[2][1].idempotencyKey).not.toBe(attempt);
+  });
+
+  it("forgets the key of a reply that was closed without sending", async () => {
+    sessionStorage.clear();
+    api.fetchEmail.mockResolvedValue(original);
+    api.replyToEmail.mockRejectedValueOnce(new Error("network timeout"));
+    const view = renderComposer();
+    await screen.findByText("Replying to");
+    fireEvent.click(screen.getByTestId("reply-send-button"));
+    await screen.findByText("Failed to send reply");
+    const abandoned = api.replyToEmail.mock.calls[0][1].idempotencyKey;
+    expect(sessionStorage.getItem("saasmail:send-key:send:reply:email-1")).toBe(
+      abandoned,
+    );
+
+    // Closing the composer ends that message; a later reply is a new one.
+    view.unmount();
+    expect(
+      sessionStorage.getItem("saasmail:send-key:send:reply:email-1"),
+    ).toBeNull();
   });
 
   it("asks for the sender when the original could not be loaded", async () => {

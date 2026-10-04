@@ -1,5 +1,5 @@
 import { forgetSendKey, sendKeyFor, sendKeyProblem } from "@/lib/send-key";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { PenSquare, Send, X } from "lucide-react";
 import TiptapEditor from "@/components/TiptapEditor";
@@ -186,6 +186,14 @@ export default function ComposeModal({
   });
 
   const sendContext = `send:${contextKey}`;
+  // Closing the window ends this message: the next one gets a new key. Only
+  // a close does: after a reload the window starts closed, and a retry from
+  // the restored draft must keep the key.
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (wasOpen.current && !open) forgetSendKey(sendContext);
+    wasOpen.current = open;
+  }, [open, sendContext]);
 
   async function handleSend() {
     if (!to || bodyIsEmpty) return;
