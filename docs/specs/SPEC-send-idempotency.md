@@ -1,6 +1,6 @@
 # SPEC: Idempotency keys for sends
 
-Stage 9 (trust and safety), slice 3 of 5. Depends on `SPEC-audit-log.md` (emits nothing new, but
+Stage 9 (trust and safety), slice 3 of 5. Depends on `docs/archive/SPEC-audit-log.md` (emits nothing new, but
 replays must not emit `mail.sent` twice). Label `minor`.
 
 ## Why
