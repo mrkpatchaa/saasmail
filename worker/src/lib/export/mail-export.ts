@@ -2,7 +2,6 @@ import { and, eq, isNull, lt, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { asyncJobs, type AsyncJob } from "../../db/async-jobs.schema";
-export { PART_BYTES };
 import { mailboxes } from "../../db/mailboxes.schema";
 import { AUDIT_ACTIONS } from "../audit/events";
 import { recordAudit } from "../audit/record";
@@ -32,6 +31,8 @@ import {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
+
+export { PART_BYTES };
 
 /** A queued slice of a mailbox export: the slice the job is waiting for. */
 export type MailExportMessage = {
