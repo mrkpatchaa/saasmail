@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { senderIdentities } from "../../db/sender-identities.schema";
@@ -62,11 +62,52 @@ export async function threadKeyOf(
 }
 
 /**
+ * The thread of the first message `citedIds` names (nearest first) that is
+ * in the inbox and has a thread: as received mail, as sent mail, or as a JMAP
+ * send by its content's own Message-ID (the provider may have delivered it
+ * under another). A scalar subquery, NULL when none is; the ids are bound as
+ * one JSON value per arm.
+ */
+export function citedThreadKeySql(
+  inbox: string,
+  citedIds: string[],
+): SQL<string | null> {
+  const cited = citedIds.slice(0, MAX_CITED).map(bareMessageId);
+  if (cited.length === 0) return sql<null>`NULL`;
+  const json = JSON.stringify(cited);
+  const box = inbox.trim().toLowerCase();
+  return sql<string | null>`(SELECT thread_key FROM (
+      SELECT c.key AS pos, e.thread_key AS thread_key
+      FROM json_each(${json}) c
+      JOIN emails e
+        ON e.message_id IN (c.value, '<' || c.value || '>')
+       AND e.recipient = ${box}
+      WHERE e.thread_key IS NOT NULL
+      UNION ALL
+      SELECT c.key AS pos, se.thread_key AS thread_key
+      FROM json_each(${json}) c
+      JOIN sent_emails se
+        ON se.message_id IN (c.value, '<' || c.value || '>')
+       AND se.from_address = ${box}
+      WHERE se.thread_key IS NOT NULL
+      UNION ALL
+      SELECT c.key AS pos, se.thread_key AS thread_key
+      FROM json_each(${json}) c
+      JOIN jmap_message_content jc ON jc.message_id = c.value
+      JOIN sent_emails se
+        ON se.jmap_content_id = jc.id
+       AND se.from_address = ${box}
+      WHERE se.thread_key IS NOT NULL
+    )
+    ORDER BY pos
+    LIMIT 1)`;
+}
+
+/**
  * The thread a message belongs to in a `headers` inbox: the thread of the
- * first message it cites (nearest first) that is in the inbox already, as
- * received mail, as sent mail or as a JMAP send (by the content's own
- * Message-ID); else a new thread rooted at its own Message-ID. One
- * statement, the cited ids bound as one JSON value. No subject matching.
+ * first message it cites that is in the inbox already (`citedThreadKeySql`);
+ * else a new thread rooted at its own Message-ID. One statement. No subject
+ * matching.
  */
 export async function resolveThreadKey(
   db: Db,
@@ -76,39 +117,11 @@ export async function resolveThreadKey(
     citedIds: string[];
   },
 ): Promise<string> {
-  const cited = input.citedIds.slice(0, MAX_CITED).map(bareMessageId);
-  if (cited.length > 0) {
-    const inbox = input.inbox.trim().toLowerCase();
-    const json = JSON.stringify(cited);
-    const [found] = await db.all<{ thread_key: string }>(sql`
-      WITH cited(pos, id) AS (SELECT key, value FROM json_each(${json}))
-      SELECT thread_key FROM (
-        SELECT c.pos AS pos, e.thread_key AS thread_key
-        FROM cited c
-        JOIN emails e
-          ON e.message_id IN (c.id, '<' || c.id || '>')
-         AND e.recipient = ${inbox}
-        WHERE e.thread_key IS NOT NULL
-        UNION ALL
-        SELECT c.pos AS pos, se.thread_key AS thread_key
-        FROM cited c
-        JOIN sent_emails se
-          ON se.message_id IN (c.id, '<' || c.id || '>')
-         AND se.from_address = ${inbox}
-        WHERE se.thread_key IS NOT NULL
-        UNION ALL
-        SELECT c.pos AS pos, se.thread_key AS thread_key
-        FROM cited c
-        JOIN jmap_message_content jc ON jc.message_id = c.id
-        JOIN sent_emails se
-          ON se.jmap_content_id = jc.id
-         AND se.from_address = ${inbox}
-        WHERE se.thread_key IS NOT NULL
-      )
-      ORDER BY pos
-      LIMIT 1
-    `);
-    if (found) return found.thread_key;
+  if (input.citedIds.length > 0) {
+    const [found] = await db.all<{ thread_key: string | null }>(
+      sql`SELECT ${citedThreadKeySql(input.inbox, input.citedIds)} AS thread_key`,
+    );
+    if (found?.thread_key) return found.thread_key;
   }
   return threadKeyOf(input.messageId);
 }
