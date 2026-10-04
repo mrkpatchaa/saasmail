@@ -61,6 +61,12 @@ export function useRealtimeUpdates(
               inbox: typeof data.inbox === "string" ? data.inbox : undefined,
             });
             promptRef.current?.();
+          } else if (data.type === "mail_refresh") {
+            // Mail changed out of band (the AI filed it): reload, as for new
+            // mail, without announcing anything.
+            callbackRef.current({
+              inbox: typeof data.inbox === "string" ? data.inbox : undefined,
+            });
           } else if (
             data.type === "suggested_reply" &&
             typeof data.inbox === "string" &&

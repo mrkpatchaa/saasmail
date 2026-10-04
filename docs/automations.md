@@ -34,7 +34,8 @@ Supported conditions:
 - `header`: a header `name` plus `equals` or `contains`
 
 Supported actions are `archive`, `mark_spam`, `move_to_folder`,
-`snooze`, `assign`, `auto_reply` and `reject` ([below](#rejecting-mail)).
+`snooze`, `assign`, `auto_reply`, `ai_file` ([AI filing](#ai-filing)) and
+`reject` ([below](#rejecting-mail)).
 Snooze accepts 1–720 hours. Folder
 moves require an inbox-scoped rule and a folder in that same inbox. Assignment
 also requires an inbox-scoped rule, and the assignee must have access to that
@@ -50,6 +51,41 @@ Mail auto-filed to Junk by the inbox spam threshold runs no rule actions. A
 before the threshold. If a rule itself marks a message as spam, the message follows
 the same silent path: it does not wake a snoozed conversation and does not
 fan out realtime or push notifications.
+
+## AI filing
+
+An `ai_file` action lets a model file the message into the inbox's custom
+folders that have a description ("What belongs here?", set on the folder in
+Mail; see [Mailbox state](mailbox-state.md#manage-custom-mailboxes)). Folders
+already behave like labels: a message filed into one stays in Inbox unless it
+is archived.
+
+```json
+{ "type": "ai_file", "archiveWhenFiled": true }
+```
+
+- It needs an inbox-scoped rule, at most one `ai_file` per rule, and at least
+  one described folder in that inbox when the rule is saved
+  (`400 NO_AI_FOLDERS`).
+- It runs in the background (a queue job), a few seconds after the message
+  arrives; the mail list refreshes in open tabs when it lands. The inbound
+  handler never waits on a model. Later rules therefore cannot act on the
+  folders it chooses.
+- The model sees the sender, subject, the first 4,000 characters of the body
+  (without the quoted reply) and the attachments' names, as quoted data it is
+  told never to obey, and the folders' names and descriptions. It may answer
+  with ids from that list only (at most five); anything else is ignored, and an
+  error changes nothing (a failed call is retried by the queue). The worst a
+  hostile message can do is land in the wrong folder.
+- With `archiveWhenFiled`, a message it filed is also archived (it skips the
+  inbox); one it filed nowhere stays where it is.
+- It uses the agent's provider; `TRIAGE_MODEL` picks a different model for
+  filing ([Native mail agent](agent.md#triage_model)). With no model
+  configured the action does nothing. Filing writes no audit row; the rule's
+  match count records it.
+
+People can also ask for it: **File with AI** in Mail files the selected
+received messages (at most 50) the same way, without archiving.
 
 ## Rejecting mail
 
