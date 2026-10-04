@@ -1,7 +1,7 @@
 # SPEC: AI filing into folders (auto-labels)
 
 Stage 10 (triage), slice 2 of 3. Depends on `docs/archive/SPEC-audit-log.md` only for the manual action's audit row;
-independent of `SPEC-reject-inbound.md`. Label `minor`.
+independent of `docs/archive/SPEC-reject-inbound.md`. Label `minor`.
 
 ## Why
 
