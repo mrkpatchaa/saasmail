@@ -1,3 +1,4 @@
+import { citedIdsOf, threadKeyForNewMessage } from "./messages/thread-key";
 import { currentAuditActor } from "./audit/context";
 import { HUMAN_ACTORS, trainMessages } from "./spam/filter";
 import { auditMailSent } from "./audit/mail-events";
@@ -269,6 +270,12 @@ export async function sendEmail(
     recordedTo,
     (cc ?? []).map((c) => c.email),
   );
+  const storedMessageId = deliveredMessageId(messageId, sendResult.result);
+  // A new message starts its own thread in a headers-mode inbox.
+  const threadKey = await threadKeyForNewMessage(db, {
+    inbox: fromAddress,
+    messageId: storedMessageId,
+  });
 
   await db.insert(sentEmails).values({
     id,
@@ -278,11 +285,12 @@ export async function sendEmail(
     subject,
     bodyHtml: sendResult.renderedHtml ?? bodyHtml,
     bodyText: sendResult.renderedText ?? bodyText ?? null,
-    messageId: deliveredMessageId(messageId, sendResult.result),
+    messageId: storedMessageId,
     resendId: sendResult.result?.id ?? null,
     status: outcome,
     cc: cc && cc.length > 0 ? JSON.stringify(cc) : null,
     conversationId,
+    threadKey,
     sentAt: now,
     createdAt: now,
   });
@@ -553,6 +561,14 @@ export async function replyToEmail(
     threadCc,
   );
 
+  // In a headers-mode inbox, a reply joins the thread of what it answers.
+  const storedReplyId = deliveredMessageId(messageId, sendResult.result);
+  const replyThreadKey = await threadKeyForNewMessage(db, {
+    inbox: fromAddress,
+    messageId: storedReplyId,
+    citedIds: citedIdsOf(origInReplyToMessageId, null),
+  });
+
   // Store sent email
   await db.insert(sentEmails).values({
     id,
@@ -563,11 +579,12 @@ export async function replyToEmail(
     bodyHtml: finalBodyHtml,
     bodyText: bodyText ?? null,
     inReplyTo: origInReplyToMessageId,
-    messageId: deliveredMessageId(messageId, sendResult.result),
+    messageId: storedReplyId,
     resendId: sendResult.result?.id ?? null,
     status: outcome,
     cc: cc && cc.length > 0 ? JSON.stringify(cc) : null,
     conversationId: conversationIdReply,
+    threadKey: replyThreadKey,
     sentAt: now,
     createdAt: now,
   });

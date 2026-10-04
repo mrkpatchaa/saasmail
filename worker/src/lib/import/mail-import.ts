@@ -707,9 +707,15 @@ async function importSlice(
   }
 
   const identities = await db
-    .select({ email: senderIdentities.email })
+    .select({
+      email: senderIdentities.email,
+      threadingMode: senderIdentities.threadingMode,
+    })
     .from(senderIdentities);
   const ourDomains = domainsOf(identities.map((row) => row.email));
+  const threadingMode =
+    identities.find((row) => row.email.toLowerCase() === params.inbox)
+      ?.threadingMode ?? "relationship";
   let processed = 0;
   let imported = 0;
   let skipped = 0;
@@ -802,6 +808,7 @@ async function importSlice(
         now: nowSeconds,
         ourDomains,
         importJobId: job.id,
+        threadingMode,
       });
       if (!stored) {
         skipped++;
@@ -820,6 +827,7 @@ async function importSlice(
         source: "import",
         ourDomains,
         importJobId: job.id,
+        threadingMode,
       });
       ref = { kind: "received", id: stored.emailId };
       dropped = stored.droppedAttachments;
