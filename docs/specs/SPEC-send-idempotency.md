@@ -106,3 +106,30 @@ tool sends through `api.ts`, it inherits the header).
   (`.claude/skills/use-saasmail/SKILL.md`): the header, the semantics, an example. `docs/mcp.md`: the
   input on the three tools.
 - CHANGELOG `### Added`: **Idempotency keys for sends.** …
+
+## Spec changes (2026-10-04, while implementing)
+
+The five decisions are unchanged. Where the code differed from what the sections assumed, or a detail
+was left open:
+
+1. **The web keeps the key in `sessionStorage`, per compose context**, not "with the autosaved draft":
+   the `drafts` table has no column for it, the autosave is debounced (a key written with it could be
+   missing at the reload it is meant for), and a retry happens in one tab. `sessionStorage` is written
+   when the key is created and survives a reload of that tab. No schema change.
+2. **No WebMCP tool sends mail** (they save drafts and drive the UI), so none needs the header.
+3. **The chat view's quick reply sends a key too**: it is a web send path the section did not list.
+4. **"Success" is a 2xx answer.** A reply or template send that is refused (400 missing body or
+   variables, 404 not found) is answered, not stored, and releases the key, like a thrown error:
+   decision 4's "a request that fails releases the key".
+5. **One upsert claims the key**: a free key, an expired one (older than 24 hours, so a key is reusable
+   after its window even before the prune runs), or the same request's claim abandoned for 5 minutes.
+   The stale takeover therefore also requires the same fingerprint; another request on a stale key is
+   `IDEMPOTENCY_KEY_REUSED`. Release and completion touch only the claim they made.
+6. **The prune takes up to ten batches of 1,000 per hourly pass**, as the audit log's does: one batch an
+   hour would fall behind an instance that sends more than 24,000 keyed messages a day.
+7. **The web turns the two refusals into words**: a reused key means an earlier attempt from that window
+   went out without the window learning it, so the user is told to check Sent and the key is replaced;
+   an in-progress key asks them to wait. API errors now carry the server's `status` and `code`.
+8. **The fingerprint normalises addresses** (trimmed, lowercased) the way the send path does, and leaves
+   the key itself out. HTTP and MCP share the field builder (`sendRequestFields`).
+9. **CORS exposes `Idempotency-Replayed` and `Retry-After`**, so a browser client can read them.
