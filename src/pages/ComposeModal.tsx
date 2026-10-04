@@ -1,3 +1,4 @@
+import { forgetSendKey, sendKeyFor, sendKeyProblem } from "@/lib/send-key";
 import { useState, useEffect, useMemo } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { PenSquare, Send, X } from "lucide-react";
@@ -184,6 +185,8 @@ export default function ComposeModal({
     },
   });
 
+  const sendContext = `send:${contextKey}`;
+
   async function handleSend() {
     if (!to || bodyIsEmpty) return;
     setSending(true);
@@ -205,14 +208,20 @@ export default function ComposeModal({
         bodyHtml: finalBody,
         ...(bodyText.trim() ? { bodyText } : {}),
         ...(files.length > 0 ? { files: files.map((file) => ({ file })) } : {}),
+        // Every attempt of this message carries the same key, so a retry
+        // after a timeout can't send it twice.
+        idempotencyKey: sendKeyFor(sendContext),
       });
+      forgetSendKey(sendContext);
       dispatchEmailSent({ fromAddress, to, origin: "compose" });
       // The message went out — discard its draft so it doesn't reappear.
       clearDraft();
       setFiles([]);
       onClose();
-    } catch {
-      setError("Failed to send email");
+    } catch (sendError) {
+      setError(
+        sendKeyProblem(sendError, sendContext) ?? "Failed to send email",
+      );
     } finally {
       setSending(false);
     }

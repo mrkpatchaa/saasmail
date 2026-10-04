@@ -1,3 +1,4 @@
+import { forgetSendKey, sendKeyFor, sendKeyProblem } from "@/lib/send-key";
 import { useState, useRef, useEffect } from "react";
 import { Maximize2 } from "lucide-react";
 import {
@@ -131,10 +132,17 @@ export default function ChatQuickReply({
   const canSend = text.trim().length > 0 && !sending && !overCap;
   const followsReplyTo = replyRecipients.length > 0 && !replyToSender;
 
+  // One key per message typed here: every attempt sends it, a sent message
+  // forgets it.
+  const sendContext = latestReceivedEmailId
+    ? `send:quick-reply:${latestReceivedEmailId}`
+    : `send:quick:${inboxAddress}:${personEmail}`;
+
   async function handleSend() {
     if (!canSend) return;
     setSending(true);
     setError(null);
+    const idempotencyKey = sendKeyFor(sendContext);
     try {
       if (latestReceivedEmailId) {
         // Default to reply-all semantics for the chat bubble: carry the
@@ -152,6 +160,7 @@ export default function ChatQuickReply({
           // Always the target this box showed: with no hint on screen the
           // reply goes to the sender, never to a Reply-To the user didn't see.
           recipient: followsReplyTo ? "reply_to" : "sender",
+          idempotencyKey,
         });
       } else {
         await sendEmail({
@@ -163,8 +172,10 @@ export default function ChatQuickReply({
           ...(files.length > 0
             ? { files: files.map((file) => ({ file })) }
             : {}),
+          idempotencyKey,
         });
       }
+      forgetSendKey(sendContext);
       // The reply went out — discard any saved draft for it so it doesn't
       // reappear in this box (or the Drafts filter) next time.
       if (latestReceivedEmailId) {
@@ -180,7 +191,7 @@ export default function ChatQuickReply({
       setFiles([]);
       onSent();
     } catch (e) {
-      setError("Failed to send message");
+      setError(sendKeyProblem(e, sendContext) ?? "Failed to send message");
       console.error(e);
     } finally {
       setSending(false);

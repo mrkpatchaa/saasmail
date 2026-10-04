@@ -78,6 +78,31 @@ describe("ChatQuickReply and Reply-To", () => {
     );
   });
 
+  it("tells the user when an earlier attempt already went out", async () => {
+    sessionStorage.clear();
+    api.replyToEmail.mockRejectedValueOnce(
+      Object.assign(new Error("used"), { code: "IDEMPOTENCY_KEY_REUSED" }),
+    );
+    renderReply();
+    fireEvent.change(screen.getByPlaceholderText("Type a reply…"), {
+      target: { value: "hello again" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(
+      await screen.findByText(
+        "An earlier attempt from this window was already sent. Check Sent before sending again.",
+      ),
+    ).toBeTruthy();
+
+    // Sending again uses a new key, so the message as it is now goes out.
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(api.replyToEmail).toHaveBeenCalledTimes(2));
+    const [before, after] = api.replyToEmail.mock.calls.map(
+      (call) => call[1].idempotencyKey,
+    );
+    expect(after).not.toBe(before);
+  });
+
   it('sends recipient: "sender" once the toggle is on', async () => {
     renderReply([{ email: "help@acme.com" }]);
     fireEvent.click(screen.getByLabelText("Reply to the sender instead"));

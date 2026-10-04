@@ -1,3 +1,4 @@
+import { forgetSendKey, sendKeyFor, sendKeyProblem } from "@/lib/send-key";
 import { useState, useEffect, useMemo, useRef } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import {
@@ -252,10 +253,14 @@ export default function ReplyComposer({
       .finally(() => setTemplatesLoading(false));
   }, [tab, templates.length]);
 
+  // One key per reply: every attempt sends it, a sent reply forgets it.
+  const sendContext = `send:reply:${emailId}`;
+
   async function handleSend() {
     setSending(true);
     setError("");
     const ccPayload = cc.length > 0 ? cc : undefined;
+    const idempotencyKey = sendKeyFor(sendContext);
     try {
       if (tab === "freeform") {
         // Wrap the signature in a marker div so the chat-feed "hide
@@ -274,6 +279,7 @@ export default function ReplyComposer({
             ? { files: files.map((file) => ({ file })) }
             : {}),
           ...recipientPayload,
+          idempotencyKey,
         });
       } else {
         if (!selectedSlug) {
@@ -290,8 +296,10 @@ export default function ReplyComposer({
             ? { files: files.map((file) => ({ file })) }
             : {}),
           ...recipientPayload,
+          idempotencyKey,
         });
       }
+      forgetSendKey(sendContext);
       setFiles([]);
       // The reply went out — discard its draft so it doesn't reappear.
       clearDraft();
@@ -305,8 +313,10 @@ export default function ReplyComposer({
       });
       onSent();
       onClose();
-    } catch {
-      setError("Failed to send reply");
+    } catch (sendError) {
+      setError(
+        sendKeyProblem(sendError, sendContext) ?? "Failed to send reply",
+      );
     } finally {
       setSending(false);
     }
