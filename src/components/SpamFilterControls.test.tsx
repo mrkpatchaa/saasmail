@@ -99,6 +99,19 @@ describe("SpamFilterControls", () => {
     expect(screen.getByText("Junk rule in place")).toBeTruthy();
   });
 
+  it("shows Off for an inbox created in this session, with no status yet", () => {
+    render(
+      <MemoryRouter>
+        <SpamFilterControls
+          inbox={{ ...inbox({}), spamFilter: undefined }}
+          hasJunkRule={false}
+          onChange={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("spam-filter-status").textContent).toBe("Off");
+  });
+
   it("resets after a confirmation", async () => {
     api.resetSpamFilter.mockResolvedValue({
       enabled: true,

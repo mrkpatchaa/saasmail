@@ -20,7 +20,13 @@ export default function SpamFilterControls({
   hasJunkRule: boolean;
   onChange: (filter: SpamFilterStatus) => void;
 }) {
-  const filter = inbox.spamFilter;
+  // An inbox created in this session has no status from the server yet.
+  const filter = inbox.spamFilter ?? {
+    enabled: false,
+    spamMessages: 0,
+    hamMessages: 0,
+    ready: false,
+  };
   const [busy, setBusy] = useState(false);
 
   async function run(action: () => Promise<SpamFilterStatus>, failure: string) {
