@@ -151,6 +151,9 @@ export async function handleQueueBatch(
   const db = createDb(env);
   const sender = createEmailSender(env);
   const suggestedReplyRunner = overrides.runSuggestedReply ?? runSuggestedReply;
+  // An export slice makes a few hundred reads; one per batch keeps the
+  // invocation well inside its subrequest budget.
+  let exportSliceRan = false;
 
   for (const msg of batch.messages) {
     const kind = classifyQueueMessage(msg.body);
@@ -190,8 +193,15 @@ export async function handleQueueBatch(
         // A model error throws, and the message is retried.
         await fileWithAi(db, env, msg.body as AiFileMessage);
       } else if (kind === "mail_export") {
-        // One slice; it says which comes next.
         const body = msg.body as MailExportMessage;
+        if (exportSliceRan) {
+          // Back on the queue as a new message: no attempt is used up.
+          await env.EMAIL_QUEUE.send(body);
+          msg.ack();
+          continue;
+        }
+        exportSliceRan = true;
+        // One slice; it says which comes next.
         const next = await runMailExportSlice(db, env, body.jobId, body.slice);
         if (next !== null) {
           const message: MailExportMessage = {
@@ -226,7 +236,8 @@ export async function handleQueueBatch(
     } catch (err) {
       if (kind === "mail_export" && err instanceof ExportSliceBusyError) {
         // Another run holds the slice; it queues the next one itself. Come
-        // back once its claim has run out, in case it died.
+        // back once its claim has run out, in case it died (if this message
+        // runs out of attempts, the hourly run queues the export again).
         msg.retry({ delaySeconds: 150 });
       } else if (
         kind === "mail_export" &&

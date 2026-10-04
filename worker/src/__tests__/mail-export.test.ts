@@ -17,6 +17,7 @@ import {
   ExportRunningError,
   ExportSliceBusyError,
   PART_BYTES,
+  deleteMailExport,
   exportParams,
   reapMailExports,
   runMailExportSlice,
@@ -198,7 +199,7 @@ describe("renderMessageBytes", () => {
     expect(text).toContain("Date: Mon, 21 Sep 2026 14:13:20 +0000\r\n");
     expect(text).toContain(`From: ${INBOX}\r\n`);
     expect(text).toContain("To: alice@example.com\r\n");
-    expect(text).toContain('Cc: "Carol" <carol@example.com>\r\n');
+    expect(text).toContain("Cc: Carol <carol@example.com>\r\n");
     expect(text).toContain("Subject: Your invoice\r\n");
     expect(text).toContain("Message-ID: <s1@saasmail.test>\r\n");
     expect(text).toContain("X-Saasmail-Reconstructed: yes\r\n");
@@ -240,7 +241,33 @@ describe("renderMessageBytes", () => {
     });
     const text = decoder.decode((await rendered("received", "e1")).bytes);
     expect(text).not.toMatch(/\r\n(Bcc|X-Injected):/);
-    expect(text).toContain("Subject: =?UTF-8?B?");
+    expect(text).toContain("Subject: Hi Bcc: victim@example.com\r\n");
+  });
+
+  it("folds long headers", async () => {
+    const references = Array.from(
+      { length: 80 },
+      (_, i) => `<thread-${i}@example.com>`,
+    ).join(" ");
+    await createTestEmail({
+      id: "e1",
+      personId: "p1",
+      recipient: INBOX,
+      messageId: "<e1@example.com>",
+      referencesHeader: references,
+      subject: "Ünïcödé ".repeat(20),
+    });
+    const text = decoder.decode((await rendered("received", "e1")).bytes);
+    expect(text).toContain(
+      "References: <thread-0@example.com>\r\n <thread-1@example.com>\r\n",
+    );
+    for (const line of text.split("\r\n")) {
+      expect(line.length).toBeLessThanOrEqual(998);
+    }
+    // RFC 2047: encoded words of at most 75 characters, one per line.
+    const words = text.match(/=\?UTF-8\?B\?[^?]*\?=/g) ?? [];
+    expect(words.length).toBeGreaterThan(1);
+    for (const word of words) expect(word.length).toBeLessThanOrEqual(75);
   });
 
   it("rebuilds older received mail with its stored headers", async () => {
@@ -415,7 +442,9 @@ describe("the export job", () => {
       });
     }
     const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
-    expect(await runAll(job.id)).toBe(2);
+    // 4.2 MiB entries: two rendering slices (the second carries 3.4 MiB
+    // in), then the completion.
+    expect(await runAll(job.id)).toBe(3);
 
     const done = await jobRow(job.id);
     const params = exportParams(done);
@@ -550,35 +579,213 @@ describe("the export job", () => {
     ).rejects.toBeInstanceOf(ExportRunningError);
   });
 
-  it("expires week-old files and fails exports that stopped", async () => {
+  it("expires week-old files, with everything under them", async () => {
     const now = Math.floor(Date.now() / 1000);
     await bulkReceived(2);
     const old = await startMailExport(getDb(), env, { inbox: INBOX, userId });
     await runAll(old.id);
+    await env.R2.put(`exports/${old.id}/pending-left`, "x");
     await getDb()
       .update(asyncJobs)
       .set({ updatedAt: now - 8 * 24 * 60 * 60 })
       .where(eq(asyncJobs.id, old.id));
-    const stuck = await startMailExport(getDb(), env, {
+    const fresh = await startMailExport(getDb(), env, {
       inbox: "other@saasmail.test",
       userId,
     });
-    await getDb()
-      .update(asyncJobs)
-      .set({ updatedAt: now - 25 * 60 * 60 })
-      .where(eq(asyncJobs.id, stuck.id));
-    const fresh = await startMailExport(getDb(), env, { inbox: INBOX, userId });
     await runAll(fresh.id);
 
     expect(await reapMailExports(getDb(), env, now)).toEqual({
       expired: 1,
-      failed: 1,
+      resumed: 0,
+      failed: 0,
     });
     expect((await jobRow(old.id)).status).toBe("expired");
-    expect(await env.R2.head(old.storageKey!)).toBeNull();
-    expect((await jobRow(stuck.id)).status).toBe("failed");
+    expect(
+      (await env.R2.list({ prefix: `exports/${old.id}/` })).objects,
+    ).toEqual([]);
     expect((await jobRow(fresh.id)).status).toBe("completed");
     expect(await env.R2.head(fresh.storageKey!)).not.toBeNull();
+  });
+
+  it("queues an export that stopped moving again, then fails it", async () => {
+    const queue = (env as any).EMAIL_QUEUE;
+    const sent: unknown[] = [];
+    (env as any).EMAIL_QUEUE = {
+      send: async (body: unknown) => void sent.push(body),
+    };
+    try {
+      const now = Math.floor(Date.now() / 1000);
+      await bulkReceived(2);
+      const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
+      const idle = (params: Partial<ReturnType<typeof exportParams>>) =>
+        getDb()
+          .update(asyncJobs)
+          .set({
+            updatedAt: now - 20 * 60,
+            params: JSON.stringify({
+              ...exportParams(job),
+              ...params,
+            }),
+          })
+          .where(eq(asyncJobs.id, job.id));
+
+      // A run still holding its claim is left alone.
+      await idle({ lease: "live", leaseUntil: now * 1000 + 60_000 });
+      expect(await reapMailExports(getDb(), env, now)).toMatchObject({
+        resumed: 0,
+      });
+
+      await idle({ lease: "dead", leaseUntil: now * 1000 - 1 });
+      expect(await reapMailExports(getDb(), env, now)).toMatchObject({
+        resumed: 1,
+        failed: 0,
+      });
+      expect(sent).toEqual([{ type: "mail_export", jobId: job.id, slice: 0 }]);
+      const resumed = await jobRow(job.id);
+      expect(resumed.status).toBe("running");
+      expect(exportParams(resumed)).toMatchObject({
+        recoveries: 1,
+        lease: null,
+      });
+      // The queued slice runs.
+      expect(await runMailExportSlice(getDb(), env, job.id, 0)).toBe(1);
+
+      // The fourth time it stalls, it has failed.
+      await env.R2.put(`exports/${job.id}/pending-left`, "x");
+      await idle({ recoveries: 3 });
+      expect(await reapMailExports(getDb(), env, now)).toMatchObject({
+        resumed: 0,
+        failed: 1,
+      });
+      expect((await jobRow(job.id)).status).toBe("failed");
+      expect(
+        (await env.R2.list({ prefix: `exports/${job.id}/` })).objects,
+      ).toEqual([]);
+    } finally {
+      (env as any).EMAIL_QUEUE = queue;
+    }
+  });
+
+  describe("across slices", () => {
+    /** Four messages with 2 MiB attachments: about 2.7 MiB of mbox each. */
+    beforeEach(async () => {
+      const blob = new Uint8Array(2 * 1024 * 1024);
+      for (let i = 0; i < blob.length; i++) blob[i] = (i * 7) % 256;
+      await env.R2.put("att/two.bin", blob);
+      for (const n of [1, 2, 3, 4]) {
+        await createTestEmail({
+          id: `big-${n}`,
+          personId: "p1",
+          recipient: INBOX,
+          subject: `Big ${n}`,
+          messageId: `<big-${n}@example.com>`,
+        });
+        await createTestAttachment({
+          id: `att-${n}`,
+          emailId: `big-${n}`,
+          filename: "two.bin",
+          contentType: "application/octet-stream",
+          size: blob.length,
+          r2Key: "att/two.bin",
+        });
+      }
+    });
+
+    async function checkFile(jobId: string) {
+      const done = await jobRow(jobId);
+      expect(done.status).toBe("completed");
+      const object = await env.R2.get(done.storageKey!);
+      const mbox = await object!.text();
+      expect(object!.size).toBe(exportParams(done).bytes);
+      expect([...mbox.matchAll(/^Subject: (.*)$/gm)].map((m) => m[1])).toEqual([
+        "Big 1",
+        "Big 2",
+        "Big 3",
+        "Big 4",
+      ]);
+      expect(separators(mbox)).toHaveLength(4);
+      const listed = await env.R2.list({ prefix: `exports/${jobId}/` });
+      expect(listed.objects.map((o) => o.key)).toEqual([done.storageKey]);
+    }
+
+    it("carries bytes short of a part into the next slice", async () => {
+      const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
+      // Slice 0 stops after the message passing 8 MiB, with one part up and
+      // 3.2 MiB carried; slice 1 fills a second part and carries the rest,
+      // which completion uploads as the last part.
+      expect(await runMailExportSlice(getDb(), env, job.id, 0)).toBe(1);
+      const afterFirst = exportParams(await jobRow(job.id));
+      expect(afterFirst.parts).toHaveLength(1);
+      expect(afterFirst.pendingKey).not.toBeNull();
+      expect((await jobRow(job.id)).processedRows).toBe(3);
+      expect(await runMailExportSlice(getDb(), env, job.id, 1)).toBe(2);
+      expect(exportParams(await jobRow(job.id)).parts).toHaveLength(2);
+      expect(await env.R2.head(afterFirst.pendingKey!)).toBeNull();
+      expect(await runMailExportSlice(getDb(), env, job.id, 2)).toBeNull();
+      await checkFile(job.id);
+    });
+
+    it("re-uploads a part after a slice failed past it", async () => {
+      const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
+      expect(await runMailExportSlice(getDb(), env, job.id, 0)).toBe(1);
+      // Slice 1 dies after uploading part 2, before committing.
+      let calls = 0;
+      const failing = () => {
+        if (++calls === 3) throw new Error("worker died");
+        return Date.now();
+      };
+      await expect(
+        runMailExportSlice(getDb(), env, job.id, 1, failing),
+      ).rejects.toThrow("worker died");
+      expect(exportParams(await jobRow(job.id)).parts).toHaveLength(1);
+
+      expect(await runMailExportSlice(getDb(), env, job.id, 1)).toBe(2);
+      expect(await runMailExportSlice(getDb(), env, job.id, 2)).toBeNull();
+      await checkFile(job.id);
+    });
+
+    it("leaves nothing behind when cancelled between slices", async () => {
+      const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
+      expect(await runMailExportSlice(getDb(), env, job.id, 0)).toBe(1);
+      await deleteMailExport(getDb(), env, await jobRow(job.id));
+      expect(await runMailExportSlice(getDb(), env, job.id, 1)).toBeNull();
+      expect(
+        (await env.R2.list({ prefix: `exports/${job.id}/` })).objects,
+      ).toEqual([]);
+    });
+  });
+
+  it("keeps Reply-To in rebuilt messages", async () => {
+    await createTestEmail({
+      id: "e1",
+      personId: "p1",
+      recipient: INBOX,
+      messageId: "<e1@x>",
+      replyTo: JSON.stringify([{ email: "billing@other.example", name: null }]),
+    });
+    const job = await startMailExport(getDb(), env, { inbox: INBOX, userId });
+    await runAll(job.id);
+    expect(await exportedText(job.id)).toContain(
+      "Reply-To: billing@other.example\n",
+    );
+  });
+
+  it("starts one export when two requests race", async () => {
+    const results = await Promise.allSettled([
+      startMailExport(getDb(), env, { inbox: INBOX, userId }),
+      startMailExport(getDb(), env, { inbox: INBOX, userId }),
+    ]);
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find((r) => r.status === "rejected") as
+      | PromiseRejectedResult
+      | undefined;
+    expect(rejected?.reason).toBeInstanceOf(ExportRunningError);
+    const rows = await getDb()
+      .select()
+      .from(asyncJobs)
+      .where(eq(asyncJobs.status, "running"));
+    expect(rows).toHaveLength(1);
   });
 });
 
@@ -641,6 +848,44 @@ describe("the mail_export queue message", () => {
     await handleQueueBatch(run.batch, env);
     expect(run.acked).toEqual([0]);
     expect(sent).toEqual([{ type: "mail_export", jobId: job.id, slice: 1 }]);
+  });
+
+  it("runs one export slice per batch and queues the others again", async () => {
+    await bulkReceived(2);
+    const first = await startMailExport(getDb(), env, {
+      inbox: INBOX,
+      userId: "admin-1",
+    });
+    const second = await startMailExport(getDb(), env, {
+      inbox: "other@saasmail.test",
+      userId: "admin-1",
+    });
+    const acked: number[] = [];
+    const retried: number[] = [];
+    const messages = [first, second].map((job, i) => ({
+      id: String(i),
+      timestamp: new Date(),
+      body: { type: "mail_export", jobId: job.id, slice: 0 },
+      attempts: 1,
+      ack: () => void acked.push(i),
+      retry: () => void retried.push(i),
+    }));
+    await handleQueueBatch(
+      {
+        queue: "saasmail-sequence-emails",
+        messages,
+        ackAll: () => {},
+        retryAll: () => {},
+      } as unknown as MessageBatch<unknown>,
+      env,
+    );
+    expect(acked).toEqual([0, 1]);
+    expect(retried).toEqual([]);
+    expect(sent).toEqual([
+      { type: "mail_export", jobId: first.id, slice: 1 },
+      { type: "mail_export", jobId: second.id, slice: 0 },
+    ]);
+    expect(exportParams(await jobRow(second.id)).slice).toBe(0);
   });
 
   it("fails the export after the last attempt", async () => {

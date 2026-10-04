@@ -1,9 +1,8 @@
-import { eq } from "drizzle-orm";
+import { sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { emails } from "../../db/emails.schema";
-import { jmapMessageContent } from "../../db/jmap-message-content.schema";
-import { sentEmails } from "../../db/sent-emails.schema";
 import { toBase64 } from "../email-sender/shared";
+import { jsonList } from "../inbox-permissions";
+import { addressList, headerText, parameter } from "../../jmap/raw-message";
 import type { MailAddress, UnifiedMessage } from "../messages/types";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -18,9 +17,21 @@ export interface RenderedMessage {
   date: Date;
 }
 
+/** What rendering needs besides the message: looked up a page at a time. */
+export interface RenderHints {
+  /** Where the message's own bytes are kept, if they are. */
+  rawKey: string | null;
+  /** Received mail without kept bytes: its stored headers. */
+  headers: Record<string, string> | null;
+}
+
 const CRLF = "\r\n";
+const FOLD = `${CRLF} `;
 const encoder = new TextEncoder();
-const PRINTABLE = /^[\x20-\x7e]*$/;
+const NL = 0x0a;
+const CR = 0x0d;
+const GT = 0x3e;
+const FROM_ = encoder.encode("From ");
 
 /** Received-mail headers a rebuilt message keeps, when they were stored. */
 const KEPT_HEADERS = [
@@ -34,19 +45,23 @@ const KEPT_HEADERS = [
   "x-spam-score",
 ];
 
-/** An RFC 2047 encoded word when the text is not plain ASCII. */
-function headerText(value: string): string {
-  if (PRINTABLE.test(value)) return value;
-  return `=?UTF-8?B?${toBase64(encoder.encode(value))}?=`;
+/** A stored value as one header line: no CR or LF can start a new header. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ");
 }
 
-function mailbox(address: MailAddress): string {
-  const email = oneLine(address.email);
-  if (!address.name) return email;
-  const name = PRINTABLE.test(address.name)
-    ? `"${address.name.replace(/["\\]/g, "\\$&")}"`
-    : headerText(address.name);
-  return `${name} <${email}>`;
+function addresses(list: MailAddress[]): string {
+  return addressList(
+    list.map((address) => ({
+      email: oneLine(address.email),
+      name: address.name ?? null,
+    })),
+  );
+}
+
+/** Message ids, one per folded line. */
+function idList(value: string): string {
+  return oneLine(value).trim().split(/\s+/).join(FOLD);
 }
 
 /** RFC 5322 date-time in UTC. */
@@ -70,19 +85,29 @@ export function rfc5322Date(date: Date): string {
   return `${days[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`;
 }
 
-/** A stored value as one header line: no CR or LF can start a new header. */
-function oneLine(value: string): string {
-  return value.replace(/[\r\n]+/g, " ");
-}
+/** 64 lines of 76 characters. */
+const BASE64_BLOCK = 57 * 64;
 
-/** Base64 in 76-character lines. */
-function wrappedBase64(bytes: Uint8Array): string {
-  const encoded = toBase64(bytes);
-  const lines: string[] = [];
-  for (let i = 0; i < encoded.length; i += 76) {
-    lines.push(encoded.slice(i, i + 76));
+/**
+ * Base64 in 76-character CRLF lines, written as bytes a block at a time, so
+ * a large attachment never becomes one long string.
+ */
+function wrappedBase64(bytes: Uint8Array): Uint8Array {
+  const encodedLength = Math.ceil(bytes.length / 3) * 4;
+  const lines = Math.max(1, Math.ceil(encodedLength / 76));
+  const out = new Uint8Array(encodedLength + 2 * (lines - 1));
+  let offset = 0;
+  for (let i = 0; i < bytes.length; i += BASE64_BLOCK) {
+    const encoded = toBase64(bytes.subarray(i, i + BASE64_BLOCK));
+    for (let j = 0; j < encoded.length; j++) {
+      if (j % 76 === 0 && offset > 0) {
+        out[offset++] = CR;
+        out[offset++] = NL;
+      }
+      out[offset++] = encoded.charCodeAt(j);
+    }
   }
-  return lines.join(CRLF);
+  return out;
 }
 
 /**
@@ -104,186 +129,17 @@ function restoreCids(
   for (const attachment of inline) {
     restored = restored.replaceAll(
       `/api/attachments/${attachment.id}/inline`,
-      `cid:${attachment.contentId.replace(/^<|>$/g, "")}`,
+      `cid:${attachment.contentId}`,
     );
   }
   return restored;
 }
 
-function textPart(contentType: string, text: string): string {
+function textPart(contentType: string, text: string): (string | Uint8Array)[] {
   return [
-    `Content-Type: ${contentType}; charset=utf-8`,
-    "Content-Transfer-Encoding: base64",
-    "",
+    `Content-Type: ${contentType}; charset=utf-8${CRLF}Content-Transfer-Encoding: base64${CRLF}${CRLF}`,
     wrappedBase64(encoder.encode(text.replace(/\r?\n/g, CRLF))),
-  ].join(CRLF);
-}
-
-/**
- * The bytes of one message, for an `.eml` download or an mbox export: the
- * bytes as received when they were kept (`emails.raw_r2_key`), the stored
- * message of a JMAP send, and otherwise a faithful rebuild from the stored
- * headers, bodies and attachments, marked `X-Saasmail-Reconstructed: yes`.
- * `message` comes from `queryMessages` with attachments.
- */
-export async function renderMessageBytes(
-  db: Db,
-  env: CloudflareBindings,
-  message: UnifiedMessage,
-): Promise<RenderedMessage> {
-  const date = new Date(message.occurredAt * 1000);
-  const envelopeFrom =
-    message.from?.email ??
-    (message.direction === "outbound" ? message.inbox : "MAILER-DAEMON");
-
-  const exactKey = await exactBytesKey(db, message);
-  if (exactKey) {
-    const object = await env.R2.get(exactKey);
-    if (object) {
-      return {
-        bytes: new Uint8Array(await object.arrayBuffer()),
-        exact: true,
-        envelopeFrom,
-        date,
-      };
-    }
-  }
-
-  const headers: string[] = [
-    `Date: ${rfc5322Date(date)}`,
-    ...(message.from ? [`From: ${mailbox(message.from)}`] : []),
-    `To: ${[message.to, ...(message.additionalTo ?? [])].map(mailbox).join(", ")}`,
   ];
-  if (message.cc.length > 0) {
-    headers.push(`Cc: ${message.cc.map(mailbox).join(", ")}`);
-  }
-  if ((message.bcc?.length ?? 0) > 0) {
-    headers.push(`Bcc: ${message.bcc!.map(mailbox).join(", ")}`);
-  }
-  if ((message.replyTo?.length ?? 0) > 0) {
-    headers.push(`Reply-To: ${message.replyTo!.map(mailbox).join(", ")}`);
-  }
-  headers.push(`Subject: ${headerText(message.subject ?? "")}`);
-  if (message.messageId) {
-    const id = oneLine(message.messageId).replace(/^<|>$/g, "");
-    headers.push(`Message-ID: <${id}>`);
-  }
-  if (message.inReplyTo) {
-    headers.push(`In-Reply-To: ${oneLine(message.inReplyTo)}`);
-  }
-  if (message.references) {
-    headers.push(`References: ${oneLine(message.references)}`);
-  }
-  if (message.direction === "inbound") {
-    for (const [name, value] of Object.entries(
-      await storedHeaders(db, message.ref.id),
-    )) {
-      if (
-        KEPT_HEADERS.includes(name.toLowerCase()) &&
-        /^[\x20-\x7e\t]*$/.test(value) &&
-        value.trim() !== ""
-      ) {
-        headers.push(`${name}: ${value}`);
-      }
-    }
-  }
-  headers.push("MIME-Version: 1.0", "X-Saasmail-Reconstructed: yes");
-
-  const attachments = message.attachments ?? [];
-  const inline = attachments
-    .filter((attachment) => attachment.contentId)
-    .map((attachment) => ({
-      id: attachment.id,
-      contentId: attachment.contentId!,
-    }));
-  const html = message.bodyHtml ? restoreCids(message.bodyHtml, inline) : null;
-  const text = message.bodyText;
-
-  let body: string;
-  if (text !== null && html !== null) {
-    const alt = boundary("alt", message.ref);
-    body = [
-      `Content-Type: multipart/alternative; boundary="${alt}"`,
-      "",
-      `--${alt}`,
-      textPart("text/plain", text),
-      `--${alt}`,
-      textPart("text/html", html),
-      `--${alt}--`,
-    ].join(CRLF);
-  } else {
-    body = textPart(
-      html !== null ? "text/html" : "text/plain",
-      html ?? text ?? "",
-    );
-  }
-
-  const segments: (string | Uint8Array)[] = [`${headers.join(CRLF)}${CRLF}`];
-  if (attachments.length > 0) {
-    const mixed = boundary("mixed", message.ref);
-    segments.push(
-      `Content-Type: multipart/mixed; boundary="${mixed}"${CRLF}${CRLF}--${mixed}${CRLF}${body}`,
-    );
-    for (const attachment of attachments) {
-      const object = await env.R2.get(attachment.r2Key);
-      if (!object) continue;
-      const name = attachment.filename.replace(/["\\\r\n]/g, "_");
-      const encodedName = PRINTABLE.test(name)
-        ? `filename="${name}"`
-        : `filename*=UTF-8''${encodeURIComponent(name)}`;
-      const contentId = attachment.contentId
-        ? oneLine(attachment.contentId).replace(/^<|>$/g, "")
-        : null;
-      const partHeaders = [
-        `Content-Type: ${oneLine(attachment.contentType)}`,
-        "Content-Transfer-Encoding: base64",
-        contentId
-          ? `Content-Disposition: inline; ${encodedName}`
-          : `Content-Disposition: attachment; ${encodedName}`,
-        ...(contentId ? [`Content-ID: <${contentId}>`] : []),
-      ];
-      segments.push(
-        `${CRLF}--${mixed}${CRLF}${partHeaders.join(CRLF)}${CRLF}${CRLF}`,
-        wrappedBase64Bytes(new Uint8Array(await object.arrayBuffer())),
-      );
-    }
-    segments.push(`${CRLF}--${mixed}--`);
-  } else {
-    segments.push(body);
-  }
-  segments.push(CRLF);
-
-  return {
-    bytes: concatSegments(segments),
-    exact: false,
-    envelopeFrom,
-    date,
-  };
-}
-
-/** 64 lines of 76 characters. */
-const BASE64_BLOCK = 57 * 64;
-
-/**
- * Base64 in 76-character CRLF lines, written as bytes a block at a time, so
- * a large attachment never becomes one long string.
- */
-function wrappedBase64Bytes(bytes: Uint8Array): Uint8Array {
-  const encodedLength = Math.ceil(bytes.length / 3) * 4;
-  const lines = Math.max(1, Math.ceil(encodedLength / 76));
-  const out = new Uint8Array(encodedLength + 2 * (lines - 1));
-  let offset = 0;
-  for (let i = 0; i < bytes.length; i += BASE64_BLOCK) {
-    const encoded = toBase64(bytes.subarray(i, i + BASE64_BLOCK));
-    for (let j = 0; j < encoded.length; j++) {
-      if (j % 76 === 0 && offset > 0) {
-        out[offset++] = CR;
-        out[offset++] = NL;
-      }
-      out[offset++] = encoded.charCodeAt(j);
-    }
-  }
-  return out;
 }
 
 function concatSegments(
@@ -301,52 +157,202 @@ function concatSegments(
   return out;
 }
 
-/** Where the message's own bytes are kept, if they are. */
-async function exactBytesKey(
-  db: Db,
-  message: UnifiedMessage,
-): Promise<string | null> {
-  if (message.ref.kind === "received") {
-    const [row] = await db
-      .select({ key: emails.rawR2Key })
-      .from(emails)
-      .where(eq(emails.id, message.ref.id))
-      .limit(1);
-    return row?.key ?? null;
-  }
-  const [row] = await db
-    .select({ key: jmapMessageContent.rawR2Key })
-    .from(sentEmails)
-    .innerJoin(
-      jmapMessageContent,
-      eq(jmapMessageContent.id, sentEmails.jmapContentId),
-    )
-    .where(eq(sentEmails.id, message.ref.id))
-    .limit(1);
-  return row?.key ?? null;
-}
+export const renderHintKey = (message: UnifiedMessage) =>
+  `${message.ref.kind}:${message.ref.id}`;
 
-/** A received message's stored headers (postal-mime's map). */
-async function storedHeaders(
-  db: Db,
-  emailId: string,
-): Promise<Record<string, string>> {
-  const [row] = await db
-    .select({ raw: emails.rawHeaders })
-    .from(emails)
-    .where(eq(emails.id, emailId))
-    .limit(1);
-  if (!row?.raw) return {};
+function parseHeaders(raw: string | null): Record<string, string> | null {
+  if (!raw) return null;
   try {
-    const parsed = JSON.parse(row.raw) as Record<string, unknown>;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
     return Object.fromEntries(
       Object.entries(parsed).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
   } catch {
-    return {};
+    return null;
   }
+}
+
+/**
+ * For a page of messages, in at most two statements: where each one's own
+ * bytes are kept (`emails.raw_r2_key`, or the stored message of a JMAP send),
+ * and the stored headers of received mail without them.
+ */
+export async function loadRenderHints(
+  db: Db,
+  messages: UnifiedMessage[],
+): Promise<Map<string, RenderHints>> {
+  const hints = new Map<string, RenderHints>();
+  const ids = (kind: "received" | "sent") =>
+    messages
+      .filter((message) => message.ref.kind === kind)
+      .map((message) => message.ref.id);
+  const received = ids("received");
+  const sent = ids("sent");
+  if (received.length > 0) {
+    const rows = await db.all<{
+      id: string;
+      raw_r2_key: string | null;
+      raw_headers: string | null;
+    }>(sql`
+      SELECT id, raw_r2_key,
+        CASE WHEN raw_r2_key IS NULL THEN raw_headers END AS raw_headers
+      FROM emails WHERE id IN ${jsonList(received)}
+    `);
+    for (const row of rows) {
+      hints.set(`received:${row.id}`, {
+        rawKey: row.raw_r2_key,
+        headers: parseHeaders(row.raw_headers),
+      });
+    }
+  }
+  if (sent.length > 0) {
+    const rows = await db.all<{ id: string; raw_r2_key: string }>(sql`
+      SELECT se.id AS id, c.raw_r2_key AS raw_r2_key
+      FROM sent_emails se
+      JOIN jmap_message_content c ON c.id = se.jmap_content_id
+      WHERE se.id IN ${jsonList(sent)}
+    `);
+    for (const row of rows) {
+      hints.set(`sent:${row.id}`, { rawKey: row.raw_r2_key, headers: null });
+    }
+  }
+  return hints;
+}
+
+/**
+ * The bytes of one message, for an `.eml` download or an mbox export: the
+ * bytes as received when they were kept (`emails.raw_r2_key`), the stored
+ * message of a JMAP send, and otherwise a faithful rebuild from the stored
+ * headers, bodies and attachments, marked `X-Saasmail-Reconstructed: yes`.
+ * `message` comes from `queryMessages` with attachments and Reply-To;
+ * `hints` from `loadRenderHints` (looked up here when not given).
+ */
+export async function renderMessageBytes(
+  db: Db,
+  env: CloudflareBindings,
+  message: UnifiedMessage,
+  hints?: RenderHints | null,
+): Promise<RenderedMessage> {
+  const date = new Date(message.occurredAt * 1000);
+  const envelopeFrom =
+    message.from?.email ??
+    (message.direction === "outbound" ? message.inbox : "MAILER-DAEMON");
+  const known =
+    hints === undefined
+      ? (await loadRenderHints(db, [message])).get(renderHintKey(message))
+      : hints;
+
+  if (known?.rawKey) {
+    const object = await env.R2.get(known.rawKey);
+    if (object) {
+      return {
+        bytes: new Uint8Array(await object.arrayBuffer()),
+        exact: true,
+        envelopeFrom,
+        date,
+      };
+    }
+  }
+
+  const headers: string[] = [
+    `Date: ${rfc5322Date(date)}`,
+    ...(message.from ? [`From: ${addresses([message.from])}`] : []),
+    `To: ${addresses([message.to, ...(message.additionalTo ?? [])])}`,
+  ];
+  if (message.cc.length > 0) headers.push(`Cc: ${addresses(message.cc)}`);
+  if ((message.bcc?.length ?? 0) > 0) {
+    headers.push(`Bcc: ${addresses(message.bcc!)}`);
+  }
+  if ((message.replyTo?.length ?? 0) > 0) {
+    headers.push(`Reply-To: ${addresses(message.replyTo!)}`);
+  }
+  headers.push(`Subject: ${headerText(oneLine(message.subject ?? ""))}`);
+  if (message.messageId) {
+    const id = oneLine(message.messageId).trim().replace(/^<|>$/g, "");
+    headers.push(`Message-ID: <${id}>`);
+  }
+  if (message.inReplyTo) {
+    headers.push(`In-Reply-To: ${idList(message.inReplyTo)}`);
+  }
+  if (message.references) {
+    headers.push(`References: ${idList(message.references)}`);
+  }
+  for (const [name, value] of Object.entries(known?.headers ?? {})) {
+    if (
+      KEPT_HEADERS.includes(name.toLowerCase()) &&
+      /^[\x20-\x7e\t]*$/.test(value) &&
+      value.trim() !== ""
+    ) {
+      headers.push(`${name}: ${value}`);
+    }
+  }
+  headers.push("MIME-Version: 1.0", "X-Saasmail-Reconstructed: yes");
+
+  const attachments = message.attachments ?? [];
+  const cid = (contentId: string) =>
+    oneLine(contentId).trim().replace(/^<|>$/g, "");
+  const inline = attachments
+    .filter((attachment) => attachment.contentId)
+    .map((attachment) => ({
+      id: attachment.id,
+      contentId: cid(attachment.contentId!),
+    }));
+  const html = message.bodyHtml ? restoreCids(message.bodyHtml, inline) : null;
+  const text = message.bodyText;
+
+  let body: (string | Uint8Array)[];
+  if (text !== null && html !== null) {
+    const alt = boundary("alt", message.ref);
+    body = [
+      `Content-Type: multipart/alternative; boundary="${alt}"${CRLF}${CRLF}--${alt}${CRLF}`,
+      ...textPart("text/plain", text),
+      `${CRLF}--${alt}${CRLF}`,
+      ...textPart("text/html", html),
+      `${CRLF}--${alt}--`,
+    ];
+  } else {
+    body = textPart(
+      html !== null ? "text/html" : "text/plain",
+      html ?? text ?? "",
+    );
+  }
+
+  const segments: (string | Uint8Array)[] = [`${headers.join(CRLF)}${CRLF}`];
+  if (attachments.length > 0) {
+    const mixed = boundary("mixed", message.ref);
+    segments.push(
+      `Content-Type: multipart/mixed; boundary="${mixed}"${CRLF}${CRLF}--${mixed}${CRLF}`,
+      ...body,
+    );
+    for (const attachment of attachments) {
+      const object = await env.R2.get(attachment.r2Key);
+      if (!object) continue;
+      const contentId = attachment.contentId ? cid(attachment.contentId) : null;
+      const partHeaders = [
+        `Content-Type: ${oneLine(attachment.contentType)}`,
+        "Content-Transfer-Encoding: base64",
+        `Content-Disposition: ${contentId ? "inline" : "attachment"}; ${parameter("filename", attachment.filename)}`,
+        ...(contentId ? [`Content-ID: <${contentId}>`] : []),
+      ];
+      segments.push(
+        `${CRLF}--${mixed}${CRLF}${partHeaders.join(CRLF)}${CRLF}${CRLF}`,
+        wrappedBase64(new Uint8Array(await object.arrayBuffer())),
+      );
+    }
+    segments.push(`${CRLF}--${mixed}--`);
+  } else {
+    segments.push(...body);
+  }
+  segments.push(CRLF);
+
+  return {
+    bytes: concatSegments(segments),
+    exact: false,
+    envelopeFrom,
+    date,
+  };
 }
 
 /** asctime, as mbox separator lines carry it: "Sat Oct  3 14:02:00 2026". */
@@ -369,11 +375,6 @@ export function asctime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${days[date.getUTCDay()]} ${months[date.getUTCMonth()]} ${String(date.getUTCDate()).padStart(2, " ")} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} ${date.getUTCFullYear()}`;
 }
-
-const NL = 0x0a;
-const CR = 0x0d;
-const GT = 0x3e;
-const FROM_ = encoder.encode("From ");
 
 /** Whether the line from `start` to `end` is `>*From `, which mboxrd quotes. */
 function needsQuote(source: Uint8Array, start: number, end: number): boolean {

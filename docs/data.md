@@ -70,15 +70,22 @@ export are recorded in the [audit log](audit-log.md) (`export.started`,
 ### How it runs
 
 The export is an `async_jobs` row (`job_type = 'mail_export'`) worked through
-in slices on `EMAIL_QUEUE`. Each slice renders up to 200 messages (or about
-8 MiB, or 20 seconds' worth) and streams them into one R2 multipart upload in
-5 MiB parts; the bytes short of a part wait in R2 for the next slice. A slice
-that fails is retried, three times in all, and then the export is marked
-failed and its upload aborted. A delivery of a slice the export has already
-passed does nothing, so a queue retry never writes a message twice. The hourly
-cron deletes files older than 7 days and fails an export that has not moved
-for a day. On a `DEMO_MODE` deployment, which has no queue consumer, the
-slices run in the background of the request that started the export.
+in slices on `EMAIL_QUEUE`, one slice per queue batch. Each slice renders up
+to 200 messages (or about 8 MiB, or 20 seconds' worth) and streams them into
+one R2 multipart upload in 5 MiB parts, uploading each part as it fills; the
+bytes short of a part wait in R2 for the next slice. A slice holds one message
+and one part in memory at a time. A slice that fails is retried, three times
+in all, and then the export is marked failed and its upload aborted. A
+delivery of a slice the export has already passed does nothing, and two
+deliveries of the same slice cannot both run, so a queue retry never writes a
+message twice.
+
+The hourly cron deletes files older than 7 days, and queues again an export
+that has not moved for 15 minutes (its queue message was lost, or a slice
+crashed); the fourth time that happens, the export fails. On a `DEMO_MODE`
+deployment, which has no queue consumer, the slices run in the background of
+the request that started the export, and the hourly cron finishes one that
+outlived it.
 
 The file is stored at `exports/<id>/<inbox>.mbox` in the `R2` bucket.
 

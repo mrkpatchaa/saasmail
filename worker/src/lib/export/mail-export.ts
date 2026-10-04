@@ -6,9 +6,16 @@ import { mailboxes } from "../../db/mailboxes.schema";
 import { AUDIT_ACTIONS } from "../audit/events";
 import { recordAudit } from "../audit/record";
 import { jsonList } from "../inbox-permissions";
+import { isDemoMode } from "../is-dev";
+import { encodeCursor } from "../messages/cursor";
 import { queryMessages } from "../messages/query";
 import type { UnifiedMessage } from "../messages/types";
-import { mboxEntry, renderMessageBytes } from "./render-message";
+import {
+  loadRenderHints,
+  mboxEntry,
+  renderHintKey,
+  renderMessageBytes,
+} from "./render-message";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
@@ -51,9 +58,11 @@ export interface ExportParams {
   /** The run holding the slice now, and until when (Unix ms). */
   lease: string | null;
   leaseUntil: number | null;
+  /** Times the hourly run queued an export that had stopped moving. */
+  recoveries?: number;
 }
 
-/** Limits of one slice. Slices stop between pages. */
+/** Limits of one slice, checked after each message. */
 const SLICE_MESSAGES = 200;
 const SLICE_BYTES = 8 * 1024 * 1024;
 const SLICE_MS = 20_000;
@@ -64,11 +73,14 @@ export const PART_BYTES = 5 * 1024 * 1024;
 const LEASE_MS = 120_000;
 /** How long a finished export can be downloaded. */
 export const EXPORT_TTL_SECONDS = 7 * 24 * 60 * 60;
-/** A running export not touched for this long has died. */
-const STALE_SECONDS = 24 * 60 * 60;
+/** A running export not touched for this long has lost its queue message. */
+const IDLE_SECONDS = 15 * 60;
+/** Queued again at most this often before it counts as failed. */
+const MAX_RECOVERIES = 3;
 
 const objectKey = (jobId: string, inbox: string) =>
   `exports/${jobId}/${inbox}.mbox`;
+const exportPrefix = (jobId: string) => `exports/${jobId}/`;
 
 export class ExportRunningError extends Error {
   readonly code = "EXPORT_RUNNING";
@@ -92,10 +104,36 @@ export function exportParams(job: AsyncJob): ExportParams {
 const changesOf = (result: unknown) =>
   Number((result as D1Result).meta?.changes ?? 0);
 
+/** Deletes every object under an export's prefix but `keep`. Best-effort. */
+async function deleteExportObjects(
+  env: CloudflareBindings,
+  jobId: string,
+  keep: string | null = null,
+): Promise<void> {
+  try {
+    let cursor: string | undefined;
+    do {
+      const listed = await env.R2.list({
+        prefix: exportPrefix(jobId),
+        cursor,
+        limit: 100,
+      });
+      const keys = listed.objects
+        .map((object) => object.key)
+        .filter((key) => key !== keep);
+      if (keys.length > 0) await env.R2.delete(keys);
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+  } catch (error) {
+    console.warn(`[export] objects of ${jobId} not deleted:`, error);
+  }
+}
+
 /**
- * Starts exporting an inbox: the job row and the R2 multipart upload. The
+ * Starts exporting an inbox: the R2 multipart upload and the job row. The
  * caller queues slice 0 (or runs the slices inline where there is no
- * queue). One running export per inbox.
+ * queue). One running export per inbox: the row is only inserted when no
+ * other is running, so two requests at once cannot both start one.
  */
 export async function startMailExport(
   db: Db,
@@ -103,19 +141,6 @@ export async function startMailExport(
   input: MailExportRequest & { userId: string },
 ): Promise<AsyncJob> {
   const inbox = input.inbox.trim().toLowerCase();
-  const [running] = await db
-    .select({ id: asyncJobs.id })
-    .from(asyncJobs)
-    .where(
-      and(
-        eq(asyncJobs.jobType, "mail_export"),
-        eq(asyncJobs.refId, inbox),
-        eq(asyncJobs.status, "running"),
-      ),
-    )
-    .limit(1);
-  if (running) throw new ExportRunningError();
-
   const id = nanoid();
   const key = objectKey(id, inbox);
   const upload = await env.R2.createMultipartUpload(key, {
@@ -154,7 +179,18 @@ export async function startMailExport(
     createdAt: now,
     updatedAt: now,
   };
-  await db.insert(asyncJobs).values(job);
+  const result = await db.run(sql`
+    INSERT INTO async_jobs (id, job_type, ref_id, status, storage_key, processed_rows, imported_count, skipped_count, params, requested_by, created_at, updated_at)
+    SELECT ${id}, 'mail_export', ${inbox}, 'running', ${key}, 0, 0, 0, ${job.params}, ${input.userId}, ${now}, ${now}
+    WHERE NOT EXISTS (
+      SELECT 1 FROM async_jobs
+      WHERE job_type = 'mail_export' AND ref_id = ${inbox} AND status = 'running'
+    )
+  `);
+  if (changesOf(result) !== 1) {
+    await upload.abort().catch(() => {});
+    throw new ExportRunningError();
+  }
   await recordAudit(db, {
     action: AUDIT_ACTIONS.exportStarted,
     targetType: "export",
@@ -304,6 +340,14 @@ async function claimSlice(
   return changesOf(result) === 1 ? { params: claimed, raw } : "busy";
 }
 
+/** This run's claim on the job, still current and the job still running. */
+const stillClaimed = (jobId: string, claimedRaw: string) =>
+  and(
+    eq(asyncJobs.id, jobId),
+    eq(asyncJobs.status, "running"),
+    eq(asyncJobs.params, claimedRaw),
+  );
+
 /**
  * One slice of an export. Renders the next messages (at most 200, about
  * 8 MiB, or 20 seconds' worth) as mbox entries after what the last slice
@@ -348,7 +392,7 @@ export async function runMailExportSlice(
       .set({
         params: JSON.stringify({ ...params, lease: null, leaseUntil: null }),
       })
-      .where(and(eq(asyncJobs.id, jobId), eq(asyncJobs.params, raw)))
+      .where(stillClaimed(jobId, raw))
       .catch(() => {});
     throw error;
   }
@@ -374,17 +418,15 @@ async function renderSlice(
   }
 
   // Oldest first, every folder; Trash and campaign sends only when asked.
-  // Each entry goes into the current part as it is rendered.
+  // Each entry goes into the current part as it is rendered, and the slice
+  // stops after the message that reaches one of its limits.
   const scope = { isAdmin: false as const, inboxes: [params.inbox] };
   let cursor = job.cursor;
   let processed = 0;
   let written = 0;
   let more = true;
-  while (
-    processed < SLICE_MESSAGES &&
-    written < SLICE_BYTES &&
-    now() - started < SLICE_MS
-  ) {
+  let full = false;
+  while (!full) {
     const page = await queryMessages(db, scope, {
       inboxes: [params.inbox],
       order: "asc",
@@ -396,24 +438,47 @@ async function renderSlice(
       includeTrashed: params.includeTrash,
       excludeCampaignSends: !params.includeCampaignSends,
       withAttachments: true,
+      withReplyTo: true,
       withState: true,
       ...(job.requestedBy ? { viewer: { userId: job.requestedBy } } : {}),
     });
-    const names = await customFolderNames(db, page.messages);
-    for (const message of page.messages) {
+    const [names, hints] = await Promise.all([
+      customFolderNames(db, page.messages),
+      loadRenderHints(db, page.messages),
+    ]);
+    for (const [index, message] of page.messages.entries()) {
       const entry = mboxEntry(
-        await renderMessageBytes(db, env, message),
+        await renderMessageBytes(
+          db,
+          env,
+          message,
+          hints.get(renderHintKey(message)) ?? null,
+        ),
         statusHeaders(message, names),
       );
       await writer.write(entry);
       written += entry.length;
       processed++;
+      cursor = encodeCursor({
+        v: 1,
+        occurredAt: message.occurredAt,
+        id: message.ref.id,
+        kind: message.ref.kind,
+      });
+      if (
+        processed >= SLICE_MESSAGES ||
+        written >= SLICE_BYTES ||
+        now() - started >= SLICE_MS
+      ) {
+        full = true;
+        more = index < page.messages.length - 1 || page.hasMore;
+        break;
+      }
     }
-    if (!page.hasMore || !page.nextCursor) {
+    if (!full && !page.hasMore) {
       more = false;
       break;
     }
-    cursor = page.nextCursor;
   }
 
   // What did not fill a part waits for the next slice; after the last
@@ -435,21 +500,29 @@ async function renderSlice(
     lease: null,
     leaseUntil: null,
   };
-  const result = await db
-    .update(asyncJobs)
-    .set({
-      cursor,
-      processedRows: job.processedRows + processed,
-      params: JSON.stringify(next),
-      updatedAt: Math.floor(now() / 1000),
-    })
-    .where(and(eq(asyncJobs.id, job.id), eq(asyncJobs.params, claimedRaw)));
-  if (changesOf(result) !== 1) {
-    // Cancelled meanwhile: leave nothing behind.
-    if (pendingKey) await env.R2.delete(pendingKey);
-    return null;
+  let committed = false;
+  try {
+    const result = await db
+      .update(asyncJobs)
+      .set({
+        cursor,
+        processedRows: job.processedRows + processed,
+        params: JSON.stringify(next),
+        updatedAt: Math.floor(now() / 1000),
+      })
+      .where(stillClaimed(job.id, claimedRaw));
+    committed = changesOf(result) === 1;
+  } finally {
+    // Not committed (cancelled meanwhile, or the write failed): leave
+    // nothing behind. A retry carries the previous bytes again.
+    if (!committed && pendingKey) {
+      await env.R2.delete(pendingKey).catch(() => {});
+    }
   }
-  if (params.pendingKey) await env.R2.delete(params.pendingKey);
+  if (!committed) return null;
+  if (params.pendingKey) {
+    await env.R2.delete(params.pendingKey).catch(() => {});
+  }
   return next.slice;
 }
 
@@ -512,13 +585,13 @@ async function completeExport(
       params: JSON.stringify(done),
       updatedAt: Math.floor(Date.now() / 1000),
     })
-    .where(and(eq(asyncJobs.id, job.id), eq(asyncJobs.params, claimedRaw)));
+    .where(stillClaimed(job.id, claimedRaw));
   if (changesOf(result) !== 1) {
-    // Cancelled while completing.
-    await env.R2.delete(key);
+    // Cancelled or failed while completing: nothing to keep.
+    await deleteExportObjects(env, job.id);
     return;
   }
-  if (params.pendingKey) await env.R2.delete(params.pendingKey);
+  await deleteExportObjects(env, job.id, key);
   const total = job.processedRows;
   await recordAudit(db, {
     action: AUDIT_ACTIONS.exportCompleted,
@@ -544,8 +617,7 @@ export async function failMailExport(
     .where(eq(asyncJobs.id, jobId))
     .limit(1);
   if (!job || job.status !== "running") return;
-  await discardUpload(env, job);
-  await db
+  const result = await db
     .update(asyncJobs)
     .set({
       status: "failed",
@@ -555,21 +627,19 @@ export async function failMailExport(
       updatedAt: Math.floor(Date.now() / 1000),
     })
     .where(and(eq(asyncJobs.id, jobId), eq(asyncJobs.status, "running")));
+  if (changesOf(result) !== 1) return;
+  await abortUpload(env, job);
+  await deleteExportObjects(env, job.id);
 }
 
-/** Aborts a running export's upload and drops its carried bytes. */
-async function discardUpload(env: CloudflareBindings, job: AsyncJob) {
-  const params = exportParams(job);
+async function abortUpload(env: CloudflareBindings, job: AsyncJob) {
   try {
     await env.R2.resumeMultipartUpload(
       job.storageKey!,
-      params.uploadId,
+      exportParams(job).uploadId,
     ).abort();
   } catch (error) {
     console.warn(`[export] upload of ${job.id} not aborted:`, error);
-  }
-  if (params.pendingKey) {
-    await env.R2.delete(params.pendingKey).catch(() => {});
   }
 }
 
@@ -580,29 +650,37 @@ export async function deleteMailExport(
   job: AsyncJob,
 ): Promise<void> {
   await db.delete(asyncJobs).where(eq(asyncJobs.id, job.id));
-  if (job.status === "running") await discardUpload(env, job);
-  // Everything under the export's prefix: the file, and bytes a slice that
-  // was running meanwhile may have carried.
-  const prefix = `exports/${job.id}/`;
-  let cursor: string | undefined;
-  do {
-    const listed = await env.R2.list({ prefix, cursor, limit: 100 });
-    if (listed.objects.length > 0) {
-      await env.R2.delete(listed.objects.map((object) => object.key));
-    }
-    cursor = listed.truncated ? listed.cursor : undefined;
-  } while (cursor);
+  if (job.status === "running") await abortUpload(env, job);
+  // The file, and bytes a slice running meanwhile may have carried.
+  await deleteExportObjects(env, job.id);
+}
+
+/** Queues the slice an export is waiting for, or runs it here in demo mode. */
+async function resumeMailExport(
+  db: Db,
+  env: CloudflareBindings,
+  jobId: string,
+  slice: number,
+): Promise<void> {
+  if (isDemoMode(env)) {
+    await runMailExportInline(db, env, jobId, slice);
+    return;
+  }
+  const message: MailExportMessage = { type: "mail_export", jobId, slice };
+  await env.EMAIL_QUEUE.send(message);
 }
 
 /**
- * Hourly: a finished export's file goes after 7 days (the row stays,
- * `expired`), and an export that stopped moving for a day has failed.
+ * Hourly. A finished export's file goes after 7 days (the row stays,
+ * `expired`). A running export that has not moved for 15 minutes and whose
+ * claim has run out lost its queue message (a crash, a failed send): it is
+ * queued again, up to three times, and then failed.
  */
 export async function reapMailExports(
   db: Db,
   env: CloudflareBindings,
   nowSeconds: number,
-): Promise<{ expired: number; failed: number }> {
+): Promise<{ expired: number; resumed: number; failed: number }> {
   const finished = await db
     .select()
     .from(asyncJobs)
@@ -615,27 +693,58 @@ export async function reapMailExports(
     )
     .limit(100);
   for (const job of finished) {
-    if (job.storageKey) await env.R2.delete(job.storageKey);
     await db
       .update(asyncJobs)
       .set({ status: "expired", updatedAt: nowSeconds })
       .where(and(eq(asyncJobs.id, job.id), eq(asyncJobs.status, "completed")));
+    await deleteExportObjects(env, job.id);
   }
-  const stale = await db
-    .select({ id: asyncJobs.id })
+
+  const idle = await db
+    .select()
     .from(asyncJobs)
     .where(
       and(
         eq(asyncJobs.jobType, "mail_export"),
         eq(asyncJobs.status, "running"),
-        lt(asyncJobs.updatedAt, nowSeconds - STALE_SECONDS),
+        lt(asyncJobs.updatedAt, nowSeconds - IDLE_SECONDS),
       ),
     )
     .limit(100);
-  for (const job of stale) {
-    await failMailExport(db, env, job.id, "stalled");
+  let resumed = 0;
+  let failed = 0;
+  for (const job of idle) {
+    const params = exportParams(job);
+    if (params.lease && (params.leaseUntil ?? 0) > nowSeconds * 1000) continue;
+    const recoveries = params.recoveries ?? 0;
+    if (recoveries >= MAX_RECOVERIES) {
+      await failMailExport(db, env, job.id, "stalled");
+      failed++;
+      continue;
+    }
+    const result = await db
+      .update(asyncJobs)
+      .set({
+        params: JSON.stringify({
+          ...params,
+          lease: null,
+          leaseUntil: null,
+          recoveries: recoveries + 1,
+        }),
+        updatedAt: nowSeconds,
+      })
+      .where(
+        and(
+          eq(asyncJobs.id, job.id),
+          eq(asyncJobs.status, "running"),
+          eq(asyncJobs.params, job.params ?? ""),
+        ),
+      );
+    if (changesOf(result) !== 1) continue;
+    await resumeMailExport(db, env, job.id, params.slice);
+    resumed++;
   }
-  return { expired: finished.length, failed: stale.length };
+  return { expired: finished.length, resumed, failed };
 }
 
 /**
@@ -646,8 +755,9 @@ export async function runMailExportInline(
   db: Db,
   env: CloudflareBindings,
   jobId: string,
+  from = 0,
 ): Promise<void> {
-  let slice: number | null = 0;
+  let slice: number | null = from;
   try {
     while (slice !== null) {
       slice = await runMailExportSlice(db, env, jobId, slice);

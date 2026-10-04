@@ -183,7 +183,14 @@ exportsRouter.openapi(createExportRoute, async (c) => {
       jobId: job.id,
       slice: 0,
     };
-    await c.env.EMAIL_QUEUE.send(message);
+    try {
+      await c.env.EMAIL_QUEUE.send(message);
+    } catch (error) {
+      // Not queued: it would never run, and would block the inbox's next
+      // export until the hourly run noticed.
+      await deleteMailExport(db, c.env, job);
+      throw error;
+    }
   }
   return c.json(serializeExport(job), 202);
 });
