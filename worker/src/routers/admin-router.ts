@@ -10,6 +10,10 @@ import { json200Response, json201Response } from "../lib/helpers";
 import type { Variables } from "../variables";
 import type { OutboxDrainMessage } from "../lib/outbox";
 import {
+  rejectsUnknownRecipients,
+  setRejectUnknownRecipients,
+} from "../lib/inbound-rejection";
+import {
   SEND_CHANNELS,
   readDailySendLimits,
   readSendUsage,
@@ -349,6 +353,10 @@ const UpdateSettingsSchema = z.object({
     description:
       "Pause (`true`) or resume (`false`) outbound sending. While paused every send is recorded and held in the outbox; resuming delivers what was held at once.",
   }),
+  rejectUnknownRecipients: z.boolean().optional().openapi({
+    description:
+      "Refuse inbound mail to addresses that are not inboxes at SMTP time (`550 No such mailbox`). Off by default: the catch-all stores mail to any address under the routed domains.",
+  }),
   dailySendLimits: z
     .object({
       web: z.number().int().min(0).max(1_000_000).nullable(),
@@ -381,6 +389,7 @@ const SettingsResponseSchema = z.object({
     })
     .nullable(),
   dailySendLimits: DailySendLimitsSchema,
+  rejectUnknownRecipients: z.boolean(),
 });
 
 const updateSettingsRoute = createRoute({
@@ -429,6 +438,7 @@ async function readSettings(
       ? { since: pause.since, byLabel: pause.byLabel }
       : null,
     dailySendLimits: await readDailySendLimits(db),
+    rejectUnknownRecipients: await rejectsUnknownRecipients(db),
   };
 }
 
@@ -591,6 +601,10 @@ adminRouter.openapi(updateSettingsRoute, async (c) => {
       }
     }
     await setDailySendLimits(db, changes);
+  }
+
+  if (body.rejectUnknownRecipients !== undefined) {
+    await setRejectUnknownRecipients(db, body.rejectUnknownRecipients);
   }
 
   if (body.outboundPaused !== undefined) {
