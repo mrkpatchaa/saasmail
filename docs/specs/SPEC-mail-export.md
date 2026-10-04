@@ -113,3 +113,43 @@ string; date: Date }>`:
 - New `docs/data.md` ("Export, import and backups" — the other two Stage 11 specs add their sections),
   linked from `docs/README.md`; `docs/mailbox-state.md` (the `.eml` download).
 - CHANGELOG `### Added`: **Export a mailbox as mbox; download any message as .eml.** …
+
+## Spec changes (made while building it)
+
+The five decisions stand. What the code does differently from the sections above, and why:
+
+1. **JMAP sends** are read from `jmap_message_content.raw_r2_key`, the message `buildRawMessage` already
+   wrote when the content was created (and what JMAP serves as its `blobId`), rather than rebuilt again.
+   Same bytes, no second rendering.
+2. **State headers.** `X-Saasmail-Labels` carries the state Gmail-style (`Inbox` / `Sent` / `Junk` /
+   `Trash`, none for archived mail, then `Starred` and the custom folders), because that is what
+   `SPEC-mail-import.md` decision 3 reads back; plus `X-Saasmail-Seen` (received mail), `-Person` and
+   `-Conversation`. Starred and seen are the requester's. **No seen-by count:** counting readers per
+   message means scanning `message_user_state` (its key starts with the user), and an import has
+   nothing to restore it to.
+3. **Rebuilt received mail** takes its addresses, subject, Message-ID and threading headers from the
+   stored columns, and copies only `List-*`, `Auto-Submitted`, `Authentication-Results`,
+   `Received-SPF`, `DKIM-Signature` and `X-Spam-Score` from `raw_headers`.
+4. **Slices are safe to run twice.** The queue message carries the slice number (`{ type:
+"mail_export", jobId, slice }`), and a delivery for a slice the job has passed does nothing; a slice
+   is claimed with a two-minute lease, so two deliveries of one slice cannot both run (the second is
+   retried after the lease, and then finds the slice done); MIME boundaries are derived from the message
+   id, so a retried slice re-uploads identical parts. Slices stop between pages of 50.
+5. **Parts are exactly 5 MiB** (R2 wants every part but the last to be the same size); the bytes short of
+   a part are carried to the next slice in an R2 object. An export smaller than one part is written with
+   a single put and its multipart upload aborted. Completion is its own step (the last slice's message),
+   so a retry after `complete` only marks the job done.
+6. **Failure:** the consumer marks the export `failed` (and aborts the upload) on the third failed
+   attempt of a slice, before the queue's `max_retries` drops the message.
+7. **`DEMO_MODE`** has no queue consumer: the slices run in the background (`waitUntil`) of the request
+   that started the export.
+8. **Download access:** the requester only while they can still read the inbox (losing the inbox loses
+   the file); `409 EXPORT_NOT_READY` while it runs and `410 EXPIRED` after the reaper. `POST` answers
+   `403` for an inbox the caller cannot read and `400` for a reversed range.
+9. **Notification:** a new `export_ready` realtime event on the notifications hub, which also sends the
+   Web Push (the hub's push sender was split out of the new-mail path for it). The app shows a toast
+   that opens Settings → Data.
+10. **UI:** one form in **Settings → Data** for everyone (admins see every inbox there), inline rather
+    than in a dialog; the Inboxes page has a per-row **Export** link that opens it with the inbox chosen,
+    instead of its own dialog. The customer timeline has no per-message menu, so its **.eml** is a link
+    beside **Reply**.
