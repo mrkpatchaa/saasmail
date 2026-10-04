@@ -469,6 +469,7 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
       409,
     );
   }
+  let threadBackfill = latestBackfill;
   const startBackfill = async () => {
     if (!backfill) return;
     changes.clearedConversationStates = await startThreadBackfill(
@@ -477,8 +478,11 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
       backfill,
       (promise) => c.executionCtx.waitUntil(promise),
     );
+    // Read back: the job now has its total (and in demo mode, progress).
+    threadBackfill = backfillStatus(
+      (await latestThreadBackfills(db, [email])).get(email) ?? backfill,
+    );
   };
-  const threadBackfill = backfill ? backfillStatus(backfill) : latestBackfill;
 
   const auditInboxUpdate = async () => {
     const fields = Object.keys(changes).filter(

@@ -515,6 +515,8 @@ describe("switching an inbox's conversation mode", () => {
     expect(body.threadBackfill).toMatchObject({
       mode: "headers",
       status: "running",
+      processed: 0,
+      total: 12,
     });
     expect(queued).toEqual([
       { type: "thread_backfill", jobId: body.threadBackfill.id, slice: 0 },
