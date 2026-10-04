@@ -4,7 +4,11 @@ import { sentEmails } from "../../db/sent-emails.schema";
 import { computeConversationId, externalsOnly } from "../conversation-id";
 import type { ParsedAttachment, ParsedEmail } from "../email-parser";
 import { findOrCreatePersonId } from "../sent-bookkeeping";
-import { keptAttachments, storeAttachments } from "./store-received";
+import {
+  keptAttachments,
+  storeAttachments,
+  storedBody,
+} from "./store-received";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
@@ -68,8 +72,8 @@ export async function storeSentMessage(
     fromAddress: inbox,
     toAddress: primary.email,
     subject: parsed.subject || "",
-    bodyHtml,
-    bodyText: parsed.bodyText,
+    bodyHtml: storedBody(bodyHtml),
+    bodyText: storedBody(parsed.bodyText),
     inReplyTo: parsed.headers["in-reply-to"]?.trim() || null,
     messageId: parsed.messageId,
     status: "sent",

@@ -12,6 +12,18 @@ import { sanitizeFilename } from "../sanitize-filename";
 type Db = DrizzleD1Database<any>;
 
 export const MAX_ATTACHMENTS = 50;
+/**
+ * Imported bodies are cut to this many characters for storage: D1 takes at
+ * most 2 MB per row. The whole message stays in R2 (`raw_r2_key`).
+ */
+export const MAX_IMPORTED_BODY_CHARS = 250_000;
+
+/** A body cut for storage, when it is longer than an import keeps. */
+export function storedBody(value: string | null): string | null {
+  return value && value.length > MAX_IMPORTED_BODY_CHARS
+    ? value.slice(0, MAX_IMPORTED_BODY_CHARS)
+    : value;
+}
 export const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
 /** The domains of our inboxes: participants there are the team, not customers. */
@@ -248,8 +260,8 @@ export async function storeReceivedMessage(
     personId,
     recipient: inbox,
     subject: parsed.subject,
-    bodyHtml,
-    bodyText: parsed.bodyText,
+    bodyHtml: imported ? storedBody(bodyHtml) : bodyHtml,
+    bodyText: imported ? storedBody(parsed.bodyText) : parsed.bodyText,
     rawHeaders: JSON.stringify(parsed.headers),
     messageId: parsed.messageId,
     // postal-mime keys headers in lowercase; JMAP exposes these as
