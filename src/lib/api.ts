@@ -1777,6 +1777,13 @@ export async function updateAdminSettings(changes: {
   });
 }
 
+/** Addresses with recent mail that are not inboxes: what rejection would refuse. */
+export async function fetchUnknownRecipients(): Promise<{
+  addresses: { address: string; count: number; lastReceivedAt: number }[];
+}> {
+  return apiFetch("/api/admin/settings/unknown-recipients");
+}
+
 export interface SendUsage {
   day: string;
   limits: DailySendLimits;

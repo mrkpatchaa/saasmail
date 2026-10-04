@@ -72,6 +72,7 @@ export const RuleActionSchema = z.discriminatedUnion("type", [
     // It travels in the SMTP reply: printable ASCII on one line.
     reason: z
       .string()
+      .trim()
       .min(1)
       .max(200)
       .regex(/^[\x20-\x7E]+$/, "Use printable ASCII characters only")

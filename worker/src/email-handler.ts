@@ -34,6 +34,7 @@ import { ruleActor } from "./lib/audit/actors";
 import { runWithAudit } from "./lib/audit/context";
 import {
   UNKNOWN_RECIPIENT_REASON,
+  hasInboxMembers,
   recordInboundRejection,
   rejectsUnknownRecipients,
 } from "./lib/inbound-rejection";
@@ -91,10 +92,15 @@ export async function handleEmail(
     (row) => row.email.trim().toLowerCase() === recipientCanonical,
   );
 
-  // Mail to an address that is not an inbox is refused while the sender's
-  // server is still connected, when an admin turned that on. Off, the
-  // catch-all stores mail to any address under the routed domains.
-  if (!inboxIdentity && (await rejectsUnknownRecipients(db))) {
+  // Mail to an address that is not an inbox (no sender identity, no members)
+  // is refused while the sender's server is still connected, when an admin
+  // turned that on. Off, the catch-all stores mail to any address under the
+  // routed domains.
+  if (
+    !inboxIdentity &&
+    (await rejectsUnknownRecipients(db)) &&
+    !(await hasInboxMembers(db, recipientCanonical))
+  ) {
     message.setReject(UNKNOWN_RECIPIENT_REASON);
     await recordInboundRejection(db, {
       from: fromAddressCanonical,

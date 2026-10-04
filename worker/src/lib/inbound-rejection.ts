@@ -1,6 +1,7 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { appSettings } from "../db/app-settings.schema";
+import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { currentAuditActor } from "./audit/context";
 import { AUDIT_ACTIONS } from "./audit/events";
 import { recordAudit } from "./audit/record";
@@ -20,6 +21,54 @@ export async function rejectsUnknownRecipients(db: Db): Promise<boolean> {
     .where(eq(appSettings.key, REJECT_UNKNOWN_RECIPIENTS_KEY))
     .limit(1);
   return row?.value === "true";
+}
+
+/**
+ * Whether an address is one of ours for unknown-recipient rejection: it has a
+ * sender identity, or members are assigned to it. An address that only
+ * received mail through the catch-all is not.
+ */
+export async function hasInboxMembers(
+  db: Db,
+  address: string,
+): Promise<boolean> {
+  const [row] = await db
+    .select({ email: inboxPermissions.email })
+    .from(inboxPermissions)
+    .where(sql`lower(${inboxPermissions.email}) = ${address}`)
+    .limit(1);
+  return row !== undefined;
+}
+
+/**
+ * Addresses that received mail in the last `days` days but are not inboxes
+ * (no identity, no members): what turning rejection on would start to
+ * refuse. Busiest first, at most 50.
+ */
+export async function recentUnknownRecipients(
+  db: Db,
+  input: { now: number; days?: number },
+): Promise<{ address: string; count: number; lastReceivedAt: number }[]> {
+  const since = input.now - (input.days ?? 30) * 24 * 60 * 60;
+  const rows = await db.all<{
+    recipient: string;
+    count: number;
+    last_received_at: number;
+  }>(sql`
+    SELECT recipient, COUNT(*) AS count, MAX(received_at) AS last_received_at
+    FROM emails
+    WHERE received_at >= ${since}
+      AND recipient NOT IN (SELECT lower(email) FROM sender_identities)
+      AND recipient NOT IN (SELECT lower(email) FROM inbox_permissions)
+    GROUP BY recipient
+    ORDER BY count DESC, recipient
+    LIMIT 50
+  `);
+  return rows.map((row) => ({
+    address: row.recipient,
+    count: Number(row.count),
+    lastReceivedAt: Number(row.last_received_at),
+  }));
 }
 
 /** Turns unknown-recipient rejection on or off, as the current actor. */

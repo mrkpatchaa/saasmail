@@ -6,6 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { handleEmail } from "../email-handler";
 import { auditEvents } from "../db/audit-events.schema";
 import { blocklist } from "../db/blocklist.schema";
+import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { rules } from "../db/rules.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { rejectionOf, selectMatchingRules } from "../lib/rules/evaluate";
@@ -33,19 +34,38 @@ function inboundMessage(options: {
   from?: string;
   messageId: string;
   subject?: string;
+  spamScore?: number;
+  attachment?: boolean;
 }) {
   const to = options.to ?? INBOX;
   const from = options.from ?? "customer@example.com";
-  const lines = [
+  const head = [
     `From: Customer <${from}>`,
     `To: ${to}`,
     `Subject: ${options.subject ?? "Hello"}`,
     `Message-ID: <${options.messageId}>`,
     "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=utf-8",
-    "",
-    "hello",
+    ...(options.spamScore === undefined
+      ? []
+      : [`X-Spam-Score: ${options.spamScore}`]),
   ];
+  const lines = options.attachment
+    ? [
+        ...head,
+        'Content-Type: multipart/mixed; boundary="b1"',
+        "",
+        "--b1",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "hello",
+        "--b1",
+        'Content-Type: text/plain; name="note.txt"',
+        'Content-Disposition: attachment; filename="note.txt"',
+        "",
+        "attached",
+        "--b1--",
+      ]
+    : [...head, "Content-Type: text/plain; charset=utf-8", "", "hello"];
   const raw = new TextEncoder().encode(lines.join("\r\n"));
   const rejections: string[] = [];
   const message = {
@@ -63,9 +83,13 @@ function inboundMessage(options: {
   return { message, rejections };
 }
 
+/** waitUntil work the last delivery started (fan-out, forwards, webhooks). */
+let lastPending: Promise<unknown>[] = [];
+
 async function deliver(options: Parameters<typeof inboundMessage>[0]) {
   const { message, rejections } = inboundMessage(options);
   const pending: Promise<unknown>[] = [];
+  lastPending = pending;
   const ctx = {
     waitUntil(promise: Promise<unknown>) {
       pending.push(Promise.resolve(promise));
@@ -204,11 +228,25 @@ describe("a reject rule", () => {
       conditions: [fromSpammer],
       actions: [{ type: "reject", reason: "We do not accept this mail" }],
     });
+    const queue = (env as any).EMAIL_QUEUE;
+    const queued: unknown[] = [];
+    (env as any).EMAIL_QUEUE = {
+      send: async (message: unknown) => {
+        queued.push(message);
+      },
+    };
+    const before = (await env.R2.list()).objects.length;
 
-    const rejections = await deliver({
-      from: "bob@spam.example",
-      messageId: "spam-1@spam.example",
-    });
+    let rejections: string[];
+    try {
+      rejections = await deliver({
+        from: "bob@spam.example",
+        messageId: "spam-1@spam.example",
+        attachment: true,
+      });
+    } finally {
+      (env as any).EMAIL_QUEUE = queue;
+    }
 
     expect(rejections).toEqual(["We do not accept this mail"]);
     expect(await storedCounts()).toEqual({
@@ -216,8 +254,10 @@ describe("a reject rule", () => {
       people: 0,
       attachments: 0,
     });
-    const listed = await env.R2.list({ prefix: "inbound-raw/" });
-    expect(listed.objects).toHaveLength(0);
+    // No raw message, no attachment, no queue message, no background work.
+    expect((await env.R2.list()).objects.length).toBe(before);
+    expect(queued).toEqual([]);
+    expect(lastPending).toEqual([]);
 
     const [rule] = await getDb().select().from(rules).where(eq(rules.id, "r"));
     expect(rule.matchCount).toBe(1);
@@ -264,6 +304,18 @@ describe("a reject rule", () => {
     await addRule({ id: "r", actions: [{ type: "reject" }], position: 1 });
     expect(await deliver({ messageId: "m2@example.com" })).toEqual([]);
     expect((await storedCounts()).emails).toBe(1);
+  });
+
+  it("applies before the inbox spam threshold", async () => {
+    await getDb()
+      .update(senderIdentities)
+      .set({ spamThreshold: 5 })
+      .where(eq(senderIdentities.email, INBOX));
+    await addRule({ id: "r", actions: [{ type: "reject" }] });
+    expect(
+      await deliver({ messageId: "spammy@example.com", spamScore: 9 }),
+    ).toEqual(["Rejected by mailbox policy"]);
+    expect((await storedCounts()).emails).toBe(0);
   });
 
   it("leaves a blocked sender to the silent drop", async () => {
@@ -318,6 +370,58 @@ describe("mail to an address that is not an inbox", () => {
     });
   });
 
+  it("knows an address with assigned members but no identity", async () => {
+    await setRejectUnknownRecipients(getDb(), true);
+    const { userId } = await createTestUser({ role: "member" });
+    await getDb().insert(inboxPermissions).values({
+      userId,
+      email: "sales@saasmail.test",
+      createdAt: 1,
+      createdBy: null,
+    });
+    expect(
+      await deliver({ to: "Sales@saasmail.test", messageId: "u4@example.com" }),
+    ).toEqual([]);
+    expect((await storedCounts()).emails).toBe(1);
+  });
+
+  it("is checked before the blocklist", async () => {
+    await setRejectUnknownRecipients(getDb(), true);
+    await getDb().insert(blocklist).values({
+      id: "b2",
+      type: "domain",
+      value: "spam.example",
+      createdAt: 1,
+    });
+    expect(
+      await deliver({
+        to: "nobody@saasmail.test",
+        from: "bob@spam.example",
+        messageId: "u5@spam.example",
+      }),
+    ).toEqual(["No such mailbox"]);
+  });
+
+  it("lists the addresses with recent mail that would start bouncing", async () => {
+    const { apiKey } = await createTestUser();
+    await deliver({ to: "typo@saasmail.test", messageId: "t1@example.com" });
+    await deliver({ to: "typo@saasmail.test", messageId: "t2@example.com" });
+    await deliver({ to: INBOX, messageId: "t3@example.com" });
+    const res = await authFetch("/api/admin/settings/unknown-recipients", {
+      apiKey,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      addresses: [
+        {
+          address: "typo@saasmail.test",
+          count: 2,
+          lastReceivedAt: expect.any(Number),
+        },
+      ],
+    });
+  });
+
   it("knows an inbox written in another case", async () => {
     await setRejectUnknownRecipients(getDb(), true);
     expect(
@@ -346,9 +450,13 @@ describe("validating a reject rule", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("takes a reason of 1 to 200 printable ASCII characters", () => {
+  it("takes a reason of 1 to 200 printable ASCII characters, trimmed", () => {
     const parse = (reason: string) =>
       RuleActionSchema.safeParse({ type: "reject", reason }).success;
+    expect(
+      RuleActionSchema.parse({ type: "reject", reason: "  Go away  " }),
+    ).toEqual({ type: "reject", reason: "Go away" });
+    expect(parse("   ")).toBe(false);
     expect(parse("Go away")).toBe(true);
     expect(parse("x".repeat(200))).toBe(true);
     expect(parse("x".repeat(201))).toBe(false);

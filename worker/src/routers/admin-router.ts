@@ -10,6 +10,7 @@ import { json200Response, json201Response } from "../lib/helpers";
 import type { Variables } from "../variables";
 import type { OutboxDrainMessage } from "../lib/outbox";
 import {
+  recentUnknownRecipients,
   rejectsUnknownRecipients,
   setRejectUnknownRecipients,
 } from "../lib/inbound-rejection";
@@ -355,7 +356,7 @@ const UpdateSettingsSchema = z.object({
   }),
   rejectUnknownRecipients: z.boolean().optional().openapi({
     description:
-      "Refuse inbound mail to addresses that are not inboxes at SMTP time (`550 No such mailbox`). Off by default: the catch-all stores mail to any address under the routed domains.",
+      "Refuse inbound mail to addresses that are not inboxes (no sender identity and no assigned members) at SMTP time, with a permanent error and `No such mailbox`. Off by default: the catch-all stores mail to any address under the routed domains.",
   }),
   dailySendLimits: z
     .object({
@@ -459,6 +460,44 @@ const getSettingsRoute = createRoute({
 
 adminRouter.openapi(getSettingsRoute, async (c) => {
   return c.json(await readSettings(c.get("db")), 200);
+});
+
+const unknownRecipientsRoute = createRoute({
+  method: "get",
+  path: "/settings/unknown-recipients",
+  tags: ["Admin"],
+  description:
+    "Addresses that received mail in the last 30 days but are not inboxes (no sender identity, no assigned members): what `rejectUnknownRecipients` would start to refuse. Busiest first, at most 50.",
+  responses: {
+    500: { description: "Internal server error" },
+    200: {
+      description: "Addresses that would be refused",
+      content: {
+        "application/json": {
+          schema: z.object({
+            addresses: z.array(
+              z.object({
+                address: z.string(),
+                count: z.number().int(),
+                lastReceivedAt: z.number().int(),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+  },
+});
+
+adminRouter.openapi(unknownRecipientsRoute, async (c) => {
+  return c.json(
+    {
+      addresses: await recentUnknownRecipients(c.get("db"), {
+        now: Math.floor(Date.now() / 1000),
+      }),
+    },
+    200,
+  );
 });
 
 const SendUsageSchema = z.object({

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   fetchAdminSettings: vi.fn(),
+  fetchUnknownRecipients: vi.fn(),
   updateAdminSettings: vi.fn(),
 }));
 
@@ -19,6 +20,7 @@ describe("UnknownRecipientsSetting", () => {
     api.updateAdminSettings.mockResolvedValue({
       rejectUnknownRecipients: true,
     });
+    api.fetchUnknownRecipients.mockResolvedValue({ addresses: [] });
   });
 
   it("shows the catch-all default and turns rejection on", async () => {
@@ -37,5 +39,38 @@ describe("UnknownRecipientsSetting", () => {
       }),
     );
     await waitFor(() => expect(box.checked).toBe(true));
+  });
+
+  it("lists the addresses that would start bouncing and waits for a yes", async () => {
+    api.fetchUnknownRecipients.mockResolvedValue({
+      addresses: [
+        { address: "sales@acme.com", count: 12, lastReceivedAt: 1 },
+        { address: "typo@acme.com", count: 1, lastReceivedAt: 1 },
+      ],
+    });
+    render(<UnknownRecipientsSetting />);
+    const box = (await screen.findByRole("checkbox")) as HTMLInputElement;
+    await waitFor(() => expect(box.disabled).toBe(false));
+
+    fireEvent.click(box);
+    const list = await screen.findByTestId("unknown-recipients-list");
+    expect(list.textContent).toBe(
+      "sales@acme.com (12 messages)typo@acme.com (1 message)",
+    );
+    expect(api.updateAdminSettings).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByTestId("unknown-recipients-list")).toBeNull();
+    expect(box.checked).toBe(false);
+
+    fireEvent.click(box);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Turn on anyway" }),
+    );
+    await waitFor(() =>
+      expect(api.updateAdminSettings).toHaveBeenCalledWith({
+        rejectUnknownRecipients: true,
+      }),
+    );
   });
 });
