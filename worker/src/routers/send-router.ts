@@ -7,6 +7,7 @@ import { replyToEmail, sendEmail } from "../lib/send-email";
 import { bearerSecurity } from "../lib/openapi-auth";
 import { MAX_CC_ENTRIES } from "../lib/send-limits";
 import { respondIdempotently } from "../lib/idempotent-send-route";
+import { sendRequestFields } from "../lib/send-idempotency";
 import {
   idempotencyConflictResponses,
   idempotencyKeyHeader,
@@ -178,7 +179,7 @@ sendRouter.openapi(sendEmailRoute, async (c) => {
     c,
     {
       payloadKey: idempotencyKey,
-      fields: { kind: "send", ...sendFields(payload) },
+      fields: { kind: "send", ...sendRequestFields(payload) },
       files,
     },
     async () => {
@@ -204,37 +205,6 @@ sendRouter.openapi(sendEmailRoute, async (c) => {
     },
   );
 });
-
-/**
- * The fields that make two send requests the same request, normalised the
- * way the send path normalises them (addresses trimmed and lowercased).
- */
-function sendFields(payload: {
-  to?: string;
-  fromAddress: string;
-  cc?: { email: string; name?: string | null }[];
-  subject?: string;
-  bodyHtml?: string;
-  bodyText?: string;
-  replyTo?: string;
-  transactional?: boolean;
-}): Record<string, unknown> {
-  const address = (value: string | undefined) =>
-    value === undefined ? undefined : value.trim().toLowerCase();
-  return {
-    to: address(payload.to),
-    fromAddress: address(payload.fromAddress),
-    cc: payload.cc?.map((entry) => ({
-      email: address(entry.email),
-      name: entry.name ?? null,
-    })),
-    subject: payload.subject,
-    bodyHtml: payload.bodyHtml,
-    bodyText: payload.bodyText,
-    replyTo: address(payload.replyTo),
-    transactional: payload.transactional,
-  };
-}
 
 export const ReplyEmailSchema = z
   .object({
@@ -366,7 +336,7 @@ sendRouter.openapi(replyEmailRoute, async (c) => {
         recipient,
         templateSlug: replyPayload.templateSlug,
         variables: replyPayload.variables,
-        ...sendFields(replyPayload),
+        ...sendRequestFields(replyPayload),
       },
       files,
     },

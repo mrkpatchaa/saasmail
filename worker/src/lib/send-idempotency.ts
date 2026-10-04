@@ -106,6 +106,37 @@ export async function sendFingerprint(
   return sha256Hex(canonicalJson({ ...fields, attachments }));
 }
 
+/**
+ * The fields that make two send requests the same request, normalised the
+ * way the send path normalises them (addresses trimmed and lowercased).
+ */
+export function sendRequestFields(payload: {
+  to?: string;
+  fromAddress: string;
+  cc?: { email: string; name?: string | null }[];
+  subject?: string;
+  bodyHtml?: string;
+  bodyText?: string;
+  replyTo?: string;
+  transactional?: boolean;
+}): Record<string, unknown> {
+  const address = (value: string | undefined) =>
+    value === undefined ? undefined : value.trim().toLowerCase();
+  return {
+    to: address(payload.to),
+    fromAddress: address(payload.fromAddress),
+    cc: payload.cc?.map((entry) => ({
+      email: address(entry.email),
+      name: entry.name ?? null,
+    })),
+    subject: payload.subject,
+    bodyHtml: payload.bodyHtml,
+    bodyText: payload.bodyText,
+    replyTo: address(payload.replyTo),
+    transactional: payload.transactional,
+  };
+}
+
 /** What a send route or tool answered. Only a 2xx answer is remembered. */
 export interface IdempotentResponse<T = unknown> {
   status: number;
