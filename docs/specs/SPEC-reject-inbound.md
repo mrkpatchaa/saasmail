@@ -129,5 +129,5 @@ The five decisions are unchanged. What the code does differently, and why:
 6. The dry run takes the rule's `actions` (optional, alongside `conditions`) to answer `wouldReject`.
 7. The unknown-recipient toggle sits at the bottom of the **Inboxes** page, read and written through
    `GET`/`PATCH /api/admin/settings` (`rejectUnknownRecipients`).
-8. `reject` is part of the shared action schema, so every surface that creates rules through it (the
-   HTTP API, the web, the agent's tools) can create one; validation is the same everywhere.
+8. Rules are created only through the admin HTTP API (and the web page on it), so that is the one
+   place `reject` is offered; MCP's `list_rules` shows it like any other action.
