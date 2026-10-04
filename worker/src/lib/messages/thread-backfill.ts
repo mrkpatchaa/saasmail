@@ -30,6 +30,9 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = DrizzleD1Database<any>;
 
+/** The D1 binding behind a drizzle database (drizzle sets `$client`). */
+const d1Of = (db: Db) => (db as Db & { $client: D1Database }).$client;
+
 /** A queued slice of an inbox's thread backfill. */
 export type ThreadBackfillMessage = {
   type: "thread_backfill";
@@ -70,7 +73,9 @@ function prepared(
       ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (db as any).dialect.sqlToQuery(statement)
       : statement.toSQL();
-  return db.$client.prepare(query.sql).bind(...query.params);
+  return d1Of(db)
+    .prepare(query.sql)
+    .bind(...query.params);
 }
 
 /** The newest backfill of an inbox, running or not. */
@@ -248,7 +253,7 @@ export async function runThreadBackfillSlice(
       const next: BackfillParams = { ...state.params, ...step.progress };
       const nextRaw = JSON.stringify(next);
       // One transaction: the rows and the progress that covers them.
-      const saved = await db.$client.batch([
+      const saved = await d1Of(db).batch([
         ...step.statements.map((statement) => prepared(db, statement)),
         prepared(
           db,
