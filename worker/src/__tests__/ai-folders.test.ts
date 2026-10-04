@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { MockLanguageModelV4 } from "ai/test";
+import { APICallError } from "ai";
 import { eq, sql } from "drizzle-orm";
 import { auditEvents } from "../db/audit-events.schema";
 import { mailboxes } from "../db/mailboxes.schema";
@@ -134,6 +135,37 @@ describe("the filing prompt", () => {
     );
   });
 
+  it("bounds the subject and the attachments", () => {
+    const { prompt } = buildFilingPrompt({
+      folders: [],
+      message: {
+        ...message,
+        subject: "s".repeat(1000),
+        attachments: Array.from({ length: 50 }, (_, i) => ({
+          filename: `${i}-${"n".repeat(300)}`,
+          contentType: "text/plain",
+        })),
+      },
+    });
+    const body = JSON.parse(prompt.split("\n")[1]!) as {
+      subject: string;
+      attachments: { name: string }[];
+    };
+    expect(body.subject).toHaveLength(300);
+    expect(body.attachments).toHaveLength(20);
+    expect(body.attachments[0]!.name).toHaveLength(100);
+  });
+
+  it("keeps a forward's quoted content rather than an empty excerpt", () => {
+    expect(
+      filingExcerpt({
+        ...message,
+        bodyText:
+          "---------- Forwarded message ---------\nFrom: billing@vendor.com\nInvoice 77 is due",
+      }),
+    ).toContain("Invoice 77 is due");
+  });
+
   it("caps the excerpt and falls back to the HTML as text", () => {
     expect(
       filingExcerpt({ ...message, bodyText: "x".repeat(5000) }),
@@ -162,6 +194,12 @@ describe("reading the answer", () => {
     expect(
       parseFilingAnswer('{"folders":["a","b","c","d","e","f"]}', known),
     ).toHaveLength(5);
+  });
+
+  it("finds the folders object after other braces, and trims ids", () => {
+    expect(
+      parseFilingAnswer(`I'd pick {Billing}: {"folders":[" a "]}`, known),
+    ).toEqual(["a"]);
   });
 
   it("reads anything else as no folder", () => {
@@ -234,6 +272,49 @@ describe("filing a message", () => {
     expect(states.every((state) => state.archivedAt === null)).toBe(true);
   });
 
+  it("changes nothing on an answer that names no known folder", async () => {
+    await addFolder("billing");
+    expect(
+      await fileWithAi(getDb(), bindings, job(), answering("Billing, I think")),
+    ).toEqual([]);
+    expect(await folderIds("e1")).toEqual([]);
+  });
+
+  it("files no mail in Junk or Trash, and calls no model for it", async () => {
+    await addFolder("billing");
+    const model = answering('{"folders":["billing"]}');
+    for (const state of [{ spamAt: 1 }, { trashedAt: 1 }]) {
+      await getDb().delete(mailboxMessageState);
+      await getDb()
+        .insert(mailboxMessageState)
+        .values({
+          messageKind: "received",
+          messageId: "e1",
+          inbox: INBOX,
+          ...state,
+          updatedAt: 1,
+        } as never);
+      expect(await fileWithAi(getDb(), bindings, job(), model)).toEqual([]);
+    }
+    expect(model.doGenerateCalls).toHaveLength(0);
+  });
+
+  it("ends without a retry when the provider will never accept the request", async () => {
+    await addFolder("billing");
+    const refusing = new MockLanguageModelV4({
+      doGenerate: async () => {
+        throw new APICallError({
+          message: "model not found",
+          url: "https://api.example.com",
+          requestBodyValues: {},
+          statusCode: 404,
+          isRetryable: false,
+        });
+      },
+    });
+    expect(await fileWithAi(getDb(), bindings, job(), refusing)).toEqual([]);
+  });
+
   it("calls no model without a described folder, or for a message that is gone", async () => {
     const model = answering('{"folders":["billing"]}');
     expect(await fileWithAi(getDb(), bindings, job(), model)).toEqual([]);
@@ -279,6 +360,36 @@ describe("an ai_file rule", () => {
     await addFolder("billing");
     await expect(validate(INBOX, 2)).rejects.toThrow(InvalidRuleError);
     await expect(validate(INBOX)).resolves.toBeUndefined();
+  });
+
+  it("can still be switched off after the inbox lost its described folders", async () => {
+    const { apiKey } = await createTestUser();
+    await addFolder("billing");
+    const created = await authFetch("/api/admin/rules", {
+      apiKey,
+      method: "POST",
+      body: JSON.stringify({
+        name: "File",
+        inbox: INBOX,
+        conditions: [],
+        actions: [{ type: "ai_file" }],
+        position: 0,
+      }),
+    });
+    expect(created.status).toBe(201);
+    const { id } = (await created.json()) as { id: string };
+    await getDb().run(sql`UPDATE mailboxes SET ai_description = NULL`);
+
+    const off = await authFetch(`/api/admin/rules/${id}`, {
+      apiKey,
+      method: "PATCH",
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toMatchObject({
+      enabled: false,
+      warnings: [{ actionIndex: 0, code: "no_ai_folders" }],
+    });
   });
 
   it("queues a filing job when it matches", async () => {
@@ -386,6 +497,21 @@ describe("the folder and message routes", () => {
     expect(rows[0]).toHaveProperty("aiDescription", null);
   });
 
+  it("record a change to a folder's description", async () => {
+    await addFolder("billing");
+    await authFetch("/api/mailboxes/billing", {
+      apiKey,
+      method: "PATCH",
+      body: JSON.stringify({ aiDescription: "Everything" }),
+    });
+    const [event] = (await getDb().select().from(auditEvents)).filter(
+      (row) => row.action === "folder.updated",
+    );
+    expect(JSON.parse(event!.details!)).toEqual({
+      aiDescription: { from: "Mail about billing", to: "Everything" },
+    });
+  });
+
   it("refuse an unknown colour, and a 31st described folder", async () => {
     const bad = await authFetch("/api/mailboxes", {
       apiKey,
@@ -460,7 +586,7 @@ describe("the folder and message routes", () => {
     it("queues one job per message, records one audit row, and answers 202", async () => {
       const res = await fileRefs(["received:e1", "received:e2"]);
       expect(res.status).toBe(202);
-      expect(await res.json()).toEqual({ queued: 2 });
+      expect(await res.json()).toEqual({ queued: 2, skipped: 0 });
       const sorted = [...(queued as { emailId: string }[])].sort((a, b) =>
         a.emailId.localeCompare(b.emailId),
       );
@@ -477,6 +603,47 @@ describe("the folder and message routes", () => {
       );
       expect(events).toHaveLength(1);
       expect(JSON.parse(events[0].details!)).toMatchObject({ count: 2 });
+    });
+
+    it("takes 50 messages at once, skipping mail in Junk", async () => {
+      for (let i = 0; i < 48; i++) {
+        await createTestEmail({
+          id: `m${i}`,
+          personId: "p1",
+          recipient: INBOX,
+          messageId: `<m${i}@example.com>`,
+        });
+      }
+      await getDb()
+        .insert(mailboxMessageState)
+        .values({
+          messageKind: "received",
+          messageId: "e2",
+          inbox: INBOX,
+          spamAt: 1,
+          updatedAt: 1,
+        } as never);
+      const refs = [
+        "received:e1",
+        "received:e2",
+        ...Array.from({ length: 48 }, (_, i) => `received:m${i}`),
+      ];
+      const res = await fileRefs(refs);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ queued: 49, skipped: 1 });
+      expect(queued).toHaveLength(49);
+    });
+
+    it("allows 20 requests an hour per person", async () => {
+      for (let i = 0; i < 20; i++) {
+        expect((await fileRefs(["received:e1"])).status).toBe(202);
+      }
+      const limited = await fileRefs(["received:e1"]);
+      expect(limited.status).toBe(429);
+      expect(Number(limited.headers.get("Retry-After"))).toBeGreaterThan(0);
+      expect(await limited.json()).toMatchObject({
+        code: "AI_FILE_RATE_LIMITED",
+      });
     });
 
     it("refuses more than 50 messages and a message the caller cannot see", async () => {

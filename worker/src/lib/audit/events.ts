@@ -23,6 +23,7 @@ export const AUDIT_ACTIONS = {
   inboxDeleted: "inbox.deleted",
   folderCreated: "folder.created",
   folderRenamed: "folder.renamed",
+  folderUpdated: "folder.updated",
   folderDeleted: "folder.deleted",
   ruleCreated: "rule.created",
   ruleUpdated: "rule.updated",

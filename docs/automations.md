@@ -72,20 +72,30 @@ is archived.
   handler never waits on a model. Later rules therefore cannot act on the
   folders it chooses.
 - The model sees the sender, subject, the first 4,000 characters of the body
-  (without the quoted reply) and the attachments' names, as quoted data it is
-  told never to obey, and the folders' names and descriptions. It may answer
-  with ids from that list only (at most five); anything else is ignored, and an
-  error changes nothing (a failed call is retried by the queue). The worst a
-  hostile message can do is land in the wrong folder.
+  (without the quoted reply, unless that is all there is, as in a forward) and
+  up to 20 attachment names, as quoted data it is told never to obey, and the
+  folders' names and descriptions. It may answer with ids from that list only
+  (at most five); anything else is ignored. A hostile message can at worst land
+  in the wrong folder, or, with `archiveWhenFiled`, skip the inbox.
+- Mail in Junk or Trash is not filed. A temporary model error is retried by
+  the queue after 30 seconds; a request the provider will never accept (an
+  unknown model, say) ends with a warning in the logs and changes nothing.
 - With `archiveWhenFiled`, a message it filed is also archived (it skips the
   inbox); one it filed nowhere stays where it is.
 - It uses the agent's provider; `TRIAGE_MODEL` picks a different model for
   filing ([Native mail agent](agent.md#triage_model)). With no model
   configured the action does nothing. Filing writes no audit row; the rule's
-  match count records it.
+  match count records it. A change to a folder's description is recorded
+  (`folder.updated`).
+- Every matching message is one model call. Mail above the inbox spam
+  threshold runs no rule actions; without a threshold, add a `spam_score`
+  condition to the rule so junk does not cost a call.
+- A rule whose inbox no longer has a described folder files nothing and shows
+  a warning; it can still be switched off or renamed.
 
 People can also ask for it: **File with AI** in Mail files the selected
-received messages (at most 50) the same way, without archiving.
+received messages (at most 50, at most 20 requests an hour per person) the
+same way, without archiving and skipping Junk and Trash.
 
 ## Rejecting mail
 

@@ -152,9 +152,13 @@ function actionSummary(action: RuleAction): string {
 }
 
 function warningMessage(warning: RuleWarning): string {
-  return warning.code === "missing_folder"
-    ? "Folder was deleted; this action does nothing"
-    : "Assignee is unavailable; this action does nothing";
+  if (warning.code === "missing_folder") {
+    return "Folder was deleted; this action does nothing";
+  }
+  if (warning.code === "no_ai_folders") {
+    return "No folder in this inbox has a description; the AI files nothing";
+  }
+  return "Assignee is unavailable; this action does nothing";
 }
 
 function emptyDraft(position: number): AutomationRuleInput {
@@ -335,7 +339,8 @@ export default function AutomationsPage() {
           ? current.actions.map((action) =>
               action.type === "move_to_folder" ||
               action.type === "assign" ||
-              action.type === "auto_reply"
+              action.type === "auto_reply" ||
+              action.type === "ai_file"
                 ? ({ type: "archive" } as const)
                 : action,
             )

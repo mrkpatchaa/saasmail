@@ -341,11 +341,18 @@ export default function MailPage() {
       return;
     }
     try {
-      const { queued } = await fileWithAi(received.slice(0, 50));
+      const { queued, skipped } = await fileWithAi(received.slice(0, 50));
+      const notes = [
+        "Folders appear in a few seconds.",
+        received.length > 50 ? "Only the first 50 were sent." : null,
+        skipped > 0
+          ? `${skipped} in Junk or Trash ${skipped === 1 ? "was" : "were"} skipped.`
+          : null,
+      ].filter(Boolean);
       showToast({
         kind: "success",
         message: `Filing ${queued} ${queued === 1 ? "message" : "messages"} with AI`,
-        description: "Folders appear in a few seconds.",
+        description: notes.join(" "),
       });
     } catch (error) {
       showToast({

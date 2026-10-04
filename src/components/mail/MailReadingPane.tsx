@@ -337,11 +337,18 @@ export default function MailReadingPane({
                           <DropdownMenuItem
                             data-testid="mail-ai-file"
                             disabled={aiFile.unavailable !== null}
-                            title={aiFile.unavailable ?? undefined}
                             onSelect={() => aiFile.onFile(selectedMessage)}
                           >
                             <Sparkles className="h-4 w-4" />
-                            File with AI
+                            <span className="flex flex-col">
+                              File with AI
+                              {/* A disabled item takes no hover: say why here. */}
+                              {aiFile.unavailable && (
+                                <span className="text-[11px] text-text-tertiary">
+                                  {aiFile.unavailable}
+                                </span>
+                              )}
+                            </span>
                           </DropdownMenuItem>
                         )}
                         {mailboxId && (

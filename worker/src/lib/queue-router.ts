@@ -208,7 +208,8 @@ export async function handleQueueBatch(
         msg.ack();
       } else {
         console.error(`[queue] ${kind} failed:`, err);
-        if (kind === "suggest_reply") {
+        if (kind === "suggest_reply" || kind === "ai_file") {
+          // A model call: give the provider time before asking again.
           msg.retry({ delaySeconds: SUGGEST_REPLY_RETRY_DELAY_SECONDS });
         } else {
           msg.retry();

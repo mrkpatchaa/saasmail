@@ -114,7 +114,9 @@ description removes it. An inbox can have at most 30 described folders
 
 `POST /api/messages/ai-file` with `{ refs }` (at most 50 received messages
 the caller can see) asks the AI to file them into their inbox's described
-folders, in the background, and answers `202 { queued }`. It needs a
+folders, in the background, and answers `202 { queued, skipped }` (mail in
+Junk or Trash is skipped). At most 20 requests an hour per person
+(`429 AI_FILE_RATE_LIMITED`). It needs a
 [configured model](agent.md#provider-selection) (`400 NO_MODEL`) and a
 described folder in each inbox (`400 NO_AI_FOLDERS`), and records one
 `mail.ai_file_requested` audit row.

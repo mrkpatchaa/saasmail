@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
-import { generateText, type LanguageModel } from "ai";
+import { APICallError, generateText, type LanguageModel } from "ai";
 import { inboxPermissions } from "../../db/inbox-permissions.schema";
 import { users } from "../../db/auth.schema";
 import {
@@ -9,7 +9,11 @@ import {
   type SelectedAgentModel,
 } from "../agent/provider";
 import { queryMessages } from "../messages/query";
-import { setMailboxMembership, setMailboxState } from "../messages/state";
+import {
+  MessageStateAccessError,
+  setMailboxMembership,
+  setMailboxState,
+} from "../messages/state";
 import { MAX_ADMIN_FANOUT, computeFanoutTargets } from "../notification-fanout";
 import { describedFolders } from "./folders";
 import { buildFilingPrompt, parseFilingAnswer } from "./prompt";
@@ -59,8 +63,9 @@ export function triageModel(
  * picks from their descriptions, and archives it too when asked and it was
  * filed. Returns the folder ids added. A message that is gone, in Junk or
  * Trash, an inbox with no described folder or no model configured: nothing.
- * A model error throws (the queue retries); an answer that names no known
- * folder changes nothing.
+ * A model error the provider may recover from throws (the queue retries,
+ * after a delay); one it will not (an unknown model) and an answer that names
+ * no known folder change nothing.
  */
 export async function fileWithAi(
   db: Db,
@@ -72,11 +77,14 @@ export async function fileWithAi(
   const allowed = { isAdmin: false as const, inboxes: [inbox] };
   const ref = { kind: "received" as const, id: job.emailId };
 
+  // Mail in Junk or Trash is not filed: it would show in the folder.
   const page = await queryMessages(db, allowed, {
     messageRef: ref,
     limit: 1,
     includeArchived: true,
     includeSnoozed: true,
+    includeSpam: false,
+    includeTrashed: false,
     withAttachments: true,
   });
   const message = page.messages[0];
@@ -120,6 +128,17 @@ export async function fileWithAi(
       abortSignal: controller.signal,
     });
     answer = result.text;
+  } catch (error) {
+    // A request the provider will never accept (an unknown model, a bad key)
+    // is not retried: the job ends with a warning.
+    if (APICallError.isInstance(error) && !error.isRetryable) {
+      console.warn(
+        `[ai-file] the model refused the request for ${job.emailId}:`,
+        error.message,
+      );
+      return [];
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }
@@ -138,10 +157,19 @@ export async function fileWithAi(
     return [];
   }
 
-  // Routine filing, like a rule's: no user id, so no audit row.
-  await setMailboxMembership(db, allowed, null, [ref], { add });
-  if (job.archiveWhenFiled) {
-    await setMailboxState(db, allowed, null, [ref], { archived: true });
+  // Routine filing, like a rule's: no user id, so no audit row. A folder
+  // deleted since it was offered ends the job; a retry would ask again.
+  try {
+    await setMailboxMembership(db, allowed, null, [ref], { add });
+    if (job.archiveWhenFiled) {
+      await setMailboxState(db, allowed, null, [ref], { archived: true });
+    }
+  } catch (error) {
+    if (error instanceof MessageStateAccessError) {
+      console.warn(`[ai-file] could not file ${job.emailId}:`, error.message);
+      return [];
+    }
+    throw error;
   }
   await notifyMailRefresh(db, env, inbox);
   return add;

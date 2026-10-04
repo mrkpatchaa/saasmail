@@ -77,6 +77,15 @@ test.describe.serial("automations", () => {
     page.once("dialog", (confirm) => confirm.accept());
     await row.getByRole("button", { name: "Delete " + name }).click();
     await expect(row).toHaveCount(0);
+
+    // Leave no folder behind for a retry.
+    await page.goto("/mail");
+    await page.getByLabel("Mail inbox").selectOption("automations-ui@e2e.test");
+    page.once("dialog", (confirm) => confirm.accept());
+    await page.getByRole("button", { name: "Delete " + folder }).click();
+    await expect(
+      page.getByTestId("mail-custom-folder").filter({ hasText: folder }),
+    ).toHaveCount(0);
   });
 
   test("creates a reject rule, which a dry run says would reject", async ({

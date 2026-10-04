@@ -19,7 +19,16 @@ export class InvalidRuleError extends Error {
 
 export async function validateRuleActions(
   db: DrizzleD1Database<any>,
-  input: { inbox: string | null; actions: RuleAction[] },
+  input: {
+    inbox: string | null;
+    actions: RuleAction[];
+    /**
+     * Whether an `ai_file` action needs a described folder now: on create and
+     * when the actions change, not when an existing rule is switched off or
+     * renamed after the inbox lost its descriptions.
+     */
+    checkAiFolders?: boolean;
+  },
 ): Promise<void> {
   const inbox = input.inbox?.trim().toLowerCase() ?? null;
   // A rejected message is never stored, so no other action could run on it.
@@ -39,7 +48,10 @@ export async function validateRuleActions(
     if (!inbox) {
       throw new InvalidRuleError("ai_file requires an inbox-scoped rule");
     }
-    if ((await describedFolders(db, inbox)).length === 0) {
+    if (
+      input.checkAiFolders !== false &&
+      (await describedFolders(db, inbox)).length === 0
+    ) {
       throw new InvalidRuleError(
         "ai_file needs at least one folder with a description in this inbox: describe what belongs in a folder first",
         "NO_AI_FOLDERS",

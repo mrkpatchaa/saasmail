@@ -530,6 +530,39 @@ export async function updateMailbox(
   }
 
   await db.update(mailboxes).set(update).where(eq(mailboxes.id, mailboxId));
+  // A new description changes what the AI files here (and, with a rule that
+  // archives what it files, what skips the inbox): recorded, with the colour.
+  const describedChange =
+    update.aiDescription !== undefined &&
+    update.aiDescription !== mailbox.aiDescription;
+  const colorChange =
+    update.color !== undefined && update.color !== mailbox.color;
+  if (describedChange || colorChange) {
+    await recordAudit(db, {
+      action: AUDIT_ACTIONS.folderUpdated,
+      targetType: "folder",
+      targetId: mailboxId,
+      inbox: mailbox.inbox,
+      summary: describedChange
+        ? update.aiDescription
+          ? `Changed what the AI files into the folder '${mailbox.name}' in ${mailbox.inbox}`
+          : `Stopped the AI filing into the folder '${mailbox.name}' in ${mailbox.inbox}`
+        : `Changed the colour of the folder '${mailbox.name}' in ${mailbox.inbox}`,
+      details: {
+        ...(describedChange
+          ? {
+              aiDescription: {
+                from: mailbox.aiDescription,
+                to: update.aiDescription,
+              },
+            }
+          : {}),
+        ...(colorChange
+          ? { color: { from: mailbox.color, to: update.color } }
+          : {}),
+      },
+    });
+  }
   // Reordering folders is not recorded; a new name is.
   if (update.name !== undefined && update.name !== mailbox.name) {
     await recordAudit(db, {

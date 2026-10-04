@@ -133,8 +133,9 @@ The seven decisions are unchanged. What the code does differently, and why:
    also marks described folders with **AI**.
 2. A colour or a description can be set on custom folders only (`role` null); a system mailbox answers
    `400`. The 30-folder cap is checked when a description is added, not when one is changed or removed.
-3. The job reads the message through `queryMessages` with archived and snoozed mail included; mail in
-   Junk or Trash is not filed. The model call has a 30-second timeout. Filing passes no user id, so the
+3. The job reads the message through `queryMessages` with archived and snoozed mail included and Junk
+   and Trash left out (`includeSpam: false`, `includeTrashed: false`), so junk is never filed or
+   billed. The model call has a 30-second timeout. Filing passes no user id, so the
    state services write no audit row, as for a rule's routine filing; the job runs as the queue's
    system actor rather than as the rule.
 4. **The manual route refuses what cannot work**: a sent message (`400`), no configured model
@@ -145,3 +146,24 @@ The seven decisions are unchanged. What the code does differently, and why:
    reloads the list as for `email_received`, without the notification prompt.
 6. The web decides whether **File with AI** is available from `GET /api/agent/status` (`configured`)
    and the inbox's folder list, and says why in the button's title when it is not.
+7. **Retries are for errors that can pass.** A model error the provider marks non-retryable (an unknown
+   `TRIAGE_MODEL`, a bad key) ends the job with a warning instead of four failing calls; other errors
+   are retried after 30 seconds, as for suggested replies. A folder deleted between the read and the
+   write ends the job too.
+8. **The manual route is bounded**: refs are queried in chunks of 40 (the per-statement limit of
+   `queryMessages`), mail in Junk or Trash is skipped and counted (`202 { queued, skipped }`), and each
+   person may make 20 requests an hour (`429 AI_FILE_RATE_LIMITED`, counted in `auth_rate_limits`).
+   Open tabs reload once per burst of `mail_refresh` events (1.5-second debounce).
+9. **The prompt is bounded**: subject 300 characters, 20 attachments, names 100 characters. The quoted
+   tail is trimmed, unless that leaves almost nothing (a forward), in which case the untrimmed text is
+   used. The answer parser takes the first JSON object that has a `folders` list, wherever it starts.
+10. **`NO_AI_FOLDERS` is checked when a rule is created or its actions or inbox change**, not when it is
+    only switched on or off or renamed: an inbox can lose its descriptions after the rule exists. Such a
+    rule shows the warning `no_ai_folders`, and `PATCH` now answers with the rule's warnings too.
+11. **A description or colour change is audited** (`folder.updated`, with from and to): a description
+    decides what the AI files, and with an archiving rule what skips the inbox.
+12. In the reading pane, a disabled **File with AI** shows its reason as a second line (a disabled menu
+    item takes no hover, so a tooltip would never show).
+13. Known limits: the 30-folder cap is checked, then written, so two concurrent writes can pass it (the
+    job still offers at most 30); filing jobs share queue batches with sends and can delay them by
+    their model calls.

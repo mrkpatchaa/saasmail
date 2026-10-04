@@ -666,7 +666,9 @@ export async function updateMailbox(
 }
 
 /** Asks the AI to file messages into their inbox's described folders. */
-export async function fileWithAi(refs: string[]): Promise<{ queued: number }> {
+export async function fileWithAi(
+  refs: string[],
+): Promise<{ queued: number; skipped: number }> {
   return apiFetch("/api/messages/ai-file", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -1580,7 +1582,7 @@ export type RuleAction =
 
 export type RuleWarning = {
   actionIndex: number;
-  code: "missing_folder" | "assignee_unavailable";
+  code: "missing_folder" | "assignee_unavailable" | "no_ai_folders";
 };
 
 export interface AutomationRule {
