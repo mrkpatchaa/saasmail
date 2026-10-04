@@ -17,6 +17,41 @@ export const SendPathErrorSchema = z.object({
   providedBytes: z.number().int().optional(),
   missingVariables: z.array(z.string()).optional(),
   requiredVariables: z.array(z.string()).optional(),
+  code: z.string().optional().openapi({
+    description:
+      "Set for a refused idempotency key: `INVALID_IDEMPOTENCY_KEY`.",
+  }),
+});
+
+const IdempotencyErrorSchema = z.object({
+  error: z.string(),
+  code: z.string(),
+});
+
+/**
+ * The answers of a send route that took an `Idempotency-Key`: the key is
+ * still in use by a running request, or was used for a different one.
+ */
+export const idempotencyConflictResponses = {
+  409: {
+    description:
+      "A request with this idempotency key is still running (`IDEMPOTENCY_IN_PROGRESS`). Retry after the `Retry-After` seconds.",
+    content: { "application/json": { schema: IdempotencyErrorSchema } },
+  },
+  422: {
+    description:
+      "This idempotency key was already used for a different request (`IDEMPOTENCY_KEY_REUSED`). Use a new key for a new message.",
+    content: { "application/json": { schema: IdempotencyErrorSchema } },
+  },
+};
+
+/** The `Idempotency-Key` request header, for the send routes' OpenAPI. */
+export const idempotencyKeyHeader = z.object({
+  "idempotency-key": z.string().optional().openapi({
+    description:
+      "A key you generate per intended message (a UUID) and send again on every retry of it. A retry with the same key and the same request returns the first answer, with `Idempotency-Replayed: true`, instead of sending again. Kept 24 hours. 1–255 printable ASCII characters; wins over `idempotencyKey` in the payload.",
+    example: "5b8f0c1e-6c3d-4b9a-9d2e-7f1a2b3c4d5e",
+  }),
 });
 
 export const multipartParseErrorResponses = {
