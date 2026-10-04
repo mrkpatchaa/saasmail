@@ -189,3 +189,25 @@ the sections above, and why:
    strip was not built.
 10. **`claude/decisions.md` is not in this repository**, so there is no D1 note to add; the conversation
     key in both modes is documented in `docs/mailbox-state.md` and `docs/inboxes.md`.
+11. **Hardening from the review.**
+    - The PATCH route writes `threading_mode` only when the body has it, and drops an all-defaults
+      row only while its mode is still `relationship`: another admin's save can't undo a switch.
+    - Each slice first checks that the inbox still has the job's mode, and fails the job otherwise.
+    - Every row write is conditional on the run still holding the job, so a run that lost it (a stall
+      past its lease) writes nothing.
+    - A page's read and progress write count toward the slice's 400-statement budget, so a pass-2 walk
+      over mail that cites nothing stays within D1's per-invocation queries.
+    - The epoch moves before the job's status is written, so a crash in between can't skip it.
+    - A stopped backfill is audited (`inbox.updated`, `backfill: "failed"`).
+12. **Imports.** An import into a headers inbox ends with a late-parent pass over the inbox (a
+    `thread_backfill` starting at pass 2, `rethread: "import"`, no states cleared, JMAP resync at the
+    end), because the live path roots a reply met before its parent. The mode can't be switched while an
+    import into the inbox runs (`409`), since its slices read the mode as they go.
+13. **Deleting an inbox** answers `409` while its backfill runs; deleting a headers inbox starts a
+    clear to `relationship` (its mail stays, and the mode reads as the default once the row is gone).
+14. **Smaller fixes.** A bare `In-Reply-To` stays first beside bracketed `References`; a composer reply
+    to a message without a Message-ID takes the original's thread when both are in the inbox; moving a
+    sent message to another inbox re-keys it for that inbox.
+15. **Known limits, documented:** the walk is in date order, so a chain whose dates run backwards over
+    several generations can stay split; in DEMO_MODE the slices run inline after the request and in the
+    hourly run, which suits demo-sized inboxes only.

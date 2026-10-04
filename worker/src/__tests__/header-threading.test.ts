@@ -16,6 +16,8 @@ import { snoozeConversations } from "../lib/messages/conversation-state";
 import {
   BACKFILL_LIMITS,
   failThreadBackfill,
+  insertThreadBackfill,
+  rethreadAfterImport,
   runThreadBackfillSlice,
 } from "../lib/messages/thread-backfill";
 import {
@@ -179,6 +181,11 @@ describe("citedIdsOf", () => {
     ]);
     expect(citedIdsOf("bare@x", null)).toEqual(["bare@x"]);
     expect(citedIdsOf(null, null)).toEqual([]);
+    // A bare In-Reply-To still comes first beside bracketed References.
+    expect(citedIdsOf("bare@x", "<root@x> <bare@x>")).toEqual([
+      "bare@x",
+      "root@x",
+    ]);
     const many = Array.from({ length: 30 }, (_, i) => `<m${i}@x>`).join(" ");
     expect(citedIdsOf(null, many)).toHaveLength(20);
     expect(citedIdsOf(null, many)[0]).toBe("m29@x");
@@ -386,6 +393,25 @@ describe("thread keys on the write paths", () => {
     expect(reply?.threadKey).toBe(first.threadKey);
     expect(other?.threadKey).toMatch(/^t:/);
     expect(other?.threadKey).not.toBe(first.threadKey);
+  });
+
+  it("puts a reply to a message without a Message-ID in its thread", async () => {
+    await identity(INBOX, "headers");
+    await received("orig", { messageId: null, threadKey: "t:orig" });
+    const replied = await replyToEmail({
+      db: getDb(),
+      env: bindings,
+      emailId: "orig",
+      payload: { fromAddress: INBOX, bodyHtml: "<p>thanks</p>" },
+      files: [],
+      allowed: ADMIN,
+      sender: recorder(),
+    });
+    expect(replied.ok).toBe(true);
+    const [row] = await getDb()
+      .select({ threadKey: sentEmails.threadKey })
+      .from(sentEmails);
+    expect(row!.threadKey).toBe("t:orig");
   });
 
   it("snoozes a thread, not the customer, in a headers inbox", async () => {
@@ -651,6 +677,180 @@ describe("switching an inbox's conversation mode", () => {
     queued = [];
     expect((await patch({ threadingMode: "headers" })).status).toBe(200);
     expect(queued).toEqual([]);
+  });
+
+  it("records a stopped regrouping in the audit log", async () => {
+    const res = await patch({ threadingMode: "headers" });
+    const { threadBackfill } = await res.json<any>();
+    await failThreadBackfill(getDb(), threadBackfill.id, "boom");
+    const audits = await getDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "inbox.updated"));
+    expect(audits.map((row) => JSON.parse(row.details!))).toContainEqual({
+      threadingMode: "headers",
+      backfill: "failed",
+      rows: 0,
+      reason: "boom",
+    });
+  });
+
+  it("fails a backfill whose inbox no longer has its mode", async () => {
+    await received("a", { messageId: "<a@x>" });
+    const job = await insertThreadBackfill(getDb(), {
+      inbox: INBOX,
+      mode: "headers",
+      requestedBy: null,
+    });
+    // The switch's save never happened: the inbox is still by customer.
+    expect(
+      await runThreadBackfillSlice(getDb(), bindings, job!.id, 0),
+    ).toBeNull();
+    const [row] = await getDb()
+      .select()
+      .from(asyncJobs)
+      .where(eq(asyncJobs.id, job!.id));
+    expect(row!.status).toBe("failed");
+    expect(row!.errorSummary).toContain("conversation mode changed");
+    expect(await keyOf("emails", "a")).toBeNull();
+  });
+
+  it("writes nothing from a run that lost the job mid-page", async () => {
+    await received("a", { messageId: "<a@x>", at: 100 });
+    await received("b", { messageId: "<b@x>", inReplyTo: "<a@x>", at: 200 });
+    const res = await patch({ threadingMode: "headers" });
+    const { threadBackfill } = await res.json<any>();
+    const real = getDb() as any;
+    const client = real.$client;
+    // Another run takes the job between this run's read and its write.
+    const stealing = new Proxy(real, {
+      get(target, prop) {
+        if (prop === "$client") {
+          return new Proxy(client, {
+            get(c, q) {
+              if (q === "batch") {
+                return async (statements: D1PreparedStatement[]) => {
+                  await c
+                    .prepare(
+                      "UPDATE async_jobs SET params = json_set(params, '$.lease', 'thief') WHERE id = ?",
+                    )
+                    .bind(threadBackfill.id)
+                    .run();
+                  return c.batch(statements);
+                };
+              }
+              const value = c[q];
+              return typeof value === "function" ? value.bind(c) : value;
+            },
+          });
+        }
+        const value = target[prop];
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    expect(
+      await runThreadBackfillSlice(stealing, bindings, threadBackfill.id, 0),
+    ).toBeNull();
+    expect(await keyOf("emails", "a")).toBeNull();
+    expect(await keyOf("emails", "b")).toBeNull();
+  });
+
+  it("counts page reads against a slice's budget", async () => {
+    for (let i = 0; i < 6; i++) {
+      await received(`r${i}`, { messageId: `<r${i}@x>`, at: 100 + i });
+    }
+    await identity(INBOX, "headers");
+    BACKFILL_LIMITS.pageSize = 1;
+    BACKFILL_LIMITS.sliceStatements = 4;
+    const job = await insertThreadBackfill(getDb(), {
+      inbox: INBOX,
+      mode: "headers",
+      requestedBy: null,
+      rethread: "import",
+    });
+    // Pass 2 only, and nothing here cites anything: no row statements, yet
+    // each page is a read and a write, so a slice stops after two pages.
+    expect(await drain(job!.id)).toBeGreaterThanOrEqual(3);
+  });
+
+  it("joins mail imported out of order once the import is done", async () => {
+    await identity(INBOX, "headers");
+    // Stored as the import met them: the reply first, in a thread of its own.
+    await received("c", {
+      messageId: "<c@x>",
+      inReplyTo: "<p@x>",
+      at: 200,
+      threadKey: await threadKeyOf("c@x"),
+    });
+    await received("p", {
+      messageId: "<p@x>",
+      at: 100,
+      threadKey: await threadKeyOf("p@x"),
+    });
+    const now = Math.floor(Date.now() / 1000);
+    await getDb()
+      .insert(inboxConversationState)
+      .values({
+        inbox: INBOX,
+        conversationKey: "t:kept",
+        snoozedUntil: now + 99,
+        updatedAt: now,
+      });
+    await rethreadAfterImport(getDb(), bindings, INBOX, "admin-1");
+    expect(queued).toHaveLength(1);
+    const [job] = await getDb()
+      .select()
+      .from(asyncJobs)
+      .where(eq(asyncJobs.id, queued[0]!.jobId));
+    expect(job!.totalRows).toBe(2);
+    await drain(job!.id);
+    expect(await keyOf("emails", "c")).toBe(await threadKeyOf("p@x"));
+    // Snoozes stay: nothing switched.
+    expect(await getDb().select().from(inboxConversationState)).toHaveLength(1);
+    expect(await readJmapEpoch(getDb())).toBe(1);
+    const audits = await getDb()
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, "inbox.updated"));
+    expect(audits.map((row) => row.summary)).toContain(
+      `Threaded the mail imported into ${INBOX}`,
+    );
+
+    // A relationship inbox has nothing to re-thread.
+    queued = [];
+    await identity(INBOX, "relationship");
+    await rethreadAfterImport(getDb(), bindings, INBOX, "admin-1");
+    expect(queued).toEqual([]);
+  });
+
+  it("waits for an import into the inbox before switching", async () => {
+    await getDb().run(sql`
+      INSERT INTO async_jobs (id, job_type, ref_id, status, processed_rows,
+        imported_count, skipped_count, created_at, updated_at)
+      VALUES ('imp-1', 'mail_import', ${INBOX}, 'running', 0, 0, 0, 1, 1)`);
+    const res = await patch({ threadingMode: "headers" });
+    expect(res.status).toBe(409);
+    expect(queued).toEqual([]);
+  });
+
+  it("clears an inbox's threads when it is deleted, not while it regroups", async () => {
+    await received("a", { messageId: "<a@x>", threadKey: "t:a" });
+    const switched = await (
+      await patch({ threadingMode: "headers" })
+    ).json<any>();
+    const del = () =>
+      authFetch(`/api/admin/inboxes/${encodeURIComponent(INBOX)}`, {
+        method: "DELETE",
+        apiKey: adminKey,
+      });
+    expect((await del()).status).toBe(409);
+    await drain(switched.threadBackfill.id);
+
+    queued = [];
+    expect((await del()).status).toBe(200);
+    expect(queued).toHaveLength(1);
+    await drain(queued[0]!.jobId);
+    expect(await keyOf("emails", "a")).toBeNull();
   });
 
   it("is for admins only", async () => {

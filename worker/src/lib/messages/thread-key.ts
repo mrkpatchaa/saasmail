@@ -35,10 +35,13 @@ export function citedIdsOf(
 ): string[] {
   const ids = (value: string | null | undefined) =>
     [...(value ?? "").matchAll(/<([^<>\s]+)>/g)].map((match) => match[1]!);
-  const ordered = [...ids(inReplyTo), ...ids(references).reverse()];
-  if (ordered.length === 0 && inReplyTo?.trim()) {
-    ordered.push(bareMessageId(inReplyTo));
+  // An In-Reply-To without brackets (some senders, and our own stored ids)
+  // is the bare id itself.
+  const parent = ids(inReplyTo);
+  if (parent.length === 0 && inReplyTo?.trim()) {
+    parent.push(bareMessageId(inReplyTo));
   }
+  const ordered = [...parent, ...ids(references).reverse()];
   return [...new Set(ordered)].slice(0, MAX_CITED);
 }
 

@@ -24,6 +24,7 @@ import {
   citedIdsOf,
   citedThreadKeySql,
   threadKeyOf,
+  threadingModeOf,
   type ThreadingMode,
 } from "./thread-key";
 
@@ -47,6 +48,11 @@ export interface BackfillParams extends SliceState {
   pass: 1 | 2;
   /** `queryMessages` cursor of the walk, null at its start. */
   cursor: string | null;
+  /**
+   * Why it runs: an admin switched the mode (the default), or an import into
+   * a headers inbox finished and its mail needs the late-parent pass.
+   */
+  rethread?: "switch" | "import";
 }
 
 export const BACKFILL_LIMITS = {
@@ -101,7 +107,13 @@ export async function latestThreadBackfill(
  */
 export async function insertThreadBackfill(
   db: Db,
-  input: { inbox: string; mode: ThreadingMode; requestedBy: string | null },
+  input: {
+    inbox: string;
+    mode: ThreadingMode;
+    requestedBy: string | null;
+    /** An import's re-thread starts at the late-parent pass. */
+    rethread?: "import";
+  },
 ): Promise<AsyncJob | null> {
   const id = nanoid();
   const now = Math.floor(Date.now() / 1000);
@@ -111,8 +123,9 @@ export async function insertThreadBackfill(
     leaseUntil: null,
     inbox: input.inbox,
     mode: input.mode,
-    pass: 1,
+    pass: input.rethread === "import" ? 2 : 1,
     cursor: null,
+    ...(input.rethread ? { rethread: input.rethread } : {}),
   };
   const result = await db.run(sql`
     INSERT INTO async_jobs
@@ -137,22 +150,30 @@ export async function insertThreadBackfill(
 
 /**
  * After the mode is saved: clears the inbox's snoozes and assignments (they
- * were keyed by conversations that no longer exist), counts the work for the
- * progress bar, and starts the job. Returns how many states were cleared.
+ * were keyed by conversations that no longer exist; not for an import's
+ * re-thread), counts the work for the progress bar, and starts the job.
+ * Returns how many states were cleared. In demo mode the slices run through
+ * `waitUntil`, or here when there is none.
  */
 export async function startThreadBackfill(
   db: Db,
   env: CloudflareBindings,
   job: AsyncJob,
-  waitUntil: (promise: Promise<unknown>) => void,
+  waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<number> {
-  const { inbox, mode } = paramsOf<BackfillParams>(job);
-  const cleared = await db
-    .delete(inboxConversationState)
-    .where(eq(inboxConversationState.inbox, inbox));
+  const { inbox, mode, pass, rethread } = paramsOf<BackfillParams>(job);
+  const cleared =
+    rethread === "import"
+      ? 0
+      : changesOf(
+          await db
+            .delete(inboxConversationState)
+            .where(eq(inboxConversationState.inbox, inbox)),
+        );
+  const passes = pass === 2 ? 1 : 2;
   const [counted] = await db.all<{ total: number }>(
     mode === "headers"
-      ? sql`SELECT 2 * (
+      ? sql`SELECT ${passes} * (
           (SELECT COUNT(*) FROM emails WHERE recipient = ${inbox}) +
           (SELECT COUNT(*) FROM sent_emails WHERE from_address = ${inbox})
         ) AS total`
@@ -170,11 +191,35 @@ export async function startThreadBackfill(
   if (isDemoMode(env)) {
     // No queue consumer: run the slices after the response (the hourly run
     // finishes one that outlives it).
-    waitUntil(runThreadBackfillInline(db, env, job.id));
+    const run = runThreadBackfillInline(db, env, job.id);
+    if (waitUntil) waitUntil(run);
+    else await run;
   } else {
     await resumeThreadBackfill(db, env, job.id, 0);
   }
-  return changesOf(cleared);
+  return cleared;
+}
+
+/**
+ * After an import into a `headers` inbox: mail imported out of date order
+ * stored replies before the messages they answer, each in a thread of its
+ * own. The late-parent pass over the inbox, oldest first, joins them. A
+ * backfill already running for the inbox is left to do it.
+ */
+export async function rethreadAfterImport(
+  db: Db,
+  env: CloudflareBindings,
+  inbox: string,
+  requestedBy: string | null,
+): Promise<void> {
+  if ((await threadingModeOf(db, inbox)) !== "headers") return;
+  const job = await insertThreadBackfill(db, {
+    inbox,
+    mode: "headers",
+    requestedBy,
+    rethread: "import",
+  });
+  if (job) await startThreadBackfill(db, env, job);
 }
 
 /** Queues the slice a backfill is waiting for, or runs it here in demo mode. */
@@ -241,15 +286,31 @@ export async function runThreadBackfillSlice(
   if (claim === "stale") return null;
   if (claim === "busy") throw new SliceBusyError(jobId);
   const { params, raw } = claim;
+  if ((await threadingModeOf(db, params.inbox)) !== params.mode) {
+    // The mode moved under the job (its save failed after the job was
+    // claimed, or the inbox went): keys for the old mode would be wrong.
+    await failThreadBackfill(
+      db,
+      jobId,
+      "the inbox's conversation mode changed",
+    );
+    return null;
+  }
   let state = { raw, params };
   try {
     const started = now();
     let statements = 0;
     for (;;) {
+      // Every row write is conditional on this run still holding the job, so
+      // a run that lost it (a stall past its lease) writes nothing.
+      const claimed = sql`EXISTS (
+        SELECT 1 FROM async_jobs
+        WHERE id = ${job.id} AND status = 'running' AND params = ${state.raw}
+      )`;
       const step =
         params.mode === "headers"
-          ? await headersPage(db, state.params)
-          : await clearPage(db, state.params);
+          ? await headersPage(db, state.params, claimed)
+          : await clearPage(db, state.params, claimed);
       const next: BackfillParams = { ...state.params, ...step.progress };
       const nextRaw = JSON.stringify(next);
       // One transaction: the rows and the progress that covers them.
@@ -273,7 +334,9 @@ export async function runThreadBackfillSlice(
         await completeThreadBackfill(db, env, job, state.raw);
         return null;
       }
-      statements += step.statements.length;
+      // The page read and the progress write count too: a page whose rows
+      // cite nothing (pass 2) still costs two queries.
+      statements += step.statements.length + 2;
       if (
         statements >= BACKFILL_LIMITS.sliceStatements ||
         now() - started >= BACKFILL_LIMITS.sliceMs
@@ -314,7 +377,11 @@ type Step = {
  * second it keeps the thread it has. A statement per row, in one batch, so
  * a reply sees the key its parent got earlier in the page.
  */
-async function headersPage(db: Db, params: BackfillParams): Promise<Step> {
+async function headersPage(
+  db: Db,
+  params: BackfillParams,
+  claimed: SQL,
+): Promise<Step> {
   const page = await queryMessages(
     db,
     { isAdmin: true },
@@ -344,6 +411,7 @@ async function headersPage(db: Db, params: BackfillParams): Promise<Step> {
       FROM (SELECT COALESCE(${citedThreadKeySql(params.inbox, cited)}, ${fallback}) AS k
             FROM ${table} WHERE id = ${id}) AS x
       WHERE ${table}.id = ${id} AND ${table}.thread_key IS NOT x.k
+        AND ${claimed}
     `);
     if (kind === "sent") sentIds.push(id);
   }
@@ -362,6 +430,7 @@ async function headersPage(db: Db, params: BackfillParams): Promise<Step> {
         WHERE id IN (SELECT value FROM json_each(${JSON.stringify(sentIds)}))
           AND jmap_content_id IS NOT NULL AND thread_key IS NOT NULL
       )
+      AND ${claimed}
     `);
   }
   const walked = page.nextCursor === null;
@@ -382,7 +451,11 @@ async function headersPage(db: Db, params: BackfillParams): Promise<Step> {
  * send's content goes back to the conversation its Sent row is in, as a
  * draft written in a relationship inbox would have.
  */
-async function clearPage(db: Db, params: BackfillParams): Promise<Step> {
+async function clearPage(
+  db: Db,
+  params: BackfillParams,
+  claimed: SQL,
+): Promise<Step> {
   const inbox = params.inbox;
   const batch = BACKFILL_LIMITS.clearBatch;
   const [left] = await db.all<{ received: number; sent: number }>(sql`
@@ -410,6 +483,7 @@ async function clearPage(db: Db, params: BackfillParams): Promise<Step> {
         WHERE recipient = ${inbox} AND thread_key IS NOT NULL
         ORDER BY rowid LIMIT ${batch}
       )
+      AND ${claimed}
     `);
   }
   if (sent > 0) {
@@ -426,8 +500,10 @@ async function clearPage(db: Db, params: BackfillParams): Promise<Step> {
           SELECT jmap_content_id FROM sent_emails
           WHERE rowid IN (${sentRows}) AND jmap_content_id IS NOT NULL
         )
+        AND ${claimed}
       `,
-      sql`UPDATE sent_emails SET thread_key = NULL WHERE rowid IN (${sentRows})`,
+      sql`UPDATE sent_emails SET thread_key = NULL
+          WHERE rowid IN (${sentRows}) AND ${claimed}`,
     );
   }
   return {
@@ -438,19 +514,6 @@ async function clearPage(db: Db, params: BackfillParams): Promise<Step> {
   };
 }
 
-/**
- * The end of a backfill (or of a failed one): every JMAP client resyncs once,
- * since thread ids changed under the account they hold.
- */
-async function finishBackfill(
-  db: Db,
-  env: CloudflareBindings | null,
-  job: AsyncJob,
-): Promise<void> {
-  await bumpJmapEpoch(db, job.requestedBy);
-  if (env) await notifyMailRefresh(db, env, job.refId);
-}
-
 async function completeThreadBackfill(
   db: Db,
   env: CloudflareBindings,
@@ -458,6 +521,10 @@ async function completeThreadBackfill(
   claimedRaw: string,
 ): Promise<void> {
   const params = paramsOf<BackfillParams>(job);
+  // Thread ids changed under every JMAP account: clients resync once. First,
+  // so a crash before the status write can't leave them unannounced (a retry
+  // bumps again, which costs one more resync).
+  await bumpJmapEpoch(db, job.requestedBy);
   const result = await db
     .update(asyncJobs)
     .set({
@@ -476,20 +543,23 @@ async function completeThreadBackfill(
     .from(asyncJobs)
     .where(eq(asyncJobs.id, job.id))
     .limit(1);
-  await finishBackfill(db, env, job);
+  await notifyMailRefresh(db, env, params.inbox);
   await recordAudit(db, {
     action: AUDIT_ACTIONS.inboxUpdated,
     targetType: "inbox",
     targetId: params.inbox,
     inbox: params.inbox,
     summary:
-      params.mode === "headers"
-        ? `Grouped the mail of ${params.inbox} into threads`
-        : `Grouped the mail of ${params.inbox} by customer`,
+      params.rethread === "import"
+        ? `Threaded the mail imported into ${params.inbox}`
+        : params.mode === "headers"
+          ? `Grouped the mail of ${params.inbox} into threads`
+          : `Grouped the mail of ${params.inbox} by customer`,
     details: {
       threadingMode: params.mode,
       backfill: "completed",
       rows: done?.processedRows ?? 0,
+      ...(params.rethread === "import" ? { rethread: "import" } : {}),
     },
   });
 }
@@ -506,6 +576,10 @@ export async function failThreadBackfill(
     .where(eq(asyncJobs.id, jobId))
     .limit(1);
   if (!job || job.status !== "running") return;
+  const params = paramsOf<BackfillParams>(job);
+  // Some threads may have moved already: clients resync (before the status
+  // write, as on completion).
+  await bumpJmapEpoch(db, job.requestedBy);
   const result = await db
     .update(asyncJobs)
     .set({
@@ -517,7 +591,19 @@ export async function failThreadBackfill(
     })
     .where(and(eq(asyncJobs.id, jobId), eq(asyncJobs.status, "running")));
   if (changesOf(result) !== 1) return;
-  await finishBackfill(db, null, job);
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.inboxUpdated,
+    targetType: "inbox",
+    targetId: params.inbox,
+    inbox: params.inbox,
+    summary: `Regrouping the mail of ${params.inbox} stopped: ${reason.slice(0, 120)}`,
+    details: {
+      threadingMode: params.mode,
+      backfill: "failed",
+      rows: job.processedRows,
+      reason: reason.slice(0, 300),
+    },
+  });
 }
 
 /** Hourly: a backfill that stopped moving is queued again (three times). */
@@ -561,7 +647,8 @@ export function backfillStatus(job: AsyncJob | null) {
     mode: params.mode,
     status: job.status as "running" | "completed" | "failed",
     processed: job.processedRows,
-    total: job.totalRows ?? 0,
+    // Mail that arrived during the walk is counted as it is visited.
+    total: Math.max(job.totalRows ?? 0, job.processedRows),
   };
 }
 

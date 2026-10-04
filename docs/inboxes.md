@@ -36,7 +36,15 @@ Changing the mode asks for confirmation, then:
 2. **Clears the inbox's snoozes and assignments.** They were keyed by conversations that no longer exist and can't be mapped one-to-one. The audit log records how many were cleared.
 3. **Makes every JMAP client resync once** the regrouping ends (or stops), since thread ids changed under the account it holds ([JMAP: the account epoch](jmap.md#ids-and-account-breaking-in-this-release)).
 
-A JMAP draft saved before the switch keeps its thread until it is sent. Over the API: `PATCH /api/admin/inboxes/{email}` with `{"threadingMode": "headers"}` (or `"relationship"`) starts the change, `409` while a regrouping of that inbox runs; sending the current mode again after a regrouping stopped runs it again. `GET /api/admin/inboxes` lists each inbox's `threadingMode` and its last regrouping (`threadBackfill`: mode, status, processed and total).
+Good to know:
+
+- Mail is walked in date order, so a reply chain whose dates run backwards over several generations (a sender with a clock far off) can stay split.
+- While an import into the inbox is running, the mode can't be changed (`409`): wait for it to finish. An import into an inbox grouped by thread ends with one more walk that joins replies imported before the messages they answer ([Import mail](data.md#import-mail)).
+- Deleting an inbox grouped by thread keeps its mail and clears its threads in the background; an inbox can't be deleted while its mail is being regrouped (`409`).
+- A JMAP draft saved before the switch keeps its thread until it is sent.
+- On a demo deployment (no queue), the regrouping runs after the request and in the hourly run, which suits demo-sized inboxes only.
+
+Over the API: `PATCH /api/admin/inboxes/{email}` with `{"threadingMode": "headers"}` (or `"relationship"`) starts the change, `409` while a regrouping of that inbox runs; sending the current mode again after a regrouping stopped runs it again. `GET /api/admin/inboxes` lists each inbox's `threadingMode` and its last regrouping (`threadBackfill`: mode, status, processed and total).
 
 ## Replying
 

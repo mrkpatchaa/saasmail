@@ -1,7 +1,7 @@
 import { AUDIT_ACTIONS } from "../lib/audit/events";
 import { recordAudit } from "../lib/audit/record";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { emails } from "../db/emails.schema";
@@ -28,6 +28,19 @@ export const adminInboxesRouter = new OpenAPIHono<{
   Bindings: CloudflareBindings;
   Variables: Variables;
 }>();
+
+/** Whether a mail import into the inbox is storing mail. */
+async function importRunning(
+  db: Variables["db"],
+  inbox: string,
+): Promise<boolean> {
+  const [row] = await db.all<{ n: number }>(sql`
+    SELECT COUNT(*) AS n FROM async_jobs
+    WHERE job_type = 'mail_import' AND ref_id = ${inbox}
+      AND status = 'running'
+  `);
+  return (row?.n ?? 0) > 0;
+}
 
 /** The inbox's last conversation-mode backfill, if it ever had one. */
 const ThreadBackfillSchema = z
@@ -453,6 +466,17 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
   }
   const wantsBackfill =
     nextThreadingMode !== currentThreadingMode || retryBackfill;
+  if (wantsBackfill && (await importRunning(db, email))) {
+    // Its slices read the mode as they go: mail stored under the old one
+    // could land behind the backfill's cursor and never be regrouped.
+    return c.json(
+      {
+        error:
+          "Mail is being imported into this inbox; change its conversations when the import finishes",
+      },
+      409,
+    );
+  }
   const backfill = wantsBackfill
     ? await insertThreadBackfill(db, {
         inbox: email,
@@ -510,7 +534,16 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
     nextAgentAutodraft === 0 &&
     nextThreadingMode === "relationship"
   ) {
-    await db.delete(senderIdentities).where(eq(senderIdentities.email, email));
+    // Only while the mode is still the default: another admin may have just
+    // switched it (their backfill is running).
+    await db
+      .delete(senderIdentities)
+      .where(
+        and(
+          eq(senderIdentities.email, email),
+          eq(senderIdentities.threadingMode, "relationship"),
+        ),
+      );
     await startBackfill();
     await auditInboxUpdate();
     return c.json(
@@ -548,7 +581,11 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
     .onConflictDoUpdate({
       target: senderIdentities.email,
       set: {
-        threadingMode: nextThreadingMode,
+        // Written only when asked for, so saving another field can't undo a
+        // switch another admin just made.
+        ...(body.threadingMode !== undefined
+          ? { threadingMode: nextThreadingMode }
+          : {}),
         displayName: nextDisplayName,
         displayMode: nextDisplayMode,
         signatureHtml: nextSignatureHtml,
@@ -663,6 +700,15 @@ const deleteInboxRoute = createRoute({
         },
       },
     },
+    409: {
+      description:
+        "The inbox's conversations are being regrouped; try again when that finishes",
+      content: {
+        "application/json": {
+          schema: z.object({ error: z.string() }),
+        },
+      },
+    },
   },
 });
 
@@ -672,7 +718,10 @@ adminInboxesRouter.openapi(deleteInboxRoute, async (c) => {
   const email = rawEmail.trim().toLowerCase();
 
   const existing = await db
-    .select({ email: senderIdentities.email })
+    .select({
+      email: senderIdentities.email,
+      threadingMode: senderIdentities.threadingMode,
+    })
     .from(senderIdentities)
     .where(eq(senderIdentities.email, email))
     .limit(1);
@@ -680,8 +729,33 @@ adminInboxesRouter.openapi(deleteInboxRoute, async (c) => {
     return c.json({ error: "Inbox not found" }, 404);
   }
 
+  // Its mail stays. Mail grouped by thread goes back to the default grouping
+  // with the inbox's mode, so its keys are cleared in the background.
+  const latest = (await latestThreadBackfills(db, [email])).get(email);
+  if (latest?.status === "running") {
+    return c.json(
+      {
+        error:
+          "This inbox's conversations are being regrouped; delete it when that finishes",
+      },
+      409,
+    );
+  }
+  const clear =
+    existing[0].threadingMode === "headers"
+      ? await insertThreadBackfill(db, {
+          inbox: email,
+          mode: "relationship",
+          requestedBy: c.get("user")?.id ?? null,
+        })
+      : null;
   await db.delete(inboxPermissions).where(eq(inboxPermissions.email, email));
   await db.delete(senderIdentities).where(eq(senderIdentities.email, email));
+  if (clear) {
+    await startThreadBackfill(db, c.env, clear, (promise) =>
+      c.executionCtx.waitUntil(promise),
+    );
+  }
   await recordAudit(db, {
     action: AUDIT_ACTIONS.inboxDeleted,
     targetType: "inbox",

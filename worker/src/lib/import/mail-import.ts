@@ -31,6 +31,7 @@ import {
   setUserState,
 } from "../messages/state";
 import type { MessageRef } from "../messages/types";
+import { rethreadAfterImport } from "../messages/thread-backfill";
 import { notifyMailRefresh } from "../triage/ai-file";
 import { mboxStart, readMessages } from "./mbox-reader";
 
@@ -936,6 +937,12 @@ async function importSlice(
         importedCount,
         skippedCount,
       );
+      // Replies met before their parents get joined to them (headers inboxes).
+      if (importedCount > 0) {
+        await rethreadAfterImport(db, env, params.inbox, job.requestedBy).catch(
+          (error) => console.error("[import] re-threading not started:", error),
+        );
+      }
     }
     return true;
   }

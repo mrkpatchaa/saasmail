@@ -1,4 +1,8 @@
-import { citedIdsOf, threadKeyForNewMessage } from "./messages/thread-key";
+import {
+  citedIdsOf,
+  threadKeyForNewMessage,
+  threadingModeOf,
+} from "./messages/thread-key";
 import { currentAuditActor } from "./audit/context";
 import { HUMAN_ACTORS, trainMessages } from "./spam/filter";
 import { auditMailSent } from "./audit/mail-events";
@@ -357,6 +361,9 @@ export async function replyToEmail(
   let origPersonId: string;
   let origSubject: string | null;
   let origInReplyToMessageId: string | null;
+  // The original's inbox and thread, for a reply in a headers-mode inbox.
+  let origInbox: string;
+  let origThreadKey: string | null;
   let toAddress: string;
   // Who the conversation is with. It stays the original's correspondent and
   // the caller's Cc even when the reply is delivered to a Reply-To address,
@@ -388,6 +395,8 @@ export async function replyToEmail(
     origPersonId = orig.personId;
     origSubject = orig.subject ?? null;
     origInReplyToMessageId = orig.messageId ?? null;
+    origInbox = orig.recipient;
+    origThreadKey = orig.threadKey ?? null;
     // Canonicalize the recipient — older rows may be mixed-case.
     toAddress = person[0].email.toLowerCase();
     threadTo = toAddress;
@@ -435,6 +444,8 @@ export async function replyToEmail(
     origPersonId = orig.personId;
     origSubject = orig.subject ?? null;
     origInReplyToMessageId = orig.messageId ?? null;
+    origInbox = orig.fromAddress;
+    origThreadKey = orig.threadKey ?? null;
     toAddress = orig.toAddress.toLowerCase();
     threadTo = toAddress;
   }
@@ -561,13 +572,20 @@ export async function replyToEmail(
     threadCc,
   );
 
-  // In a headers-mode inbox, a reply joins the thread of what it answers.
+  // In a headers-mode inbox, a reply joins the thread of what it answers:
+  // the original's own thread when it is in this inbox (even without a
+  // Message-ID to cite), else whatever its Message-ID resolves to.
   const storedReplyId = deliveredMessageId(messageId, sendResult.result);
-  const replyThreadKey = await threadKeyForNewMessage(db, {
-    inbox: fromAddress,
-    messageId: storedReplyId,
-    citedIds: citedIdsOf(origInReplyToMessageId, null),
-  });
+  const replyThreadKey =
+    origThreadKey &&
+    origInbox.toLowerCase() === fromAddress.toLowerCase() &&
+    (await threadingModeOf(db, fromAddress)) === "headers"
+      ? origThreadKey
+      : await threadKeyForNewMessage(db, {
+          inbox: fromAddress,
+          messageId: storedReplyId,
+          citedIds: citedIdsOf(origInReplyToMessageId, null),
+        });
 
   // Store sent email
   await db.insert(sentEmails).values({
