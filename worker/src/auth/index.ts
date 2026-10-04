@@ -5,6 +5,8 @@ import { admin, openAPI, jwt } from "better-auth/plugins";
 import { oauthProvider } from "@better-auth/oauth-provider";
 import { passkey } from "@better-auth/passkey";
 import { createDb } from "../db/client";
+import { isDevEnvironment } from "../lib/is-dev";
+import { d1RateLimitStorage } from "./rate-limit-storage";
 import { MCP_SCOPES } from "./scopes";
 import { mcpAudience, oauthIssuer } from "../mcp/resource";
 
@@ -55,6 +57,18 @@ export function createAuth(env?: CloudflareBindings) {
     // Sign-ins, passkey changes and OAuth consent never pass a route of ours:
     // this hook is where the audit log sees them.
     hooks: { after: auditAfterHook(db) },
+    // On everywhere but local development and demo deploys, counted in D1 so a
+    // limit holds across isolates: better-auth's own default (in memory, and
+    // only when NODE_ENV is "production") limited nothing on Workers. Its
+    // built-in rules apply: 3 sign-in attempts per 10 seconds per address,
+    // 100 requests per 10 seconds on any other auth path. Reading the
+    // session is not limited: it guards nothing, and it would cost a D1
+    // write on every page load.
+    rateLimit: {
+      enabled: !!env && !isDevEnvironment(env),
+      ...(env ? { customStorage: d1RateLimitStorage(db) } : {}),
+      customRules: { "/get-session": false },
+    },
     plugins: [
       admin(),
       openAPI(),
@@ -78,6 +92,9 @@ export function createAuth(env?: CloudflareBindings) {
       }),
     ],
     advanced: {
+      // The address Cloudflare saw, for rate limits and session records.
+      // Without it every client shares one rate-limit bucket.
+      ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
       cookiePrefix: env?.COOKIE_PREFIX || "saasmail",
       defaultCookieAttributes: { sameSite: "lax", secure: true },
     },

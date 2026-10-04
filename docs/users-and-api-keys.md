@@ -11,6 +11,23 @@ Inbox assignment is what a member's access actually derives from — see
 The same scoping is enforced for the HTTP API, the [MCP server](mcp.md), and
 [WebMCP](webmcp.md), by the same code.
 
+## Signing in
+
+In production every account must register a passkey before it can use the
+app or the API: after a new member's first password sign-in, the web app
+takes them to passkey setup, and every other route answers
+`403 PASSKEY_REQUIRED` until they have one. From then on the password no
+longer signs in, only the passkey does
+(`403 PASSKEY_REQUIRED_FOR_SIGNIN`). Local development
+(`DISABLE_PASSKEY_GATE=true`) and demo deploys skip both rules.
+
+Sign-in is rate-limited per client address: 3 attempts per 10 seconds on the
+sign-in routes, 3 a minute on the password-reset routes and 100 per 10 seconds
+on the other auth routes. Past it the answer is `429` with an `X-Retry-After`
+header (seconds). The counts are kept in D1, so the limit holds however many
+Workers serve the requests; local development and demo deploys are not
+limited.
+
 ## API keys
 
 Issue scoped API keys for programmatic access to send email, manage templates, enroll contacts in sequences, and query inbox data. Keys are hashed at rest and follow the `sk_…` format.

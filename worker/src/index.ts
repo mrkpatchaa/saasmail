@@ -46,6 +46,7 @@ import { runWithAudit, systemActor } from "./lib/audit/context";
 import { auditRetentionDays, pruneAuditEvents } from "./lib/audit/prune";
 import { pruneSendIdempotency } from "./lib/send-idempotency";
 import { pruneSendCounters } from "./lib/sending-controls";
+import { pruneAuthRateLimits } from "./auth/rate-limit-storage";
 import { collectUnreferencedContent } from "./jmap/content";
 import { runJmapSubmissionMaintenance } from "./jmap/recovery";
 import { reapExpiredUploads } from "./jmap/upload";
@@ -471,6 +472,11 @@ function scheduledChain(env: CloudflareBindings): Promise<unknown> {
       .then(() =>
         pruneSendCounters(createDb(env), Math.floor(Date.now() / 1000)).catch(
           (err) => console.error("[cron] send counter pruning failed:", err),
+        ),
+      )
+      .then(() =>
+        pruneAuthRateLimits(createDb(env), Date.now()).catch((err) =>
+          console.error("[cron] auth rate limit pruning failed:", err),
         ),
       )
       .then(() =>

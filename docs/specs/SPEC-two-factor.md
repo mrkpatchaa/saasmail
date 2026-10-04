@@ -1,4 +1,10 @@
-# SPEC: Two-factor sign-in (TOTP + recovery codes) and durable auth rate limiting
+# SPEC: Sign-in rate limits that hold across Workers (two-factor sign-in dropped)
+
+> **Re-scoped during implementation (2026-10-04).** Only decision 5, the durable auth rate limits,
+> shipped. TOTP, recovery codes, the admin reset and the `password_sign_in_with_passkey` setting were
+> dropped: in production a password cannot sign in to an account that has a passkey, so a second
+> factor after the password would guard nothing. See "Spec changes" at the end. The rest of this page
+> is the spec as written.
 
 Stage 9 (trust and safety), slice 5 of 5. Depends on `docs/archive/SPEC-audit-log.md` (events). Label `minor`.
 
@@ -120,3 +126,46 @@ message: "Use your passkey to sign in." })`. Unknown emails fall through to the 
   codes, admin reset, the passkey-only setting). `docs/configuration.md`: `TWO_FACTOR_ISSUER`
   (optional). `docs/updating.md`: run `yarn db:migrate:prod` (new auth tables) before deploying.
 - CHANGELOG `### Added`: **Two-factor sign-in.** … and **Sign-in rate limits hold across Workers.** …
+
+## Spec changes (implementation)
+
+The spec was written believing that a leaked password is a full session. In production it is not:
+
+- Since the passkey gate shipped, `POST /api/auth/sign-in/email` is refused with
+  `403 PASSKEY_REQUIRED_FOR_SIGNIN` for every account that has a passkey, before better-auth sees the
+  request (`worker/src/index.ts`). Only `DISABLE_PASSKEY_GATE=true` (local development) and
+  `DEMO_MODE` skip that.
+- An account without a passkey does get a session, but every `/api` route refuses it
+  (`403 PASSKEY_REQUIRED`) except `/api/user/passkeys`: it can register a first passkey and nothing
+  else.
+
+What changed, and why:
+
+1. **Decisions 1 and 2 (TOTP with recovery codes, the admin reset) are dropped.** A code after the
+   password would only ever be asked of accounts with no passkey, whose session can do nothing but
+   register one, and such an account cannot have turned TOTP on (Settings is behind the same gate). It
+   would guard nothing while adding two sign-in flows, a table, a QR dependency and an admin action.
+   The exposure that is left is that window: someone who learns an invited user's password before that
+   user registers a passkey can register theirs first. Closing it needs a different control, such as
+   binding the first passkey registration to the invitation; that would be a new spec.
+2. **Decision 3 (`password_sign_in_with_passkey`, default `allowed`) is dropped.** What it offered as
+   an option is already unconditional in production, and its default would have loosened it.
+3. **Decision 5 shipped**, with these differences:
+   - Rate limiting was not on at all: better-auth enables it only when `NODE_ENV` is `"production"`,
+     which Workers do not set. It is now on everywhere but local development and demo deploys
+     (`isDevEnvironment`), counted in `auth_rate_limits` (migration 0078) through `customStorage`.
+   - better-auth's built-in rules are kept (3 attempts per 10 seconds per address on `/sign-in/*`,
+     `/sign-up/*`, `/change-password`, `/change-email`; 3 per minute on password-reset paths; 100 per
+     10 seconds elsewhere) instead of a global 60 per minute, which would have throttled ordinary
+     traffic from a shared office address. `/get-session` is not limited: it guards nothing and would
+     cost a D1 write on every page load. The `/two-factor/*` rule went with the plugin.
+   - The key is better-auth's (`<address>|<path>`), and the address is `cf-connecting-ip`
+     (`advanced.ipAddress.ipAddressHeaders`), which also makes the session records' addresses right.
+     Times are in milliseconds. `consume` is one upsert that resets a closed window and counts refused
+     requests too; a D1 error lets the request through and logs, rather than locking everybody out.
+   - A request refused by the limiter is answered before better-auth's hooks, so it is not recorded in
+     the audit log as a failed sign-in. The password pre-check for passkey accounts runs before the
+     limiter and is not counted (it never checks a password).
+4. No `auth.sign_in` methods `totp`/`recovery_code`, no `user.two_factor_*` events, no
+   `TWO_FACTOR_ISSUER`, no web changes: the login page already shows the server's "Too many requests"
+   message.
