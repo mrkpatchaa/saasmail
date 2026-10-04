@@ -733,6 +733,19 @@ describe("the import API", () => {
     ).toBe(403);
   });
 
+  it("lists the newest first, also within one second", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      ids.push(
+        ((await (await create(adminKey, 10)).json()) as { id: string }).id,
+      );
+    }
+    const listed = (await (
+      await authFetch("/api/admin/imports", { apiKey: adminKey })
+    ).json()) as { imports: { id: string }[] };
+    expect(listed.imports.map((entry) => entry.id)).toEqual(ids.reverse());
+  });
+
   it("uploads, completes and queues the first slice", async () => {
     const bytes = encoder.encode(mbox([message({ subject: "Via API" })]));
     const res = await create(adminKey, bytes.length);
