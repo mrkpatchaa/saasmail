@@ -41,11 +41,12 @@ function headerText(value: string): string {
 }
 
 function mailbox(address: MailAddress): string {
-  if (!address.name) return address.email;
+  const email = oneLine(address.email);
+  if (!address.name) return email;
   const name = PRINTABLE.test(address.name)
     ? `"${address.name.replace(/["\\]/g, "\\$&")}"`
     : headerText(address.name);
-  return `${name} <${address.email}>`;
+  return `${name} <${email}>`;
 }
 
 /** RFC 5322 date-time in UTC. */
@@ -67,6 +68,11 @@ export function rfc5322Date(date: Date): string {
   ];
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${days[date.getUTCDay()]}, ${pad(date.getUTCDate())} ${months[date.getUTCMonth()]} ${date.getUTCFullYear()} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} +0000`;
+}
+
+/** A stored value as one header line: no CR or LF can start a new header. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ");
 }
 
 /** Base64 in 76-character lines. */
@@ -159,16 +165,24 @@ export async function renderMessageBytes(
   }
   headers.push(`Subject: ${headerText(message.subject ?? "")}`);
   if (message.messageId) {
-    const id = message.messageId.replace(/^<|>$/g, "");
+    const id = oneLine(message.messageId).replace(/^<|>$/g, "");
     headers.push(`Message-ID: <${id}>`);
   }
-  if (message.inReplyTo) headers.push(`In-Reply-To: ${message.inReplyTo}`);
-  if (message.references) headers.push(`References: ${message.references}`);
+  if (message.inReplyTo) {
+    headers.push(`In-Reply-To: ${oneLine(message.inReplyTo)}`);
+  }
+  if (message.references) {
+    headers.push(`References: ${oneLine(message.references)}`);
+  }
   if (message.direction === "inbound") {
     for (const [name, value] of Object.entries(
       await storedHeaders(db, message.ref.id),
     )) {
-      if (KEPT_HEADERS.includes(name.toLowerCase()) && PRINTABLE.test(value)) {
+      if (
+        KEPT_HEADERS.includes(name.toLowerCase()) &&
+        /^[\x20-\x7e\t]*$/.test(value) &&
+        value.trim() !== ""
+      ) {
         headers.push(`${name}: ${value}`);
       }
     }
@@ -204,47 +218,87 @@ export async function renderMessageBytes(
     );
   }
 
+  const segments: (string | Uint8Array)[] = [`${headers.join(CRLF)}${CRLF}`];
   if (attachments.length > 0) {
     const mixed = boundary("mixed", message.ref);
-    const parts = [`--${mixed}`, body];
+    segments.push(
+      `Content-Type: multipart/mixed; boundary="${mixed}"${CRLF}${CRLF}--${mixed}${CRLF}${body}`,
+    );
     for (const attachment of attachments) {
       const object = await env.R2.get(attachment.r2Key);
       if (!object) continue;
-      const bytes = new Uint8Array(await object.arrayBuffer());
       const name = attachment.filename.replace(/["\\\r\n]/g, "_");
       const encodedName = PRINTABLE.test(name)
         ? `filename="${name}"`
         : `filename*=UTF-8''${encodeURIComponent(name)}`;
-      parts.push(
-        `--${mixed}`,
-        [
-          `Content-Type: ${attachment.contentType}`,
-          "Content-Transfer-Encoding: base64",
-          attachment.contentId
-            ? `Content-Disposition: inline; ${encodedName}`
-            : `Content-Disposition: attachment; ${encodedName}`,
-          ...(attachment.contentId
-            ? [`Content-ID: <${attachment.contentId.replace(/^<|>$/g, "")}>`]
-            : []),
-          "",
-          wrappedBase64(bytes),
-        ].join(CRLF),
+      const contentId = attachment.contentId
+        ? oneLine(attachment.contentId).replace(/^<|>$/g, "")
+        : null;
+      const partHeaders = [
+        `Content-Type: ${oneLine(attachment.contentType)}`,
+        "Content-Transfer-Encoding: base64",
+        contentId
+          ? `Content-Disposition: inline; ${encodedName}`
+          : `Content-Disposition: attachment; ${encodedName}`,
+        ...(contentId ? [`Content-ID: <${contentId}>`] : []),
+      ];
+      segments.push(
+        `${CRLF}--${mixed}${CRLF}${partHeaders.join(CRLF)}${CRLF}${CRLF}`,
+        wrappedBase64Bytes(new Uint8Array(await object.arrayBuffer())),
       );
     }
-    parts.push(`--${mixed}--`);
-    body = [
-      `Content-Type: multipart/mixed; boundary="${mixed}"`,
-      "",
-      ...parts,
-    ].join(CRLF);
+    segments.push(`${CRLF}--${mixed}--`);
+  } else {
+    segments.push(body);
   }
+  segments.push(CRLF);
 
   return {
-    bytes: encoder.encode(`${headers.join(CRLF)}${CRLF}${body}${CRLF}`),
+    bytes: concatSegments(segments),
     exact: false,
     envelopeFrom,
     date,
   };
+}
+
+/** 64 lines of 76 characters. */
+const BASE64_BLOCK = 57 * 64;
+
+/**
+ * Base64 in 76-character CRLF lines, written as bytes a block at a time, so
+ * a large attachment never becomes one long string.
+ */
+function wrappedBase64Bytes(bytes: Uint8Array): Uint8Array {
+  const encodedLength = Math.ceil(bytes.length / 3) * 4;
+  const lines = Math.max(1, Math.ceil(encodedLength / 76));
+  const out = new Uint8Array(encodedLength + 2 * (lines - 1));
+  let offset = 0;
+  for (let i = 0; i < bytes.length; i += BASE64_BLOCK) {
+    const encoded = toBase64(bytes.subarray(i, i + BASE64_BLOCK));
+    for (let j = 0; j < encoded.length; j++) {
+      if (j % 76 === 0 && offset > 0) {
+        out[offset++] = CR;
+        out[offset++] = NL;
+      }
+      out[offset++] = encoded.charCodeAt(j);
+    }
+  }
+  return out;
+}
+
+function concatSegments(
+  segments: (string | Uint8Array)[],
+): Uint8Array<ArrayBuffer> {
+  const parts = segments.map((segment) =>
+    typeof segment === "string" ? encoder.encode(segment) : segment,
+  );
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 /** Where the message's own bytes are kept, if they are. */
@@ -321,43 +375,66 @@ const CR = 0x0d;
 const GT = 0x3e;
 const FROM_ = encoder.encode("From ");
 
+/** Whether the line from `start` to `end` is `>*From `, which mboxrd quotes. */
+function needsQuote(source: Uint8Array, start: number, end: number): boolean {
+  let probe = start;
+  while (probe < end && source[probe] === GT) probe++;
+  if (probe + FROM_.length > end) return false;
+  for (let i = 0; i < FROM_.length; i++) {
+    if (source[probe + i] !== FROM_[i]) return false;
+  }
+  return true;
+}
+
+/** Calls `visit` with each line's start and end (before any CR, then LF). */
+function eachLine(
+  source: Uint8Array,
+  visit: (start: number, end: number, last: boolean) => void,
+): void {
+  let start = 0;
+  for (;;) {
+    let next = source.indexOf(NL, start);
+    const last = next === -1;
+    if (last) next = source.length;
+    let end = next;
+    if (end > start && source[end - 1] === CR) end--;
+    visit(start, end, last);
+    if (last) return;
+    start = next + 1;
+  }
+}
+
 /**
- * One mbox entry (mboxrd): the separator line, the message with CRLF made LF
- * and every line that is `From ` after any number of `>` given one more `>`,
- * and a blank line.
+ * One mbox entry (mboxrd): the separator line, then `headers` (saasmail's
+ * own, one per line), then the message with CRLF made LF and every line that
+ * is `From ` after any number of `>` given one more `>`, then a blank line.
+ * Sized exactly, so a large message is copied once.
  */
-export function mboxEntry(rendered: RenderedMessage): Uint8Array {
-  const separator = encoder.encode(
-    `From ${rendered.envelopeFrom.replace(/\s/g, "") || "MAILER-DAEMON"} ${asctime(rendered.date)}\n`,
+export function mboxEntry(
+  rendered: RenderedMessage,
+  headers: string[] = [],
+): Uint8Array {
+  const prefix = encoder.encode(
+    `From ${rendered.envelopeFrom.replace(/\s/g, "") || "MAILER-DAEMON"} ${asctime(rendered.date)}\n` +
+      headers.map((header) => `${oneLine(header)}\n`).join(""),
   );
   const source = rendered.bytes;
-  // Worst case every line gains a ">": size it generously, then trim.
-  const out = new Uint8Array(source.length * 2 + separator.length + 2);
-  out.set(separator, 0);
-  let length = separator.length;
-  let start = 0;
-  while (start <= source.length) {
-    let end = source.indexOf(NL, start);
-    const last = end === -1;
-    if (last) end = source.length;
-    let lineEnd = end;
-    if (lineEnd > start && source[lineEnd - 1] === CR) lineEnd--;
-    // >*From  gets one more >.
-    let probe = start;
-    while (probe < lineEnd && source[probe] === GT) probe++;
-    let quoted = probe + FROM_.length <= lineEnd;
-    for (let i = 0; quoted && i < FROM_.length; i++) {
-      if (source[probe + i] !== FROM_[i]) quoted = false;
-    }
-    if (quoted) out[length++] = GT;
-    out.set(source.subarray(start, lineEnd), length);
-    length += lineEnd - start;
-    if (last) break;
-    out[length++] = NL;
-    start = end + 1;
-  }
+  let size = prefix.length + 2;
+  eachLine(source, (start, end, last) => {
+    size += end - start + (needsQuote(source, start, end) ? 1 : 0);
+    if (!last) size++;
+  });
+  const out = new Uint8Array(size);
+  out.set(prefix, 0);
+  let length = prefix.length;
+  eachLine(source, (start, end, last) => {
+    if (needsQuote(source, start, end)) out[length++] = GT;
+    out.set(source.subarray(start, end), length);
+    length += end - start;
+    if (!last) out[length++] = NL;
+  });
   // The message ends with a newline, then a blank line ends the entry.
-  if (length === 0 || out[length - 1] !== NL) out[length++] = NL;
+  if (out[length - 1] !== NL) out[length++] = NL;
   out[length++] = NL;
-  return out.slice(0, length);
+  return out.subarray(0, length);
 }

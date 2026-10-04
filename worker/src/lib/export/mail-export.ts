@@ -171,14 +171,41 @@ export async function startMailExport(
   return job;
 }
 
-function concat(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
-  const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.length;
+/**
+ * Fills parts of exactly PART_BYTES and uploads each as soon as it is full,
+ * so a slice holds one part and one message at a time.
+ */
+class PartWriter {
+  private buffer = new Uint8Array(PART_BYTES);
+  private length = 0;
+
+  constructor(
+    private upload: R2MultipartUpload,
+    readonly parts: { partNumber: number; etag: string }[],
+  ) {}
+
+  async write(bytes: Uint8Array): Promise<void> {
+    let offset = 0;
+    while (offset < bytes.length) {
+      const take = Math.min(PART_BYTES - this.length, bytes.length - offset);
+      this.buffer.set(bytes.subarray(offset, offset + take), this.length);
+      this.length += take;
+      offset += take;
+      if (this.length === PART_BYTES) {
+        const part = await this.upload.uploadPart(
+          this.parts.length + 1,
+          this.buffer,
+        );
+        this.parts.push({ partNumber: part.partNumber, etag: part.etag });
+        this.length = 0;
+      }
+    }
   }
-  return out;
+
+  /** What did not fill a part. */
+  rest(): Uint8Array {
+    return this.buffer.subarray(0, this.length);
+  }
 }
 
 const encoder = new TextEncoder();
@@ -242,14 +269,6 @@ async function customFolderNames(
       and(sql`${mailboxes.id} IN ${jsonList(ids)}`, isNull(mailboxes.role)),
     );
   return new Map(rows.map((row) => [row.id, row.name]));
-}
-
-/** The status headers, then the message as it is. */
-function withStatus(
-  bytes: Uint8Array,
-  headers: string[],
-): Uint8Array<ArrayBuffer> {
-  return concat([encoder.encode(`${headers.join("\r\n")}\r\n`), bytes]);
 }
 
 /**
@@ -344,24 +363,26 @@ async function renderSlice(
   now: () => number,
 ): Promise<number | null> {
   const started = now();
-  const chunks: Uint8Array[] = [];
-  let buffered = 0;
+  const writer = new PartWriter(
+    env.R2.resumeMultipartUpload(job.storageKey!, params.uploadId),
+    [...params.parts],
+  );
   if (params.pendingKey) {
     const pending = await env.R2.get(params.pendingKey);
     if (!pending) throw new Error(`export ${job.id}: carried bytes missing`);
-    const bytes = new Uint8Array(await pending.arrayBuffer());
-    chunks.push(bytes);
-    buffered += bytes.length;
+    await writer.write(new Uint8Array(await pending.arrayBuffer()));
   }
 
   // Oldest first, every folder; Trash and campaign sends only when asked.
+  // Each entry goes into the current part as it is rendered.
   const scope = { isAdmin: false as const, inboxes: [params.inbox] };
   let cursor = job.cursor;
   let processed = 0;
+  let written = 0;
   let more = true;
   while (
     processed < SLICE_MESSAGES &&
-    buffered < SLICE_BYTES &&
+    written < SLICE_BYTES &&
     now() - started < SLICE_MS
   ) {
     const page = await queryMessages(db, scope, {
@@ -380,13 +401,12 @@ async function renderSlice(
     });
     const names = await customFolderNames(db, page.messages);
     for (const message of page.messages) {
-      const rendered = await renderMessageBytes(db, env, message);
-      const entry = mboxEntry({
-        ...rendered,
-        bytes: withStatus(rendered.bytes, statusHeaders(message, names)),
-      });
-      chunks.push(entry);
-      buffered += entry.length;
+      const entry = mboxEntry(
+        await renderMessageBytes(db, env, message),
+        statusHeaders(message, names),
+      );
+      await writer.write(entry);
+      written += entry.length;
       processed++;
     }
     if (!page.hasMore || !page.nextCursor) {
@@ -396,31 +416,21 @@ async function renderSlice(
     cursor = page.nextCursor;
   }
 
-  // Whole parts go up now. The rest is carried; on the last slice it is
-  // the last part (at most one part's size).
-  let data = concat(chunks);
-  const parts = [...params.parts];
-  const upload = env.R2.resumeMultipartUpload(job.storageKey!, params.uploadId);
-  while (more ? data.length >= PART_BYTES : data.length > PART_BYTES) {
-    const part = await upload.uploadPart(
-      parts.length + 1,
-      data.subarray(0, PART_BYTES),
-    );
-    parts.push({ partNumber: part.partNumber, etag: part.etag });
-    data = data.subarray(PART_BYTES);
-  }
+  // What did not fill a part waits for the next slice; after the last
+  // slice it is the last part.
+  const rest = writer.rest();
   let pendingKey: string | null = null;
-  if (data.length > 0) {
+  if (rest.length > 0) {
     pendingKey = `exports/${job.id}/pending-${nanoid()}`;
-    await env.R2.put(pendingKey, data);
+    await env.R2.put(pendingKey, rest);
   }
 
   const next: ExportParams = {
     ...params,
     slice: params.slice + 1,
-    parts,
+    parts: writer.parts,
     pendingKey,
-    bytes: params.parts.length * PART_BYTES + buffered,
+    bytes: params.bytes + written,
     finishing: !more,
     lease: null,
     leaseUntil: null,
@@ -571,8 +581,17 @@ export async function deleteMailExport(
 ): Promise<void> {
   await db.delete(asyncJobs).where(eq(asyncJobs.id, job.id));
   if (job.status === "running") await discardUpload(env, job);
-  // A slice completing meanwhile may have written the object.
-  if (job.storageKey) await env.R2.delete(job.storageKey);
+  // Everything under the export's prefix: the file, and bytes a slice that
+  // was running meanwhile may have carried.
+  const prefix = `exports/${job.id}/`;
+  let cursor: string | undefined;
+  do {
+    const listed = await env.R2.list({ prefix, cursor, limit: 100 });
+    if (listed.objects.length > 0) {
+      await env.R2.delete(listed.objects.map((object) => object.key));
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
 }
 
 /**

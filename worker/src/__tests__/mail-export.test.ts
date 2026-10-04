@@ -218,6 +218,31 @@ describe("renderMessageBytes", () => {
     expect(decoder.decode(again.bytes)).toBe(text);
   });
 
+  it("never lets a stored value add a header", async () => {
+    await createTestEmail({
+      id: "e1",
+      personId: "p1",
+      recipient: INBOX,
+      subject: "Hi\r\nBcc: victim@example.com",
+      messageId: "<e1@example.com>",
+      inReplyTo: "<a@x>\r\nX-Injected: 1",
+      referencesHeader: "<a@x>\nX-Injected: 2",
+      rawHeaders: JSON.stringify({ "list-id": "<a>\r\nX-Injected: 3" }),
+    });
+    await env.R2.put("att/x.txt", "x");
+    await createTestAttachment({
+      id: "a1",
+      emailId: "e1",
+      filename: 'a"\r\nX-Injected: 4.txt',
+      contentType: "text/plain\r\nX-Injected: 5",
+      r2Key: "att/x.txt",
+      contentId: "<cid>\r\nX-Injected: 6",
+    });
+    const text = decoder.decode((await rendered("received", "e1")).bytes);
+    expect(text).not.toMatch(/\r\n(Bcc|X-Injected):/);
+    expect(text).toContain("Subject: =?UTF-8?B?");
+  });
+
   it("rebuilds older received mail with its stored headers", async () => {
     await createTestEmail({
       id: "e1",
