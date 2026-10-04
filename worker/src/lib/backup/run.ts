@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { backupRuns, type BackupRun } from "../../db/backup-runs.schema";
@@ -7,7 +7,7 @@ import { recordAudit } from "../audit/record";
 import { isDemoMode } from "../is-dev";
 import { LEASE_MS, SliceBusyError, changesOf } from "../jobs/slices";
 import { PartWriter, type WrittenPart } from "../jobs/part-writer";
-import { backupKey, encryptFrame, sha256Hex } from "./crypto";
+import { backupKey, backupKeyId, encryptFrame, sha256Hex } from "./crypto";
 import {
   markBackupStarted,
   nextBackupDue,
@@ -37,8 +37,8 @@ interface TableProgress {
   parts: WrittenPart[];
   /** Bytes short of a part, carried to the next step. */
   pendingKey: string | null;
-  /** Rows per query; halved for tables with large rows. */
-  pageSize: number;
+  /** Encrypted frames written so far (each frame's index is bound to it). */
+  frames: number;
   /** Every row is written; only the last part and completion are left. */
   finishing: boolean;
   /** The last part's size and hash, once finishing. */
@@ -55,6 +55,9 @@ export interface BackupFile {
   parts: { bytes: number; sha256: string }[];
   columns: string[];
   primaryKey: string[];
+  foreignKeys: { columns: string[]; table: string; references: string[] }[];
+  /** Encrypted files: how many frames (a restore checks none is missing). */
+  frames: number | null;
 }
 
 interface BackupProgress {
@@ -68,6 +71,10 @@ interface BackupProgress {
   current: TableProgress | null;
   done: BackupFile[];
   encrypted: boolean;
+  /** Which key encrypts it (see `backupKeyId`); every step checks it. */
+  keyId: string | null;
+  /** The bucket it was written to, so retention finds it there. */
+  bucket: "BACKUPS" | "R2";
   /** The hourly run queued it again once after it stopped moving. */
   resumed?: boolean;
 }
@@ -82,6 +89,8 @@ export interface BackupManifest {
   compression: "gzip";
   /** `aes-256-gcm-frames` when the files are encrypted (see crypto.ts). */
   encryption: "aes-256-gcm-frames" | null;
+  /** Which key encrypted it: a restore refuses another. */
+  keyId: string | null;
   tables: BackupFile[];
   /** Tables left out on purpose. */
   excluded: string[];
@@ -96,7 +105,9 @@ export const BACKUP_LIMITS = {
   stepMs: 20_000,
   /** Text gathered before it is compressed into one gzip member. */
   chunkBytes: 2 * 1024 * 1024,
+  /** Rows per page at most, and their stored size at most. */
   pageSize: 500,
+  pageBytes: 4 * 1024 * 1024,
 };
 /** A run not touched for this long is queued again (once). */
 const STUCK_SECONDS = 2 * 60 * 60;
@@ -105,10 +116,12 @@ const DEAD_SECONDS = 24 * 60 * 60;
 /** Runs pruned per hourly pass. */
 const PRUNE_RUNS = 5;
 
+/** What else is in the bucket: everything outside `backups/`. */
 export const R2_PREFIXES = [
   "attachments/",
   "inbound-raw/",
-  "jmap/",
+  "jmap-content/",
+  "jmap-uploads/",
   "newsletter-assets/",
   "exports/",
   "imports/",
@@ -124,6 +137,12 @@ export class BackupRunningError extends Error {
 /** The bucket backups go to: `BACKUPS` when bound, else `R2`. */
 export function backupBucket(env: CloudflareBindings): R2Bucket {
   return env.BACKUPS ?? env.R2;
+}
+
+/** The bucket a run was written to (an older run may predate `BACKUPS`). */
+function runBucket(env: CloudflareBindings, run: BackupRun): R2Bucket {
+  const which = backupProgress(run).bucket;
+  return which === "R2" ? env.R2 : (env.BACKUPS ?? env.R2);
 }
 
 export function backupProgress(run: BackupRun): BackupProgress {
@@ -159,6 +178,8 @@ export async function startBackup(
     current: null,
     done: [],
     encrypted: (await backupKey(env)) !== null,
+    keyId: await backupKeyId(env),
+    bucket: env.BACKUPS ? "BACKUPS" : "R2",
   };
   const run: BackupRun = {
     id,
@@ -217,7 +238,9 @@ export function rowLine(row: Record<string, unknown>): string {
       for (const byte of bytes) binary += String.fromCharCode(byte);
       out[column] = { $blob: btoa(binary) };
     } else if (Array.isArray(value)) {
-      out[column] = { $blob: btoa(String.fromCharCode(...value)) };
+      let binary = "";
+      for (const byte of value as number[]) binary += String.fromCharCode(byte);
+      out[column] = { $blob: btoa(binary) };
     } else {
       out[column] = value;
     }
@@ -227,10 +250,12 @@ export function rowLine(row: Record<string, unknown>): string {
 
 const encoder = new TextEncoder();
 
-/** One gzip member (and, with a key, one encrypted frame). */
+/** One gzip member (and, with a key, frame `index` of `file`). */
 async function packChunk(
   text: string,
   key: CryptoKey | null,
+  file: string,
+  index: number,
 ): Promise<Uint8Array> {
   const gzipped = new Uint8Array(
     await new Response(
@@ -239,7 +264,7 @@ async function packChunk(
         .pipeThrough(new CompressionStream("gzip")),
     ).arrayBuffer(),
   );
-  return key ? encryptFrame(key, gzipped) : gzipped;
+  return key ? encryptFrame(key, gzipped, file, index) : gzipped;
 }
 
 /**
@@ -280,7 +305,7 @@ export async function runBackupStep(
     );
   if (changesOf(claim) !== 1) throw new SliceBusyError(runId);
 
-  const bucket = backupBucket(env);
+  const bucket = runBucket(env, run);
   const state: BackupProgress = claimed;
 
   /** Saves `state`; false when the run was cancelled or taken meanwhile. */
@@ -303,7 +328,8 @@ export async function runBackupStep(
 
   try {
     const key = await backupKey(env);
-    if ((key !== null) !== state.encrypted) {
+    // A key set, removed or rotated mid-run would mix keys in one file.
+    if ((await backupKeyId(env)) !== state.keyId) {
       throw new Error("BACKUP_ENCRYPTION_KEY changed during the backup");
     }
     const started = now();
@@ -327,8 +353,7 @@ export async function runBackupStep(
           uploadId: upload.uploadId,
           parts: [],
           pendingKey: null,
-          // Start small: a first page of message rows can be wide.
-          pageSize: Math.min(100, BACKUP_LIMITS.pageSize),
+          frames: 0,
           finishing: false,
           last: null,
         };
@@ -347,46 +372,62 @@ export async function runBackupStep(
         }
         let text = "";
         let finished = false;
+        const fileKey = fileName(name, state.encrypted);
         const flush = async () => {
           if (!text) return;
-          const chunk = await packChunk(text, key);
+          const chunk = await packChunk(text, key, fileKey, current.frames++);
           text = "";
           await writer.write(chunk);
           current.bytes += chunk.length;
           written += chunk.length;
         };
+        const table = backupTables().find((entry) => entry.name === name);
+        const sizeOf = sql.join(
+          (table?.columns ?? []).map(
+            (column) => sql`COALESCE(LENGTH(${sql.identifier(column)}), 0)`,
+          ),
+          sql` + `,
+        );
         while (within()) {
-          const asked = current.pageSize;
-          const page = await db.all<Record<string, unknown>>(sql`
-            SELECT rowid AS __saasmail_rowid, * FROM ${sql.identifier(name)}
+          // The rows ahead and their stored size: the page stops before it
+          // would pass pageBytes (one wide row on its own at least), so a
+          // run of message bodies never fills the Worker's memory.
+          const ahead = await db.all<{ rowid: number; size: number }>(sql`
+            SELECT rowid AS rowid, ${table && table.columns.length > 0 ? sizeOf : sql`0`} AS size
+            FROM ${sql.identifier(name)}
             WHERE rowid > ${current.rowid}
             ORDER BY rowid
-            LIMIT ${asked}
+            LIMIT ${BACKUP_LIMITS.pageSize}
           `);
-          let pageText = "";
-          for (const row of page) pageText += rowLine(row);
-          text += pageText;
-          if (page.length > 0) {
-            current.rowid = Number(page[page.length - 1]!.__saasmail_rowid);
-            current.rows += page.length;
-            rows += page.length;
+          if (ahead.length === 0) {
+            finished = true;
+            break;
           }
-          // Wide rows (message bodies): smaller pages; narrow ones: larger.
-          if (pageText.length > 4 * 1024 * 1024) {
-            current.pageSize = Math.max(5, Math.floor(current.pageSize / 2));
-          } else if (
-            pageText.length < 512 * 1024 &&
-            current.pageSize < BACKUP_LIMITS.pageSize
-          ) {
-            current.pageSize = Math.min(
-              BACKUP_LIMITS.pageSize,
-              current.pageSize * 2,
-            );
+          let take = 0;
+          let bytes = 0;
+          for (const row of ahead) {
+            if (
+              take > 0 &&
+              bytes + Number(row.size) > BACKUP_LIMITS.pageBytes
+            ) {
+              break;
+            }
+            bytes += Number(row.size);
+            take++;
           }
+          const lastRowid = Number(ahead[take - 1]!.rowid);
+          const page = await db.all<Record<string, unknown>>(sql`
+            SELECT rowid AS __saasmail_rowid, * FROM ${sql.identifier(name)}
+            WHERE rowid > ${current.rowid} AND rowid <= ${lastRowid}
+            ORDER BY rowid
+          `);
+          for (const row of page) text += rowLine(row);
+          current.rowid = lastRowid;
+          current.rows += page.length;
+          rows += page.length;
           if (text.length >= BACKUP_LIMITS.chunkBytes) await flush();
-          // A short page is the table's end (the size may have changed
-          // since it was asked for).
-          if (page.length < asked) {
+          // Fewer rows ahead than a page: this was the table's end.
+          if (take === ahead.length && ahead.length < BACKUP_LIMITS.pageSize) {
             finished = true;
             break;
           }
@@ -394,7 +435,7 @@ export async function runBackupStep(
         await flush();
         // An empty table still gets a file, so a restore empties it too.
         if (finished && current.bytes === 0) {
-          const chunk = await packChunk("", key);
+          const chunk = await packChunk("", key, fileKey, current.frames++);
           await writer.write(chunk);
           current.bytes += chunk.length;
         }
@@ -411,16 +452,13 @@ export async function runBackupStep(
           finished && rest.length > 0
             ? { bytes: rest.length, sha256: await sha256Hex(rest) }
             : null;
-        let saved = false;
-        try {
-          saved = await save();
-        } finally {
-          // Not saved: the next attempt carries the previous bytes again.
-          if (!saved && pendingKey) {
-            await bucket.delete(pendingKey).catch(() => {});
-          }
+        // An error saving may still have saved: keep the new carried bytes
+        // (the manifest's sweep removes them if not). Only a definite "not
+        // saved" (cancelled, or taken over) deletes them.
+        if (!(await save())) {
+          if (pendingKey) await bucket.delete(pendingKey).catch(() => {});
+          return null;
         }
-        if (!saved) return null;
         if (oldPending) await bucket.delete(oldPending).catch(() => {});
         if (!finished) continue;
       }
@@ -464,6 +502,8 @@ export async function runBackupStep(
         ],
         columns: columns?.columns ?? [],
         primaryKey: columns?.primaryKey ?? [],
+        foreignKeys: columns?.foreignKeys ?? [],
+        frames: state.encrypted ? current.frames : null,
       });
       const pendingKey = current.pendingKey;
       state.current = null;
@@ -504,7 +544,7 @@ async function finishBackup(
   save: (extra?: Partial<BackupRun>) => Promise<boolean>,
   now: () => number,
 ): Promise<void> {
-  const bucket = backupBucket(env);
+  const bucket = runBucket(env, run);
   const finishedAt = Math.floor(now() / 1000);
   let lastMigration: string | null = null;
   try {
@@ -523,6 +563,7 @@ async function finishBackup(
     lastMigration,
     compression: "gzip",
     encryption: state.encrypted ? "aes-256-gcm-frames" : null,
+    keyId: state.keyId,
     tables: state.done,
     excluded: [...EXCLUDED_TABLES].sort(),
     r2Prefixes: R2_PREFIXES,
@@ -592,7 +633,7 @@ export async function failBackup(
     })
     .where(and(eq(backupRuns.id, runId), eq(backupRuns.status, "running")));
   if (changesOf(result) !== 1) return;
-  const bucket = backupBucket(env);
+  const bucket = runBucket(env, run);
   const current = backupProgress(run).current;
   if (current) {
     const file = `${run.prefix}${fileName(current.name, backupProgress(run).encrypted)}`;
@@ -651,7 +692,9 @@ export async function runBackupInline(
 
 /**
  * Deletes the files of backups older than the retention (the rows stay,
- * marked pruned): a few runs per pass.
+ * marked pruned), a few runs per pass. The newest completed backup that
+ * still has its files is never deleted, however old: if backups start
+ * failing, the last good one stays.
  */
 export async function pruneBackups(
   db: Db,
@@ -659,6 +702,12 @@ export async function pruneBackups(
   nowSeconds: number,
 ): Promise<number> {
   const { keepDays } = await readBackupSettings(db);
+  const [newest] = await db
+    .select({ id: backupRuns.id })
+    .from(backupRuns)
+    .where(and(eq(backupRuns.status, "completed"), isNull(backupRuns.prunedAt)))
+    .orderBy(desc(backupRuns.startedAt), sql`rowid DESC`)
+    .limit(1);
   const old = await db
     .select()
     .from(backupRuns)
@@ -667,13 +716,13 @@ export async function pruneBackups(
         or(eq(backupRuns.status, "completed"), eq(backupRuns.status, "failed")),
         isNull(backupRuns.prunedAt),
         lt(backupRuns.startedAt, nowSeconds - keepDays * 24 * 60 * 60),
+        ...(newest ? [ne(backupRuns.id, newest.id)] : []),
       ),
     )
     .orderBy(backupRuns.startedAt)
     .limit(PRUNE_RUNS);
-  const bucket = backupBucket(env);
   for (const run of old) {
-    await deletePrefix(bucket, run.prefix);
+    await deletePrefix(runBucket(env, run), run.prefix);
     await db
       .update(backupRuns)
       .set({ prunedAt: nowSeconds })

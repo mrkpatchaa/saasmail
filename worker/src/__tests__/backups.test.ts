@@ -90,7 +90,7 @@ async function linesOf(
   const object = await env.R2.get(`${prefix}${file}`);
   expect(object).not.toBeNull();
   let bytes: Uint8Array = new Uint8Array(await object!.arrayBuffer());
-  if (key) bytes = await decryptFrames(key, bytes);
+  if (key) bytes = await decryptFrames(key, bytes, file);
   const text = decoder.decode(gunzipSync(bytes));
   return text
     .split("\n")
@@ -308,6 +308,102 @@ describe("a backup run", () => {
     expect(() => gunzipSync(raw)).toThrow();
   });
 
+  it("spans steps with uploaded parts and carried bytes, and a retry after completing", async () => {
+    for (let i = 0; i < 20; i++) {
+      const random = new Uint8Array(150_000);
+      for (let at = 0; at < random.length; at += 65_536) {
+        crypto.getRandomValues(random.subarray(at, at + 65_536));
+      }
+      let binary = "";
+      for (const byte of random) binary += String.fromCharCode(byte);
+      await createTestEmail({
+        id: `wide-${i}`,
+        personId: "p1",
+        messageId: `<wide-${i}@example.com>`,
+        bodyText: btoa(binary),
+      });
+    }
+    const limits = { ...BACKUP_LIMITS };
+    // Pages of about 1 MB, steps of about 6 MB: the emails table (about
+    // 4 MB compressed... of random text, so about 3 MB) spans steps.
+    BACKUP_LIMITS.pageBytes = 1024 * 1024;
+    BACKUP_LIMITS.stepBytes = 2 * 1024 * 1024;
+    BACKUP_LIMITS.chunkBytes = 512 * 1024;
+    onTestFinished(() => {
+      Object.assign(BACKUP_LIMITS, limits);
+    });
+    const run = await startBackup(getDb(), env, null);
+    let step: number | null = 0;
+    let sawCarried = false;
+    for (let guard = 0; guard < 500 && step !== null; guard++) {
+      const progress = backupProgress(await runRow(run.id));
+      if (progress.current?.name === "emails" && progress.current.pendingKey) {
+        sawCarried = true;
+      }
+      // When emails is done writing rows, the next step completes the file:
+      // make that step die after completing, before recording it.
+      if (progress.current?.name === "emails" && progress.current.finishing) {
+        const db = getDb();
+        let updates = 0;
+        const dying = new Proxy(db, {
+          get(target, property, receiver) {
+            if (property === "update") {
+              return (table: typeof backupRuns) => {
+                if (++updates === 2) throw new Error("worker died");
+                return target.update(table);
+              };
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+        await expect(runBackupStep(dying, env, run.id, step)).rejects.toThrow(
+          "worker died",
+        );
+        expect(
+          await env.R2.head(`${run.prefix}emails.ndjson.gz`),
+        ).not.toBeNull();
+      }
+      step = await runBackupStep(getDb(), env, run.id, step);
+    }
+    expect(sawCarried).toBe(true);
+    expect((await runRow(run.id)).status).toBe("completed");
+    const manifest = await manifestOf(run.prefix);
+    const emailsFile = manifest.tables.find((t) => t.name === "emails")!;
+    expect(emailsFile.rows).toBe(21);
+    const lines = await linesOf(run.prefix, emailsFile.file);
+    expect(lines.map((line) => line.id).sort()).toEqual(
+      ["e1", ...Array.from({ length: 20 }, (_, i) => `wide-${i}`)].sort(),
+    );
+    const object = await env.R2.get(`${run.prefix}${emailsFile.file}`);
+    const bytes = new Uint8Array(await object!.arrayBuffer());
+    let at = 0;
+    for (const part of emailsFile.parts) {
+      expect(await sha256Hex(bytes.subarray(at, at + part.bytes))).toBe(
+        part.sha256,
+      );
+      at += part.bytes;
+    }
+    expect(at).toBe(bytes.length);
+  });
+
+  it("fails a backup whose key changed mid-run", async () => {
+    (env as any).BACKUP_ENCRYPTION_KEY = "ab".repeat(32);
+    onTestFinished(() => {
+      delete (env as any).BACKUP_ENCRYPTION_KEY;
+    });
+    const limits = { ...BACKUP_LIMITS };
+    BACKUP_LIMITS.stepRows = 3;
+    onTestFinished(() => {
+      Object.assign(BACKUP_LIMITS, limits);
+    });
+    const run = await startBackup(getDb(), env, null);
+    expect(await runBackupStep(getDb(), env, run.id, 0)).toBe(1);
+    (env as any).BACKUP_ENCRYPTION_KEY = "cd".repeat(32);
+    await expect(runBackupStep(getDb(), env, run.id, 1)).rejects.toThrow(
+      "BACKUP_ENCRYPTION_KEY changed during the backup",
+    );
+  });
+
   it("runs one backup at a time, and a failed one leaves no files", async () => {
     const limits = { ...BACKUP_LIMITS };
     BACKUP_LIMITS.stepRows = 3;
@@ -443,6 +539,13 @@ describe("the schedule", () => {
     await insert("old", now - 8 * 24 * 60 * 60);
     await insert("new", now - 6 * 24 * 60 * 60);
     expect(await pruneBackups(getDb(), env, now)).toBe(1);
+    // However old, the newest completed backup stays.
+    await getDb()
+      .update(backupRuns)
+      .set({ startedAt: now - 30 * 24 * 60 * 60 })
+      .where(eq(backupRuns.id, "new"));
+    expect(await pruneBackups(getDb(), env, now)).toBe(0);
+    expect(await env.R2.head("backups/new/manifest.json")).not.toBeNull();
     expect(await env.R2.head("backups/old/manifest.json")).toBeNull();
     expect(await env.R2.head("backups/new/manifest.json")).not.toBeNull();
     expect((await runRow("old")).prunedAt).toBe(now);

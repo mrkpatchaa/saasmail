@@ -167,3 +167,13 @@ copy` and `wrangler r2 object get` instead, so the script has no dependency. It 
    deleted. "Back up now" refuses a malformed `BACKUP_ENCRYPTION_KEY` (`400 INVALID_KEY`).
 10. **The hourly work** is one `runBackupSchedule` (start when due, queue a stuck run again once, fail
     it after a day, prune) rather than three functions.
+11. **Found by review, before the PR:** statements are measured in UTF-8 bytes (CJK bodies passed D1's
+    100 KB limit) and a row's largest values move to appends until it fits; the restore streams each
+    table and writes its SQL as it goes; rows are upserted (the last copy of a key wins, a clash on
+    another unique key is skipped) and rows whose parent is not restored are left out, using the
+    foreign keys the manifest now lists — a backup taken over minutes is not a snapshot; the newest
+    completed backup is never pruned; pages are bounded by bytes read ahead (`LENGTH` of each column),
+    not by a page size halved after the fact; the manifest records the key's HMAC id, every step checks
+    it, and frames are bound to `<file>:<index>` with their count in the manifest; text with NUL goes
+    in as `CAST(X'…' AS TEXT)`; a run remembers its bucket; the restore names a failing file and
+    resumes with `--from-file`, and exits non-zero when it cannot ask for confirmation.

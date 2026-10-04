@@ -29,6 +29,8 @@ export interface BackupTable {
   columns: string[];
   /** Its primary key's columns (empty when it has none). */
   primaryKey: string[];
+  /** Its references to other tables, for a restore to drop orphans. */
+  foreignKeys: { columns: string[]; table: string; references: string[] }[];
 }
 
 /** Every table the schema defines, by name. */
@@ -84,6 +86,14 @@ export function backupTables(): BackupTable[] {
       .map((column) => column.name);
     return {
       name,
+      foreignKeys: config.foreignKeys.map((key) => {
+        const reference = key.reference();
+        return {
+          columns: reference.columns.map((column) => column.name),
+          table: getTableConfig(reference.foreignTable).name,
+          references: reference.foreignColumns.map((column) => column.name),
+        };
+      }),
       columns: config.columns.map((column) => column.name),
       primaryKey:
         primaryKey.length > 0

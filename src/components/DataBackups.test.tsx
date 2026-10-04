@@ -114,6 +114,26 @@ describe("DataBackups", () => {
     );
   });
 
+  it("says when backups or a manifest cannot be loaded", async () => {
+    api.fetchBackups.mockRejectedValueOnce(new Error("offline"));
+    const { unmount } = render(<DataBackups />);
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Backups could not be loaded: offline",
+    );
+    unmount();
+
+    api.fetchBackups.mockResolvedValue(overview({ runs: [run()] }));
+    api.fetchBackupManifest.mockRejectedValue(new Error("gone"));
+    render(<DataBackups />);
+    const [row] = await screen.findAllByTestId("backup-row");
+    const details = row.querySelector("details")!;
+    details.open = true;
+    fireEvent(details, new Event("toggle"));
+    expect(
+      await screen.findByText("The manifest could not be loaded."),
+    ).toBeTruthy();
+  });
+
   it("lists runs and shows a manifest", async () => {
     api.fetchBackups.mockResolvedValue(
       overview({

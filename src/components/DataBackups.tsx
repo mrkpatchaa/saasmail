@@ -50,16 +50,21 @@ export default function DataBackups() {
   const [keepDays, setKeepDays] = useState("14");
   const [busy, setBusy] = useState<"save" | "toggle" | "run" | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [manifests, setManifests] = useState<Record<string, BackupManifest>>(
-    {},
-  );
+  const [manifests, setManifests] = useState<
+    Record<string, BackupManifest | "error">
+  >({});
 
   const refresh = useCallback(async () => {
     try {
       const next = await fetchBackups();
       setOverview(next);
       return next;
-    } catch {
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `Backups could not be loaded: ${err.message}`
+          : "Backups could not be loaded.",
+      );
       return null;
     }
   }, []);
@@ -137,12 +142,12 @@ export default function DataBackups() {
   }
 
   async function onShowManifest(run: BackupRun) {
-    if (manifests[run.id]) return;
+    if (manifests[run.id] && manifests[run.id] !== "error") return;
     try {
       const manifest = await fetchBackupManifest(run.id);
       setManifests((current) => ({ ...current, [run.id]: manifest }));
     } catch {
-      // The details stay closed-looking; nothing else to do.
+      setManifests((current) => ({ ...current, [run.id]: "error" }));
     }
   }
 
@@ -306,22 +311,31 @@ export default function DataBackups() {
                     <summary className="cursor-pointer text-text-tertiary">
                       Manifest · <code>{run.prefix}</code>
                     </summary>
-                    {manifests[run.id] ? (
-                      <ul className="mt-1 space-y-0.5">
-                        <li>
-                          Last migration:{" "}
-                          {manifests[run.id].lastMigration ?? "unknown"}
-                        </li>
-                        {manifests[run.id].tables.map((table) => (
-                          <li key={table.name}>
-                            {table.name}: {table.rows} rows,{" "}
-                            {formatBytes(table.bytes)}
+                    {(() => {
+                      const manifest = manifests[run.id];
+                      if (manifest === "error") {
+                        return (
+                          <p className="mt-1 text-destructive">
+                            The manifest could not be loaded.
+                          </p>
+                        );
+                      }
+                      if (!manifest) return <p className="mt-1">Loading…</p>;
+                      return (
+                        <ul className="mt-1 space-y-0.5">
+                          <li>
+                            Last migration:{" "}
+                            {manifest.lastMigration ?? "unknown"}
                           </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-1">Loading…</p>
-                    )}
+                          {manifest.tables.map((table) => (
+                            <li key={table.name}>
+                              {table.name}: {table.rows} rows,{" "}
+                              {formatBytes(table.bytes)}
+                            </li>
+                          ))}
+                        </ul>
+                      );
+                    })()}
                   </details>
                 )}
               </li>
