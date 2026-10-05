@@ -89,6 +89,22 @@ https://github.com/user-attachments/assets/870186a2-840f-4b95-b859-4acd44863263
 
 ![Drip sequences](docs/screenshots/sequences.jpg)
 
+**Mailbox view** — the same mail as a conventional three-pane client: folders, stars, snooze, labels, and a reading pane with archive, spam, assign and `.eml` download.
+
+![Mailbox view with folders and reading pane](docs/screenshots/mailbox-view.jpg)
+
+**Automations** — ordered inbound rules: file into folders, file with AI, assign, auto-reply, or reject mail before it is stored.
+
+![Automations](docs/screenshots/automations.jpg)
+
+**Newsletters** — campaigns to subscriber lists, written in the block editor; the preview is compiled by the same code that renders the send.
+
+![Newsletter campaign preview](docs/screenshots/newsletter-editor.jpg)
+
+**Audit log** — who did what, across people, API keys, MCP and JMAP clients, rules and the agent, with filters and CSV export.
+
+![Audit log](docs/screenshots/audit-log.jpg)
+
 ## Features
 
 - <a id="one-timeline-per-customer"></a>**[One timeline per customer](docs/inboxes.md#one-timeline-per-customer)** — marketing, transactional, and support mail from a person, collapsed into one conversation.

@@ -2,6 +2,8 @@
 
 # Automations
 
+![Automations](screenshots/automations.jpg)
+
 Saasmail has one rules engine for inbound routing and future automation uses.
 Which rules match a received message is decided before it is stored (a
 [`reject`](#rejecting-mail) rule refuses it there); the other actions run once

@@ -2,6 +2,8 @@
 
 # Newsletters
 
+![Newsletter campaign preview](screenshots/newsletter-editor.jpg)
+
 Lists, subscribe forms, and campaigns — bulk marketing mail, kept deliberately separate from the transactional and sequence paths that share the same worker.
 
 ## Contacts are not people
