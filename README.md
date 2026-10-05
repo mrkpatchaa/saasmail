@@ -105,7 +105,7 @@ https://github.com/user-attachments/assets/870186a2-840f-4b95-b859-4acd44863263
 - <a id="email-sequencing"></a>**[Sequences](docs/sequences.md)** — multi-step drip campaigns with delay overrides and auto-cancel on reply.
 - **[Newsletters](docs/newsletters.md)** — subscriber lists with consent records, public subscribe forms with double opt-in, and campaigns that carry their own content, edited in the block editor with hosted images, with per-list unsubscribe and open/click tracking.
 - <a id="suppressions-and-unsubscribe"></a>**[Suppressions and unsubscribe](docs/suppressions.md)** — RFC 8058 one-click unsubscribe, a suppression list enforced on every send path, and a `transactional` bypass.
-- <a id="user-management"></a><a id="api-keys"></a>**[Users and API keys](docs/users-and-api-keys.md)** — invite-only onboarding, passkeys, sign-in rate limits, scoped `sk_…` keys, and idempotency keys for safe send retries.
+- <a id="user-management"></a><a id="api-keys"></a>**[Users and API keys](docs/users-and-api-keys.md)** — invite-only onboarding, passkeys, sign-in rate limits, per-user `sk_…` keys, and idempotency keys for safe send retries.
 - **[Audit log](docs/audit-log.md)** — who did what, whether a person, an API key, an MCP or JMAP client, a rule or the agent; admins only.
 - **[Export, import and backups](docs/data.md)** — export an inbox as mbox or a message as `.eml`, import mbox and `.eml`, and daily database backups to R2 with a restore script.
 - **[Sending controls](docs/sending.md)** — pause all outbound mail, switch off sending over MCP at deploy time, and cap each person's daily sends per channel.
