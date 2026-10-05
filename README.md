@@ -17,7 +17,7 @@ Every interaction with a customer matters, and context compounds. saasmail pulls
 
 Self-hosted on Cloudflare Workers. Receive with **Cloudflare Email Workers**. Send with **Cloudflare Email Sending**, **Resend**, **Bavimail**, or **Postmark**.
 
-<img width="5088" height="3106" alt="saasmail-new" src="https://github.com/user-attachments/assets/407a8b4e-3ba0-4ed9-ae8a-f39dee861e56" />
+<img width="3200" height="1954" alt="The saasmail customer timeline: a people list on the left and one customer's mail across four inboxes on the right" src="docs/screenshots/hero.jpg" />
 
 ## Who this is for
 
