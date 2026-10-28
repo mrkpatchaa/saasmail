@@ -95,7 +95,8 @@ describe("0085/0086 remove subscribe forms", () => {
 describe("public subscribe endpoints", () => {
   // The bug: a form or a confirm link re-subscribed people who had opted out.
   // The routes are gone, so these requests fall through to the static assets
-  // (a POST is refused there; a GET gets the app shell) and touch no member.
+  // and touch no member. The POST is refused: 405 with a built front end,
+  // 404 without one (as in CI), so the test checks only that it failed.
   it("no longer re-subscribes a member who left", async () => {
     await cleanDb();
     const db = getDb();
@@ -129,7 +130,7 @@ describe("public subscribe endpoints", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email: "left@example.com" }),
     });
-    expect(post.status).toBe(405);
+    expect(post.ok).toBe(false);
     await exports.default.fetch("http://localhost/subscribe/confirm/any-token");
 
     const [member] = await db
