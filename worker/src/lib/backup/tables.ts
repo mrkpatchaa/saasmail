@@ -18,7 +18,6 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   "jmap_changes",
   "send_idempotency",
   "send_counters",
-  "subscribe_attempts",
   // The backups' own history describes this instance's bucket.
   "backup_runs",
 ]);
