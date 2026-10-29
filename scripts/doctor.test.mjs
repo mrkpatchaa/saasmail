@@ -1,4 +1,8 @@
 // docs/doctor.md: `yarn doctor`, against stubbed wrangler, git and HTTP.
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   exitCode,
@@ -367,5 +371,117 @@ describe("main", () => {
       lines.find((l) => l.label.startsWith("Email Sending")).label,
     ).toContain("not applicable");
     expect(world.calls.some((c) => c.includes("/email/sending/"))).toBe(false);
+  });
+});
+
+describe("Email Routing rules", () => {
+  // Per zone: the address's literal rule (if any) wins over the catch-all, and
+  // only an action that names this Worker (`saasmail` in CONFIG) routes to it.
+  const toWorker = (name) => [{ type: "worker", value: [name] }];
+  const ZONES = {
+    "one.test": { rules: [], catchAll: toWorker("saasmail") },
+    "two.test": {
+      rules: [{ to: "b@two.test", actions: toWorker("other-worker") }],
+      catchAll: toWorker("saasmail"),
+    },
+    "three.test": { rules: [], catchAll: toWorker("other-worker") },
+    "four.test": {
+      rules: [
+        {
+          to: "d@four.test",
+          actions: [{ type: "forward", value: ["d@elsewhere.test"] }],
+        },
+      ],
+      catchAll: toWorker("saasmail"),
+    },
+    "five.test": {
+      rules: [{ to: "E@Five.test", actions: toWorker("saasmail") }],
+      catchAll: { enabled: false },
+    },
+  };
+
+  it("passes a catch-all or literal rule to this Worker and fails one to another", async () => {
+    const world = deps({
+      env: { CLOUDFLARE_API_TOKEN: "cf" },
+      fetch: async (url) => {
+        const u = new URL(url);
+        if (u.pathname.endsWith("/api/admin/inboxes")) {
+          return json([
+            ...["a@one.test", "b@two.test", "c@three.test", "d@four.test"].map(
+              (email) => ({ email, source: "cloudflare" }),
+            ),
+            { email: "e@five.test", source: "cloudflare" },
+            { email: "me@gmail.com", source: "gmail" },
+          ]);
+        }
+        if (u.pathname.endsWith("/zones")) {
+          const name = u.searchParams.get("name");
+          return json({
+            success: true,
+            result: ZONES[name] ? [{ id: name, name }] : [],
+          });
+        }
+        const match = u.pathname.match(
+          /\/zones\/([^/]+)\/email\/routing\/rules(\/catch_all)?$/,
+        );
+        if (match) {
+          const zone = ZONES[match[1]];
+          if (match[2]) {
+            const catchAll = Array.isArray(zone.catchAll)
+              ? {
+                  enabled: true,
+                  matchers: [{ type: "all" }],
+                  actions: zone.catchAll,
+                }
+              : zone.catchAll;
+            return json({ success: true, result: catchAll });
+          }
+          return json({
+            success: true,
+            result: zone.rules.map((r) => ({
+              enabled: true,
+              matchers: [{ type: "literal", field: "to", value: r.to }],
+              actions: r.actions,
+            })),
+            result_info: { total_pages: 1 },
+          });
+        }
+        return null;
+      },
+    });
+    const { code, lines } = await main(ARGS, world.deps);
+    const routing = (address) =>
+      lines.find(
+        (l) => l.label.startsWith("Email Routing") && l.label.includes(address),
+      )?.status;
+    expect(routing("a@one.test")).toBe("pass");
+    expect(routing("b@two.test")).toBe("fail");
+    expect(routing("c@three.test")).toBe("fail");
+    expect(routing("d@four.test")).toBe("fail");
+    expect(routing("e@five.test")).toBe("pass");
+    expect(
+      lines.find((l) => l.label.includes("not applicable to 1 Gmail"))?.status,
+    ).toBe("info");
+    expect(world.calls.some((c) => c.includes("name=gmail.com"))).toBe(false);
+    expect(code).toBe(1);
+  });
+});
+
+describe("the entry point", () => {
+  it("runs main and exits 1 when started through a symlinked path", () => {
+    // deploy.sh runs `yarn doctor` from wherever the clone is, and macOS's
+    // /tmp and /var are symlinks: a guard that compares argv[1] with the real
+    // module path skips main() there and exits 0, so a failing deploy passes.
+    const script = resolve("scripts/doctor.mjs");
+    const link = join(
+      mkdtempSync(join(tmpdir(), "saasmail-doctor-")),
+      "doctor.mjs",
+    );
+    symlinkSync(script, link);
+    for (const entry of [script, link]) {
+      const run = spawnSync(process.execPath, [entry], { encoding: "utf8" });
+      expect(run.stderr, entry).toContain("Usage: yarn doctor");
+      expect(run.status, entry).toBe(1);
+    }
   });
 });
