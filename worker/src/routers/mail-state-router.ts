@@ -9,6 +9,7 @@ import {
   rowKey,
   rowMailState,
   rowMessages,
+  type RowMailState,
   type RowMessage,
   type RowRef,
 } from "../lib/messages/row-state";
@@ -185,6 +186,7 @@ mailStateRouter.openapi(updateRoute, async (c) => {
 
   const undo: UndoStep[] = [];
   let wrote = false;
+  let state: Map<string, RowMailState> = new Map();
   const write = async (fn: () => Promise<unknown>) => {
     wrote = true;
     await fn();
@@ -307,6 +309,9 @@ mailStateRouter.openapi(updateRoute, async (c) => {
         setRowPins(db, user.id, allowed, items, body.pinned as boolean),
       );
     }
+    // Inside the guard: once a write has committed, a failure here is
+    // still a partial result for the client.
+    state = await rowMailState(db, viewer, allowed, now, items);
   } catch (error) {
     if (!wrote && error instanceof InvalidMessageStateError) {
       return c.json({ error: error.message }, 400);
@@ -322,7 +327,6 @@ mailStateRouter.openapi(updateRoute, async (c) => {
     );
   }
 
-  const state = await rowMailState(db, viewer, allowed, now, items);
   return c.json(
     {
       data: items.map((item) => {

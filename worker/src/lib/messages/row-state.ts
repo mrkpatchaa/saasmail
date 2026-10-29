@@ -34,7 +34,7 @@ export type RowMailState = {
   inInbox: boolean;
   /** Unseen eligible received messages. */
   unreadCount: number;
-  /** Unseen received messages still in the Inbox folder. */
+  /** Unseen received messages in Inbox whose conversation is not snoozed. */
   inboxUnreadCount: number;
 };
 
@@ -134,7 +134,7 @@ export async function rowMailState(
         SUM(kind = 'received' AND archived_at IS NOT NULL AND trashed_at IS NULL) AS archived,
         MAX(CASE WHEN kind = 'received' AND trashed_at IS NULL THEN archived_at END) AS last_archived,
         SUM(unseen) AS unseen,
-        SUM(unseen AND in_inbox) AS inbox_unseen
+        SUM(unseen AND in_inbox AND snoozed_until IS NULL) AS inbox_unseen
       FROM (
         SELECT
           ${ROW_TYPE} AS type,

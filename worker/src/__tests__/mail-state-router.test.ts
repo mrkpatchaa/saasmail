@@ -13,6 +13,7 @@ import {
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { queryMessages } from "../lib/messages/query";
 import { setMailboxState, setUserState } from "../lib/messages/state";
+import { snoozeConversations } from "../lib/messages/conversation-state";
 
 /**
  * PATCH /api/mail-state: the inbox list's row actions, stored in the per-message state that /mail and JMAP read
@@ -437,6 +438,27 @@ describe("mail-state router", () => {
     ).first<{ n: number }>();
     expect(all!.n).toBe(45);
     expect(await folderIds(apiKey, "archive")).toEqual(["p1"]);
+
+    // A failure in the response's state read, after the write committed, is
+    // partial too: user_row_pins is missing only while that read runs.
+    await env.DB.exec("ALTER TABLE user_row_pins RENAME TO user_row_pins_off");
+    let unarchive: Awaited<ReturnType<typeof patch>>;
+    try {
+      unarchive = await patch(apiKey, {
+        items: [person("p1")],
+        archived: false,
+      });
+    } finally {
+      await env.DB.exec(
+        "ALTER TABLE user_row_pins_off RENAME TO user_row_pins",
+      );
+    }
+    expect(unarchive.status).toBe(500);
+    expect(unarchive.body.partial).toBe(true);
+    const unarchived = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM mailbox_message_state WHERE archived_at IS NOT NULL",
+    ).first<{ n: number }>();
+    expect(unarchived!.n).toBe(0);
   });
 
   it("8. spam puts a row in no folder", async () => {
@@ -506,19 +528,49 @@ describe("mail-state router", () => {
       [{ kind: "received", id: "e2" }],
       { archived: true },
     );
+    // p5 has an awake read thread and a snoozed unread one: in Inbox, but
+    // with nothing unread there (the snoozed thread is hidden, as in /mail).
+    await createTestPerson({ id: "p5", email: "p5@example.com" });
+    await createTestEmail({
+      id: "e5-read",
+      personId: "p5",
+      recipient: INBOX,
+      messageId: "e5-read@x",
+      isRead: 1,
+    });
+    await createTestEmail({
+      id: "e5-snoozed",
+      personId: "p5",
+      recipient: INBOX,
+      messageId: "e5-snoozed@x",
+      isRead: 0,
+    });
+    await env.DB.prepare(
+      "UPDATE emails SET thread_key = CASE id WHEN 'e5-read' THEN 'thread-r' ELSE 'thread-s' END, received_at = ? WHERE id IN ('e5-read', 'e5-snoozed')",
+    )
+      .bind(NOW - 3000)
+      .run();
+    await snoozeConversations(
+      getDb(),
+      { isAdmin: true },
+      null,
+      [{ kind: "received", id: "e5-snoozed" }],
+      NOW + 3600,
+    );
 
     const first = await grouped(apiKey, "?folder=inbox&limit=1");
-    expect(first.total).toBe(3);
+    expect(first.total).toBe(4);
     expect(first.data.map((r) => r.id)).toEqual(["p1"]);
     const all = await grouped(apiKey, "?folder=inbox&limit=10");
-    expect(all.data.map((r) => r.id)).toEqual(["p1", "p3", "p2"]);
+    expect(all.data.map((r) => r.id)).toEqual(["p1", "p3", "p2", "p5"]);
     expect(all.data.find((r) => r.id === "p2")!.unreadCount).toBe(0);
     expect(all.data.find((r) => r.id === "p3")!.unreadCount).toBe(0);
+    expect(all.data.find((r) => r.id === "p5")!.unreadCount).toBe(0);
 
     const ids = await authFetch("/api/people/grouped/ids?folder=inbox", {
       apiKey,
     });
-    expect(((await ids.json()) as { total: number }).total).toBe(3);
+    expect(((await ids.json()) as { total: number }).total).toBe(4);
 
     const unread = await grouped(apiKey, "?folder=inbox&unread=1");
     expect(unread.data.map((r) => r.id)).toEqual(["p1"]);
