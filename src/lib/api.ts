@@ -2128,7 +2128,13 @@ export async function startOutlookConnect(
 export interface Suppression {
   id: string;
   email: string;
-  reason: "unsubscribe" | "manual";
+  reason:
+    | "unsubscribe"
+    | "manual"
+    | "hard_bounce"
+    | "soft_bounce"
+    | "complaint"
+    | "provider";
   source: string | null;
   note: string | null;
   createdAt: number;
