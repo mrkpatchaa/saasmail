@@ -183,7 +183,7 @@ describe("grouped list for a member with one inbox", () => {
     expect(
       (await grouped(admin.apiKey, "?folder=sent")).data.map((r) => r.id),
     ).toEqual(["p-alice"]);
-    // Outlook's "Empty Deleted Items" purges every row that
+    // Outlook's "Empty Deleted Items" deletes every person that
     // /grouped/ids?folder=trash returns: with nothing starred, snoozed,
     // archived or trashed, a state folder is empty, never every row.
     for (const path of ["/api/people/grouped", "/api/people/grouped/ids"]) {
