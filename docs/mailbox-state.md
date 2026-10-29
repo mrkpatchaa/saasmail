@@ -260,7 +260,7 @@ spam lives in `/mail` Junk.
 | `trashedAt`    | every eligible message is trashed: the latest trash time; else null                                                               |
 | `archivedAt`   | not trashed, no received message in Inbox, at least one archived received message not trashed: the latest archive time; else null |
 | `snoozedUntil` | at least one received message in Inbox, and every such message's conversation is snoozed: the earliest wake time; else null       |
-| `unreadCount`  | eligible received messages you have not seen; in the Inbox folder, only those still in Inbox                                      |
+| `unreadCount`  | eligible received messages you have not seen; in the Inbox folder, only those still in Inbox and not in a snoozed conversation    |
 
 ### Folders
 
@@ -301,7 +301,9 @@ moved and their value before (`{ kind: "mailbox" | "user" | "snooze", refs, ... 
 The app replays them through `POST /api/messages/mailbox-state`,
 `POST /api/messages/user-state` and `POST /api/messages/snooze`, so Undo only
 touches what the action changed. Undo of a pin puts back only the pins it
-flipped.
+flipped, for Select all N too: `GET /api/people/grouped/ids` returns each
+row's `pinned`. If a whole-folder action fails part-way, the app drops its
+Undo and refetches the list and counts.
 
 ### Delete forever and Empty Trash
 

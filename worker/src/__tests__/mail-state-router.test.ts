@@ -567,10 +567,21 @@ describe("mail-state router", () => {
     expect(all.data.find((r) => r.id === "p3")!.unreadCount).toBe(0);
     expect(all.data.find((r) => r.id === "p5")!.unreadCount).toBe(0);
 
+    // The ids carry each row's pin, so a whole-folder pin can be undone.
+    expect(
+      (await patch(apiKey, { items: [person("p3")], pinned: true })).status,
+    ).toBe(200);
     const ids = await authFetch("/api/people/grouped/ids?folder=inbox", {
       apiKey,
     });
-    expect(((await ids.json()) as { total: number }).total).toBe(4);
+    const idsBody = (await ids.json()) as {
+      total: number;
+      data: Array<{ id: string; pinned: boolean }>;
+    };
+    expect(idsBody.total).toBe(4);
+    expect(
+      Object.fromEntries(idsBody.data.map((r) => [r.id, r.pinned])),
+    ).toEqual({ p1: true, p2: false, p3: true, p5: false });
 
     const unread = await grouped(apiKey, "?folder=inbox&unread=1");
     expect(unread.data.map((r) => r.id)).toEqual(["p1"]);
