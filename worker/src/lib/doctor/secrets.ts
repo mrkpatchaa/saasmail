@@ -90,6 +90,12 @@ export const secretChecks: Check[] = [
       if (isSet(env, "TOKEN_ENCRYPTION_KEY")) {
         return { status: "pass", summary: "TOKEN_ENCRYPTION_KEY is set." };
       }
+      // A Google app set by env vars is configured too: connecting Gmail
+      // then fails without the key (lib/oauth-providers.ts; Microsoft has no
+      // env fallback).
+      const googleEnv =
+        isSet(env, "GOOGLE_OAUTH_CLIENT_ID") &&
+        isSet(env, "GOOGLE_OAUTH_CLIENT_SECRET");
       const row = await db.get<{ n: number }>(
         sql`SELECT (
           EXISTS (SELECT 1 FROM gmail_accounts)
@@ -97,11 +103,11 @@ export const secretChecks: Check[] = [
           OR EXISTS (SELECT 1 FROM app_settings WHERE key IN ('oauth_provider:google', 'oauth_provider:microsoft'))
         ) AS n`,
       );
-      return count(row) > 0
+      return googleEnv || count(row) > 0
         ? {
             status: "fail",
             summary:
-              "TOKEN_ENCRYPTION_KEY is not set while Gmail or Outlook is configured: stored refresh tokens cannot be opened.",
+              "TOKEN_ENCRYPTION_KEY is not set while Gmail or Outlook is configured: connecting a mailbox fails and stored refresh tokens cannot be opened.",
             hint: secretHint("TOKEN_ENCRYPTION_KEY"),
           }
         : {

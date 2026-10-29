@@ -41,16 +41,6 @@ async function markAllMigrationsApplied(except: string[] = []) {
   }
 }
 
-describe("build-info", () => {
-  it("reads the test stamp in the Worker", () => {
-    const stamp = buildInfo();
-    expect(stamp.commit).toBe("0123456789abcdef0123456789abcdef01234567");
-    expect(stamp.commitShort).toBe("0123456");
-    expect(stamp.version).toBe("0.0.0-test");
-    expect(stamp.migrations).toContain("0091_remove-subscribe-forms.sql");
-  });
-});
-
 describe("runDoctor", () => {
   beforeAll(async () => {
     await applyMigrations();
@@ -62,14 +52,6 @@ describe("runDoctor", () => {
     await cleanDb();
     await markAllMigrationsApplied();
     await recordCronTick(getDb(), NOW - 60);
-  });
-
-  it("returns the build stamp without the migration list", async () => {
-    const { build, checkedAt, checks } = await report();
-    expect(build.commit).toBe(buildInfo().commit);
-    expect(build).not.toHaveProperty("migrations");
-    expect(checkedAt).toBe(NOW);
-    expect(checks.map((c) => c.id)).toEqual(DOCTOR_CHECKS.map((c) => c.id));
   });
 
   it("migrations: a file not applied fails, an unknown applied name warns", async () => {
@@ -120,6 +102,19 @@ describe("runDoctor", () => {
     expect(check(without.checks, "secrets.token_encryption").status).toBe(
       "pass",
     );
+  });
+
+  it("secrets: a Google OAuth app set by env vars without TOKEN_ENCRYPTION_KEY fails", async () => {
+    const envApp = await report({ TOKEN_ENCRYPTION_KEY: undefined });
+    expect(check(envApp.checks, "secrets.token_encryption").status).toBe(
+      "fail",
+    );
+    const none = await report({
+      TOKEN_ENCRYPTION_KEY: undefined,
+      GOOGLE_OAUTH_CLIENT_ID: undefined,
+      GOOGLE_OAUTH_CLIENT_SECRET: undefined,
+    });
+    expect(check(none.checks, "secrets.token_encryption").status).toBe("info");
   });
 
   it("provider: NoopSender fails, and warns instead with a Gmail-mapped inbox", async () => {

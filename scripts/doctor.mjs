@@ -164,9 +164,48 @@ export function summarize(lines) {
 }
 
 /** Pending names from `wrangler d1 migrations list`, or [] for "No migrations to apply". */
+/**
+ * Pending names from `wrangler d1 migrations list`: [] only for its explicit
+ * "No migrations to apply", the names of its table otherwise, and null for
+ * output it cannot classify (which must not pass a deploy).
+ */
 export function pendingMigrations(stdout) {
   if (/No migrations to apply/i.test(stdout)) return [];
-  return [...new Set(stdout.match(/\b\d{4}_[\w.-]+\.sql\b/g) ?? [])];
+  const names = [...new Set(stdout.match(/\b\d{4}_[\w.-]+\.sql\b/g) ?? [])];
+  return names.length > 0 ? names : null;
+}
+
+/** The Worker checks a report must carry: without them nothing was judged. */
+export const MANDATORY_RUNTIME_CHECKS = [
+  "migrations.pending",
+  "secrets.better_auth",
+  "secrets.dev_flags",
+  "bindings.required",
+  "provider.outbound",
+];
+const STATUSES = new Set(["pass", "warn", "fail", "info"]);
+
+/** Why a doctor response cannot be trusted, or null when it can. */
+export function invalidRuntimeReport(body) {
+  if (!body || typeof body.build !== "object" || body.build === null) {
+    return "the body has no build";
+  }
+  if (!Array.isArray(body.checks)) return "the body has no checks";
+  const bad = body.checks.find(
+    (c) =>
+      !c ||
+      typeof c.id !== "string" ||
+      !STATUSES.has(c.status) ||
+      typeof c.summary !== "string",
+  );
+  if (bad) {
+    return `a check is malformed (${typeof bad?.id === "string" ? bad.id : "no id"})`;
+  }
+  const ids = new Set(body.checks.map((c) => c.id));
+  const missing = MANDATORY_RUNTIME_CHECKS.filter((id) => !ids.has(id));
+  return missing.length > 0
+    ? `mandatory checks missing: ${missing.join(", ")}`
+    : null;
 }
 
 function defaultExec(command, args, { timeoutMs }) {
@@ -321,9 +360,11 @@ async function cloudflareLines({ fetchImpl, token, worker, inboxes, runtime }) {
               String(m?.value).toLowerCase() === address,
           ),
       );
+      // A catch-all covers the zone's apex only: a subdomain needs its rule.
+      const apex = domainOf(address) === String(zone.name).toLowerCase();
       const ok = own
         ? routesToWorker(own, worker)
-        : routesToWorker(catchAll, worker);
+        : apex && routesToWorker(catchAll, worker);
       lines.push(
         ok
           ? {
@@ -333,7 +374,9 @@ async function cloudflareLines({ fetchImpl, token, worker, inboxes, runtime }) {
           : {
               status: "fail",
               label: `Email Routing: ${address} does not reach the Worker ${worker}.`,
-              hint: `In the zone's Email Routing, route ${address} (or the catch-all) to the Worker ${worker}.`,
+              hint: apex
+                ? `In the zone's Email Routing, route ${address} (or the catch-all) to the Worker ${worker}.`
+                : `Add an Email Routing rule for ${address} to the Worker ${worker}: the zone's catch-all does not cover a subdomain.`,
             },
       );
     } catch (e) {
@@ -467,13 +510,19 @@ export async function main(argv, deps = {}) {
     } else {
       const pending = pendingMigrations(r.stdout);
       emit(
-        pending.length > 0
+        pending === null
           ? {
               status: "fail",
-              label: `Migrations: ${pending.length} pending (${pending.slice(0, 3).join(", ")}${pending.length > 3 ? ", …" : ""}).`,
-              hint: `npx wrangler d1 migrations apply ${config.database} ${options.local ? "--local" : "--remote"} --config ${options.config}`,
+              label:
+                "Migrations: the output of `wrangler d1 migrations list` could not be read.",
             }
-          : { status: "pass", label: "Migrations: none pending." },
+          : pending.length > 0
+            ? {
+                status: "fail",
+                label: `Migrations: ${pending.length} pending (${pending.slice(0, 3).join(", ")}${pending.length > 3 ? ", …" : ""}).`,
+                hint: `npx wrangler d1 migrations apply ${config.database} ${options.local ? "--local" : "--remote"} --config ${options.config}`,
+              }
+            : { status: "pass", label: "Migrations: none pending." },
       );
     }
   }
@@ -544,15 +593,10 @@ export async function main(argv, deps = {}) {
             ? "SAASMAIL_ADMIN_KEY must be an API key of an admin user."
             : undefined,
       });
-    } else if (
-      !r.body ||
-      typeof r.body.build !== "object" ||
-      r.body.build === null ||
-      !Array.isArray(r.body.checks)
-    ) {
+    } else if (invalidRuntimeReport(r.body)) {
       emit({
         status: "fail",
-        label: "GET /api/admin/doctor: the body has no build and checks.",
+        label: `GET /api/admin/doctor: ${invalidRuntimeReport(r.body)}.`,
       });
     } else {
       runtime = r.body;

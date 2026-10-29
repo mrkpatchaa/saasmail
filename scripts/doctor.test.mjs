@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import {
   exitCode,
   main,
-  mergeReports,
   parseArgs,
   parseWranglerConfig,
   pendingMigrations,
@@ -32,6 +31,28 @@ const CONFIG = `{
   "vars": { "UNSUBSCRIBE_SECRET": "x" },
 }`;
 
+/** The Worker's mandatory checks, passing; `overrides.checks` replace by id. */
+const HEALTHY_CHECKS = [
+  ["migrations.pending", "migrations", "All migrations are applied."],
+  ["secrets.better_auth", "secrets", "BETTER_AUTH_SECRET is set."],
+  ["secrets.dev_flags", "secrets", "Dev flags are off."],
+  ["bindings.required", "bindings", "Bound."],
+  [
+    "provider.outbound",
+    "provider",
+    "Outbound provider: Resend (ResendSender).",
+  ],
+].map(([id, group, summary]) => ({ id, group, status: "pass", summary }));
+
+function withChecks(overrides) {
+  if (!overrides) return HEALTHY_CHECKS;
+  const byId = new Map(overrides.map((c) => [c.id, c]));
+  return [
+    ...HEALTHY_CHECKS.map((c) => byId.get(c.id) ?? c),
+    ...overrides.filter((c) => !HEALTHY_CHECKS.some((h) => h.id === c.id)),
+  ];
+}
+
 function runtimeReport(overrides = {}) {
   return {
     build: {
@@ -46,14 +67,7 @@ function runtimeReport(overrides = {}) {
       ...overrides.build,
     },
     checkedAt: 1,
-    checks: overrides.checks ?? [
-      {
-        id: "provider.outbound",
-        group: "provider",
-        status: "pass",
-        summary: "Outbound provider: Resend (ResendSender).",
-      },
-    ],
+    checks: withChecks(overrides.checks),
   };
 }
 
@@ -178,15 +192,7 @@ describe("helpers", () => {
     expect(
       pendingMigrations("│ 0091_remove-subscribe-forms.sql │\n│ 0092_x.sql │"),
     ).toEqual(["0091_remove-subscribe-forms.sql", "0092_x.sql"]);
-  });
-  it("merges script lines and runtime checks", () => {
-    const merged = mergeReports([{ status: "pass", label: "Config" }], {
-      checks: [{ status: "warn", summary: "Backups off", hint: "Turn on" }],
-    });
-    expect(merged).toEqual([
-      { status: "pass", label: "Config" },
-      { status: "warn", label: "Backups off", hint: "Turn on", runtime: true },
-    ]);
+    expect(pendingMigrations("Something else entirely")).toBeNull();
   });
   it("exits 1 on a failure, and on a warning only with --strict", () => {
     const warn = [{ status: "pass" }, { status: "warn" }];
@@ -289,9 +295,51 @@ describe("main", () => {
     });
     const { code, lines } = await main(ARGS, world.deps);
     expect(code).toBe(1);
-    expect(lines.some((l) => l.label.includes("no build and checks"))).toBe(
-      true,
-    );
+    expect(lines.some((l) => l.label.includes("has no build"))).toBe(true);
+  });
+
+  it("exits 1 on a report with no checks, an unknown status or a missing mandatory check, even without --strict", async () => {
+    const bodies = [
+      { ...runtimeReport(), checks: [] },
+      runtimeReport({
+        checks: [{ id: "cron.last_tick", status: "great", summary: "x" }],
+      }),
+      {
+        ...runtimeReport(),
+        checks: HEALTHY_CHECKS.filter((c) => c.id !== "secrets.dev_flags"),
+      },
+    ];
+    for (const body of bodies) {
+      const world = deps({
+        fetch: async (url) =>
+          url.endsWith("/api/admin/doctor") ? json(body) : null,
+      });
+      const { code, lines } = await main(ARGS, world.deps);
+      expect(code).toBe(1);
+      expect(
+        lines.some(
+          (l) =>
+            l.status === "fail" && l.label.startsWith("GET /api/admin/doctor"),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("exits 1 when the migrations list output cannot be read", async () => {
+    const world = deps({
+      exec: async (args) =>
+        args.includes("migrations")
+          ? {
+              code: 0,
+              timedOut: false,
+              stdout: "Upgrade wrangler!",
+              stderr: "",
+            }
+          : null,
+    });
+    const { code, lines } = await main(ARGS, world.deps);
+    expect(code).toBe(1);
+    expect(lines.some((l) => l.label.includes("could not be read"))).toBe(true);
   });
 
   it("exits 1 on a timeout", async () => {
@@ -420,6 +468,8 @@ describe("Email Routing rules", () => {
       rules: [{ to: "E@Five.test", actions: toWorker("saasmail") }],
       catchAll: { enabled: false },
     },
+    // A catch-all covers the apex only: sub.seven.test needs its own rule.
+    "seven.test": { rules: [], catchAll: toWorker("saasmail") },
     // A disabled literal rule is not applied: the catch-all decides.
     "six.test": {
       rules: [
@@ -441,6 +491,7 @@ describe("Email Routing rules", () => {
             ),
             { email: "e@five.test", source: "cloudflare" },
             { email: "f@six.test", source: "cloudflare" },
+            { email: "g@sub.seven.test", source: "cloudflare" },
             { email: "me@gmail.com", source: "gmail" },
           ]);
         }
@@ -490,6 +541,7 @@ describe("Email Routing rules", () => {
     expect(routing("d@four.test")).toBe("fail");
     expect(routing("e@five.test")).toBe("pass");
     expect(routing("f@six.test")).toBe("pass");
+    expect(routing("g@sub.seven.test")).toBe("fail");
     expect(
       lines.find((l) => l.label.includes("not applicable to 1 Gmail"))?.status,
     ).toBe("info");
