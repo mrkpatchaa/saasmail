@@ -468,26 +468,35 @@ export function useOutlookMail() {
 
   // ── Undo stack ────────────────────────────────────────────────────────
   // Each entry puts back exactly what one change did (docs/mailbox-state.md).
-  type UndoEntry = { label: string; run: () => Promise<void> };
+  // It is pushed before the change's request answers, as upstream, so Undo
+  // works at once; `run` waits for the answer's steps and resolves false
+  // when the change failed (nothing to undo).
+  type UndoEntry = { label: string; run: () => Promise<boolean> };
   const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
   const pushUndo = (entry: UndoEntry) =>
     setUndoStack((s) => [...s.slice(-19), entry]);
 
-  /** The undo of one change: the server's steps, then any pins it flipped. */
+  /**
+   * The undo of one change: the server's steps (null when the change
+   * failed), then any pins it flipped.
+   */
   const undoEntry = useCallback(
     (
       labelText: string,
       items: GroupedItem[],
       patch: StatePatch,
-      steps: MailStateUndoStep[],
+      pending: Promise<MailStateUndoStep[] | null>,
     ): UndoEntry => {
       const pins = pinUndo(items, patch.pinned);
       return {
         label: labelText,
         run: async () => {
+          const steps = await pending;
+          if (!steps) return false;
           await undoMailState(steps);
           if (pins) await updateMailState(pins.items, { pinned: pins.pinned });
           list.refresh();
+          return true;
         },
       };
     },
@@ -502,8 +511,8 @@ export function useOutlookMail() {
     }
     setUndoStack((s) => s.slice(0, -1));
     try {
-      await last.run();
-      showToast({ kind: "info", message: `Undone: ${last.label}` });
+      if (await last.run())
+        showToast({ kind: "info", message: `Undone: ${last.label}` });
     } catch {
       showToast({ kind: "error", message: "Couldn't undo" });
       list.refresh();
@@ -542,10 +551,14 @@ export function useOutlookMail() {
     if (!items.length) return;
     const remove = leaves(patch);
     if (remove) openNeighbour(items);
-    void list.applyState(items, patch, remove).then((steps) => {
-      if (!steps) return;
-      const entry = undoEntry(labelText, items, patch, steps);
-      pushUndo(entry);
+    const pending = list.applyState(items, patch, remove);
+    const entry = undoEntry(labelText, items, patch, pending);
+    pushUndo(entry);
+    void pending.then((steps) => {
+      if (!steps) {
+        setUndoStack((s) => s.filter((e) => e !== entry));
+        return;
+      }
       if (toast)
         showToast({
           kind: "info",
@@ -834,11 +847,24 @@ export function useOutlookMail() {
       }
       if (action === "archive") {
         openNeighbour(rows);
-        list.patchLocal(rows, {}, serverFolder === "inbox");
         const patch: StatePatch = { archived: true };
-        const res = await updateMailState(rows.map(itemRef), patch);
-        const entry = undoEntry("Sweep", rows, patch, res.undo);
+        const pending = updateMailState(rows.map(itemRef), patch).then(
+          (res) => res.undo,
+        );
+        const entry = undoEntry(
+          "Sweep",
+          rows,
+          patch,
+          pending.catch(() => null),
+        );
         pushUndo(entry);
+        list.patchLocal(rows, {}, serverFolder === "inbox");
+        try {
+          await pending;
+        } catch (e) {
+          setUndoStack((s) => s.filter((x) => x !== entry));
+          throw e;
+        }
         showToast({
           kind: "info",
           message: `Moved ${rows.length} conversation${rows.length === 1 ? "" : "s"} from ${sender} to Archive`,

@@ -241,27 +241,34 @@ export function useGmailList(query: GmailListQuery) {
           : next;
       });
       if (opts?.removeFromView) setTotal((t) => Math.max(0, t - keys.size));
-      undoRef.current = null;
+      // Undo puts back exactly what changed (docs/mailbox-state.md). It is
+      // armed before the request answers, as upstream, so `z` works at once:
+      // it waits for the answer's steps. If the change fails, there is
+      // nothing to undo and the catch below refetches.
+      const pending = updateMailState(targets.map(itemRef), patch);
+      const pins = pinUndo(targets, patch.pinned);
+      const undo = opts?.undo
+        ? () => {
+            undoRef.current = null;
+            pending.then(
+              (res) =>
+                undoMailState(res.undo)
+                  .then(() =>
+                    pins
+                      ? updateMailState(pins.items, { pinned: pins.pinned })
+                      : undefined,
+                  )
+                  .then(() => load({ silent: true }))
+                  .catch(() =>
+                    showToast({ kind: "error", message: "Couldn't undo" }),
+                  ),
+              () => undefined,
+            );
+          }
+        : null;
+      undoRef.current = undo;
       try {
-        const res = await updateMailState(targets.map(itemRef), patch);
-        // Undo puts back exactly what changed (docs/mailbox-state.md).
-        const pins = pinUndo(targets, patch.pinned);
-        const undo = opts?.undo
-          ? () => {
-              undoRef.current = null;
-              undoMailState(res.undo)
-                .then(() =>
-                  pins
-                    ? updateMailState(pins.items, { pinned: pins.pinned })
-                    : undefined,
-                )
-                .then(() => load({ silent: true }))
-                .catch(() =>
-                  showToast({ kind: "error", message: "Couldn't undo" }),
-                );
-            }
-          : null;
-        undoRef.current = undo;
+        await pending;
         if (opts?.message) {
           showToast({
             kind: "info",
@@ -279,7 +286,7 @@ export function useGmailList(query: GmailListQuery) {
         }
       } catch (e) {
         setItems(before);
-        undoRef.current = null;
+        if (undoRef.current === undo) undoRef.current = null;
         showToast({
           kind: "error",
           message: e instanceof Error ? e.message : "Could not update mail",

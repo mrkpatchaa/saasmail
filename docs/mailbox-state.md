@@ -303,7 +303,10 @@ The app replays them through `POST /api/messages/mailbox-state`,
 touches what the action changed. Undo of a pin puts back only the pins it
 flipped, for Select all N too: `GET /api/people/grouped/ids` returns each
 row's `pinned`. If a whole-folder action fails part-way, the app drops its
-Undo and refetches the list and counts.
+Undo and refetches the list and counts. In the Gmail and Outlook layouts, Undo
+(`z`, Ctrl+Z) is available at once, while the action is still in flight, and
+applies once the action's answer arrives; if the action fails, there is
+nothing to undo.
 
 ### Delete forever and Empty Trash
 
