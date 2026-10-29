@@ -86,7 +86,8 @@ describe("0090/0091 on the schema the live databases hold", () => {
         ('imported', 'l1', 'c5', 'e@x.test', 'subscribed',   'import', NULL, NULL,          'import', 50,   'job1', 51,   NULL, NULL, NULL,               52),
         ('mixed',    'l2', 'c1', 'a@x.test', 'subscribed',   'import', NULL, NULL,          'form',   60,   'job2', 61,   NULL, NULL, NULL,               62),
         ('noconsent','l2', 'c6', 'f@x.test', 'subscribed',   'form',   'f1', NULL,          'form',   NULL, NULL,   70,   75,   NULL, NULL,               70),
-        ('leftconf', 'l2', 'c7', 'g@x.test', 'unsubscribed', 'form',   'f1', NULL,          'form',   80,   NULL,   80,   90,   95,   'campaign:abc',     80)`,
+        ('leftconf', 'l2', 'c7', 'g@x.test', 'unsubscribed', 'form',   'f1', NULL,          'form',   80,   NULL,   80,   90,   95,   'campaign:abc',     80),
+        ('rejoined', 'l1', 'c8', 'h@x.test', 'subscribed',   'form',   'f1', NULL,          'form',   300,  NULL,   300,  100,  NULL, NULL,               40)`,
     ]);
 
     await run(statements(dataSql));
@@ -169,6 +170,23 @@ describe("0090/0091 on the schema the live databases hold", () => {
         unsubscribed_at: null,
         unsubscribe_reason: null,
         created_at: 70,
+      },
+      {
+        // Confirmed by double opt-in, left, then rejoined by a single opt-in
+        // form: the later consent stays, the older confirmation does not win.
+        id: "rejoined",
+        list_id: "l1",
+        contact_id: "c8",
+        email: "h@x.test",
+        status: "subscribed",
+        source: "api",
+        consent_source: "api",
+        consent_at: 300,
+        import_job_id: null,
+        subscribed_at: 300,
+        unsubscribed_at: null,
+        unsubscribe_reason: null,
+        created_at: 40,
       },
     ]);
 

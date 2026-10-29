@@ -36,7 +36,7 @@ Only an authenticated member of your team can put an address on a list: one at a
 
 To take signups on your own website, post them from your backend to `POST /api/lists/{id}/members` with an [API key](users-and-api-keys.md). Keep the key on the server, and do any bot protection and confirmation you need before calling it.
 
-Earlier versions had public subscribe forms with double opt-in. They were removed because the public endpoint could put back on a list someone who had unsubscribed. Members who joined through a form keep their membership and now show `api` as their source, with the time they confirmed as their consent time; members who never confirmed were deleted.
+Earlier versions had public subscribe forms with double opt-in. They were removed because the public endpoint could put back on a list someone who had unsubscribed. Members who joined through a form keep their membership and now show `api` as their source, with the time they confirmed as their consent time (or a later consent, if they left and joined again); members who never confirmed were deleted.
 
 ## Campaigns
 
