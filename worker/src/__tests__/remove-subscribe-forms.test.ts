@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
-import dataSql from "../../../migrations/0085_remove-subscribe-forms-data.sql?raw";
-import schemaSql from "../../../migrations/0086_remove-subscribe-forms.sql?raw";
+import dataSql from "../../../migrations/0090_remove-subscribe-forms-data.sql?raw";
+import schemaSql from "../../../migrations/0091_remove-subscribe-forms.sql?raw";
 import { eq } from "drizzle-orm";
 import { applyMigrations, cleanDb, getDb } from "./helpers";
 import { lists } from "../db/lists.schema";
@@ -18,7 +18,7 @@ async function runMigration(sql: string) {
   }
 }
 
-// The tables as they were before 0085, when public subscribe forms existed.
+// The tables as they were before 0090, when public subscribe forms existed.
 const OLD_SCHEMA = [
   `DROP TABLE IF EXISTS list_members`,
   `DROP TABLE IF EXISTS lists`,
@@ -31,7 +31,7 @@ const OLD_SCHEMA = [
   `CREATE TABLE subscribe_attempts (id TEXT PRIMARY KEY, form_id TEXT NOT NULL, email_hash TEXT NOT NULL, ip TEXT NOT NULL, attempt_type TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 ];
 
-describe("0085/0086 remove subscribe forms", () => {
+describe("0090/0091 remove subscribe forms", () => {
   beforeAll(async () => {
     await applyMigrations();
   });
