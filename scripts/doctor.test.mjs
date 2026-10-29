@@ -269,7 +269,7 @@ describe("main", () => {
     const auth = [];
     const base = world.deps.fetch;
     world.deps.fetch = async (url, init) => {
-      if (url.startsWith("https://api.cloudflare.com")) {
+      if (new URL(url).host === "api.cloudflare.com") {
         auth.push(new Headers(init?.headers).get("Authorization"));
         return json({ success: true, result: [] });
       }
