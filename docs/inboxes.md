@@ -60,6 +60,10 @@ every address that will get a copy, and offer **Reply to the sender instead**,
 which ignores the header altogether. The mail view's reading pane shows the
 `Reply-To:` line on such a message. An address is never both in To and in Cc.
 
+Replies from the [Gmail and Outlook layouts](appearance.md) go to the sender
+they show, whatever the header says; to answer the Reply-To address, reply from
+the default layout.
+
 Two guards apply:
 
 - A Reply-To address that is one of this instance's own inboxes is ignored, so a
@@ -144,6 +148,19 @@ with `{ enabled }` turns it on or off, and
 `POST /api/admin/inboxes/{email}/spam-filter/reset` empties it; both are
 recorded as `inbox.updated`.
 
+## Where an inbox gets its mail
+
+Each row on the **Inboxes** page has a **Source** dropdown: **Cloudflare** —
+the default, mail arrives through Cloudflare Email Routing — or one of the
+Google mailboxes connected in the **Connected Google mailboxes** section at the
+top of the same page. Pointing an inbox at a Google mailbox makes saasmail read
+that mailbox over the Gmail API instead, and send its replies through it.
+
+Everything about that path — connecting a mailbox, what the mapping is checked
+against before it saves, the hourly poll, and why it never backfills — is in
+[Gmail integration](gmail.md). Setting it up on a local instance is
+[Gmail on a local instance](gmail-local-setup.md).
+
 ## Per-inbox forwarding
 
 Give any inbox a **Forward to** address and every message it receives is re-sent to
@@ -188,4 +205,4 @@ forward to another inbox on the same instance, and any message already carrying 
 
 ---
 
-**See also:** [Users and API keys](users-and-api-keys.md) for the permission model · [Webhooks](webhooks.md) to fire on inbound mail · [Email providers](email-providers.md)
+**See also:** [Gmail integration](gmail.md) for the **Source** dropdown · [Users and API keys](users-and-api-keys.md) for the permission model · [Webhooks](webhooks.md) to fire on inbound mail · [Email providers](email-providers.md)

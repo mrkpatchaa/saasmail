@@ -44,8 +44,17 @@ import { sendCounters } from "./send-counters.schema";
 import { authRateLimits } from "./auth-rate-limits.schema";
 import { spamModels, spamTokens, spamTraining } from "./spam-filter.schema";
 import { backupRuns } from "./backup-runs.schema";
+import { gmailAccounts } from "./gmail-accounts.schema";
+import { outlookAccounts } from "./outlook-accounts.schema";
+import { installState } from "./install-state.schema";
+import { userPreferences } from "./user-preferences.schema";
+import { categoryOverrides } from "./mail-item-states.schema";
+import { userRowPins } from "./user-row-pins.schema";
 
 export const schema = {
+  userPreferences,
+  categoryOverrides,
+  userRowPins,
   ...authSchema,
   invitations,
   people,
@@ -95,4 +104,7 @@ export const schema = {
   spamTokens,
   spamTraining,
   backupRuns,
+  gmailAccounts,
+  outlookAccounts,
+  installState,
 } as const;

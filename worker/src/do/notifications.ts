@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { createDb } from "../db/client";
 import { pushSubscriptions } from "../db/push-subscriptions.schema";
 import { sendPush, type PushPayload, type VapidConfig } from "../lib/web-push";
+import { pushBody } from "../lib/push-preview";
 
 export class NotificationsHub implements DurableObject {
   ctx: DurableObjectState;
@@ -32,18 +33,6 @@ export class NotificationsHub implements DurableObject {
 
     if (url.pathname === "/realtime" && request.method === "POST") {
       return this.handleRealtime(request);
-    }
-
-    // Back-compat: /notify falls through to WS-only delivery. Remove once the
-    // email-handler is fully migrated (Task 9) and no callers remain.
-    if (url.pathname === "/notify" && request.method === "POST") {
-      const { inbox } = (await request.json()) as { inbox: string };
-      for (const ws of this.ctx.getWebSockets()) {
-        try {
-          ws.send(JSON.stringify({ type: "email_received", inbox }));
-        } catch {}
-      }
-      return new Response("ok");
     }
 
     return new Response("Not found", { status: 404 });
@@ -157,7 +146,7 @@ export class NotificationsHub implements DurableObject {
     const sockets = this.ctx.getWebSockets();
     const wsCount = sockets.length;
     if (wsCount > 0) {
-      // Back-compat frame shape — useRealtimeUpdates already handles this.
+      // The live-update frame src/hooks/useRealtimeUpdates.ts consumes.
       const frame = JSON.stringify({
         type: "email_received",
         inbox: payload.inbox,
@@ -173,7 +162,8 @@ export class NotificationsHub implements DurableObject {
     // the user may have other devices, or the socket may be a stale hibernated one.
     const pushPayload: PushPayload = {
       title: payload.senderName || "New email",
-      body: payload.subject || payload.bodyPreview || "",
+      // Subject, then the first lines of the message, like a mail app.
+      body: pushBody(payload.subject ?? "", payload.bodyPreview ?? ""),
       tag: `thread:${payload.threadId}`,
       icon: "/saasmail-logo.png",
       badge: "/saasmail-logo.png",

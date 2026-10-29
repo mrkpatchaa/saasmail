@@ -1,10 +1,13 @@
 import { and, eq } from "drizzle-orm";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { createDb } from "./db/client";
+import type { schema } from "./db/schema";
 import { emails } from "./db/emails.schema";
 import { inboxPermissions } from "./db/inbox-permissions.schema";
 import { senderIdentities } from "./db/sender-identities.schema";
 import { users } from "./db/auth.schema";
 import { parseEmail } from "./lib/email-parser";
+import type { ParsedEmail } from "./lib/email-parser";
 import {
   MAX_ATTACHMENTS,
   domainsOf,
@@ -40,6 +43,7 @@ import {
   recordInboundRejection,
   rejectsUnknownRecipients,
 } from "./lib/inbound-rejection";
+import { messagePreview } from "./lib/push-preview";
 
 export { isAutomatedInbound } from "./lib/automated-inbound";
 
@@ -58,14 +62,74 @@ export function shouldEnqueueSuggestedReply(options: {
   );
 }
 
+/** What `ingestParsedEmail` did with a message. */
+export type IngestOutcome =
+  /** Refused: the live handler bounces it with `reason`. Nothing stored. */
+  | { status: "rejected"; reason: string }
+  /** From a blocked sender or domain: dropped silently, nothing stored. */
+  | { status: "blocked" }
+  /** Already in this inbox (same Message-ID): nothing stored. */
+  | { status: "duplicate"; emailId: string }
+  /** Stored, and every step after storage has run. */
+  | { status: "stored"; emailId: string };
+
+export type IngestOptions = {
+  /**
+   * Set when importing old mail (the Gmail backfill). The message is stored
+   * already read, at its own `receivedAt`, and NONE of the live side effects
+   * run: no push notification, no webhook, no forward, no sequence
+   * cancellation. Replaying a year of those would page the team for
+   * mail they have already handled, re-forward it all, and stop sequences
+   * because of a reply someone sent weeks before they were enrolled.
+   *
+   * Stored the way the mail importer stores history (`source: "import"`):
+   * no spam scoring, rules, suggested reply, conversation wake, audit,
+   * realtime, push, webhook, forward or sequence cancellation.
+   */
+  historical?: { receivedAt: number };
+  /** The synced mailbox's ids for the message, written with the row. */
+  gmailMessageId?: string | null;
+  gmailThreadId?: string | null;
+  outlookMessageId?: string | null;
+};
+
+/** Cloudflare Email Worker entry point. */
 export async function handleEmail(
   message: ForwardableEmailMessage,
   env: CloudflareBindings,
   ctx: ExecutionContext,
 ): Promise<void> {
   const db = createDb(env);
+  // The SMTP envelope recipient picks the inbox, not the MIME To (a Bcc
+  // delivery names another address there).
   const parsed = await parseEmail(message);
+  const outcome = await ingestParsedEmail(db, parsed, env, ctx);
+  if (outcome.status === "rejected") message.setReject(outcome.reason);
+}
+
+/**
+ * Stores an already-parsed inbound message in the inbox `parsed.to` names and
+ * runs every step that follows: unknown-recipient and rule rejection,
+ * blocklist, per-inbox dedupe, spam scoring, rules, suggested replies,
+ * conversation wake, notifications, webhook, forwarding and sequence
+ * cancellation.
+ *
+ * Source-agnostic: the Email Worker reaches it through `handleEmail`; a
+ * mailbox sync calls it directly with a `ParsedEmail` built from the raw
+ * message, setting `parsed.to` to the inbox it belongs in. A rejection is
+ * returned, not sent: the caller decides how to refuse.
+ */
+export async function ingestParsedEmail(
+  db: DrizzleD1Database<typeof schema>,
+  parsed: ParsedEmail,
+  env: CloudflareBindings,
+  ctx: ExecutionContext,
+  opts: IngestOptions = {},
+): Promise<IngestOutcome> {
   const now = Math.floor(Date.now() / 1000);
+  const historical = opts.historical ?? null;
+  /** When the message arrived: now for live mail, its own time for imports. */
+  const receivedAt = historical?.receivedAt ?? now;
 
   // Canonicalize inbox addresses to lowercase before storage so casing
   // variants of the same recipient don't fork into separate group-row
@@ -101,24 +165,28 @@ export async function handleEmail(
     (await rejectsUnknownRecipients(db)) &&
     !(await hasInboxMembers(db, recipientCanonical))
   ) {
-    message.setReject(UNKNOWN_RECIPIENT_REASON);
-    await recordInboundRejection(db, {
-      from: fromAddressCanonical,
-      recipient: recipientCanonical,
-      subject: parsed.subject,
-      messageId: parsed.messageId,
-      reason: "unknown_recipient",
-    });
+    // Recording the refusal is best effort: it must never stop the refusal.
+    try {
+      await recordInboundRejection(db, {
+        from: fromAddressCanonical,
+        recipient: recipientCanonical,
+        subject: parsed.subject,
+        messageId: parsed.messageId,
+        reason: "unknown_recipient",
+      });
+    } catch (error) {
+      console.warn("Failed to record an inbound rejection:", error);
+    }
     console.log(
       `Rejected email from ${fromAddressCanonical} to ${recipientCanonical}: not an inbox`,
     );
-    return;
+    return { status: "rejected", reason: UNKNOWN_RECIPIENT_REASON };
   }
 
   // Drop mail from blocked senders/domains before any storage or side effects.
   if (await isBlocked(db, fromAddressCanonical)) {
     console.log(`Dropped blocked email from ${fromAddressCanonical}`);
-    return;
+    return { status: "blocked" };
   }
 
   // Deduplicate by Message-ID within this inbox: a redelivery is dropped, but a
@@ -136,8 +204,31 @@ export async function handleEmail(
       .limit(1);
     if (existing.length > 0) {
       console.log(`Duplicate email with Message-ID: ${parsed.messageId}`);
-      return;
+      return { status: "duplicate", emailId: existing[0].id };
     }
+  }
+
+  const providerIds = {
+    gmailMessageId: opts.gmailMessageId ?? null,
+    gmailThreadId: opts.gmailThreadId ?? null,
+    outlookMessageId: opts.outlookMessageId ?? null,
+  };
+
+  if (historical) {
+    // History, stored as the mail importer stores it: read, at its own time,
+    // and none of the live steps below.
+    const { emailId } = await storeReceivedMessage(db, env, {
+      parsed,
+      inbox: recipientCanonical,
+      fromAddress: fromAddressCanonical,
+      receivedAt,
+      now,
+      source: "import",
+      ourDomains: domainsOf(identityRows.map((r) => r.email)),
+      threadingMode: inboxIdentity?.threadingMode ?? "relationship",
+      ...providerIds,
+    });
+    return { status: "stored", emailId };
   }
 
   // The inbox's learning filter scores the message, when it is on and
@@ -179,23 +270,27 @@ export async function handleEmail(
   }
   const rejection = rejectionOf(matchedRules);
   if (rejection) {
-    message.setReject(rejection.reason);
-    await recordRuleMatch(db, rejection.rule.id, now);
-    await runWithAudit(ruleActor(rejection.rule), () =>
-      recordInboundRejection(db, {
-        from: fromAddressCanonical,
-        recipient: recipientCanonical,
-        subject: parsed.subject,
-        messageId: parsed.messageId,
-        reason: rejection.reason,
-        ruleId: rejection.rule.id,
-        ruleName: rejection.rule.name,
-      }),
-    );
+    // Recording the refusal is best effort: it must never stop the refusal.
+    try {
+      await recordRuleMatch(db, rejection.rule.id, now);
+      await runWithAudit(ruleActor(rejection.rule), () =>
+        recordInboundRejection(db, {
+          from: fromAddressCanonical,
+          recipient: recipientCanonical,
+          subject: parsed.subject,
+          messageId: parsed.messageId,
+          reason: rejection.reason,
+          ruleId: rejection.rule.id,
+          ruleName: rejection.rule.name,
+        }),
+      );
+    } catch (error) {
+      console.warn("Failed to record an inbound rejection:", error);
+    }
     console.log(
       `Rejected email from ${fromAddressCanonical} to ${recipientCanonical} by rule ${rejection.rule.id}`,
     );
-    return;
+    return { status: "rejected", reason: rejection.reason };
   }
 
   // Stored exactly as the importer stores history, but as live mail: unread,
@@ -216,6 +311,7 @@ export async function handleEmail(
     ourDomains: domainsOf(identityRows.map((r) => r.email)),
     spamProbability,
     threadingMode: inboxIdentity?.threadingMode ?? "relationship",
+    ...providerIds,
   });
   // The webhook and the forward describe the first 50 attachments, as they
   // always have.
@@ -324,7 +420,7 @@ export async function handleEmail(
             personId: actualPersonId,
             senderName: parsed.from.name || fromAddressCanonical,
             subject: parsed.subject ?? "",
-            bodyPreview: (parsed.bodyText ?? "").slice(0, 140),
+            bodyPreview: messagePreview(parsed.bodyText, parsed.bodyHtml),
           });
           const results = await Promise.allSettled(
             userIds.map((userId) => {
@@ -406,10 +502,27 @@ export async function handleEmail(
     knownInboxes: identityRows.map((r) => r.email),
   });
 
-  // Cancel any active sequences for this person
-  await cancelSequencesForPerson(db, actualPersonId);
+  // Cancel any active sequences for this person.
+  //
+  // Guarded, like the identical call in `mirrorSentMessage`, and for the same
+  // reason: the `emails` row above is already committed, so a throw here
+  // would stop the Gmail sync's run AND leave the retry hitting the per-inbox
+  // dedupe — the message would be skipped forever and the cancellation lost
+  // permanently, so the customer who just wrote in keeps getting automated
+  // follow-ups. A sequence that keeps running is worth an operator's
+  // attention; it is not worth discarding mail that is already on the
+  // timeline.
+  try {
+    await cancelSequencesForPerson(db, actualPersonId);
+  } catch (err) {
+    console.error(
+      `Stored the message from ${fromAddressCanonical} to ${recipientCanonical}, but cancelling their sequences failed; they may keep receiving automated follow-ups:`,
+      err instanceof Error ? err.message : "unknown error",
+    );
+  }
 
   console.log(
     `Processed email from ${fromAddressCanonical} to ${recipientCanonical} (${parsed.attachments.length} attachments)`,
   );
+  return { status: "stored", emailId };
 }

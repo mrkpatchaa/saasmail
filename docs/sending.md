@@ -13,12 +13,12 @@ auto-replying in a loop, an agent with a bad prompt, a leaked API key.
 
 ## Pause outbound sending
 
-**Settings → Sending → Pause sending** (admins). While sending is paused:
+**Settings → Sending controls → Pause sending** (admins). While sending is paused:
 
 - Every send is still accepted and recorded. The composer, the API, MCP, JMAP,
   rules, sequences, campaigns and list subscription confirmations go on as
   before; the message shows in Sent as **retrying** and waits in the outbox.
-  Nothing is refused.
+  Nothing is refused, except a mailbox reply (below).
 - No provider is called. The hourly outbox run does nothing (one already
   running stops within seconds), and a manual **Retry** in the outbox keeps the
   message waiting without using up one of its attempts. A held message can be
@@ -31,6 +31,9 @@ auto-replying in a loop, an agent with a bad prompt, a leaked API key.
 - Two sends are not held, because they have no outbox entry to wait in: inbox
   forwarding is skipped (the message itself is still in the inbox), and a
   campaign test send answers `sent: false`.
+- A reply from an inbox mapped to Gmail or Outlook is refused, not held: it
+  answers `409` with `MAILBOX_SEND_NOT_HELD` and nothing is sent or stored (see
+  [Gmail integration](gmail.md#send-controls-and-idempotency)).
 - Admins see a banner on every page with who paused and since when, and a
   **Resume** button. Everybody sees "Sending is paused; your message will be
   queued" above the Send button.
@@ -63,7 +66,7 @@ tools are unaffected. Unset (or any other value), sending is on.
 
 ## Daily send limits
 
-**Settings → Sending → Daily send limits** (admins), or
+**Settings → Sending controls → Daily send limits** (admins), or
 `PATCH /api/admin/settings` with `dailySendLimits`. A limit is the number of
 messages one person may send in a UTC day through one channel:
 
@@ -97,7 +100,7 @@ cannot both get under it. Over the limit:
 counts start again. The first refusal of a day records `send.limit_reached` in
 the audit log, once per person and channel.
 
-**Settings → Sending** lists today's counts, busiest first
+**Settings → Sending controls** lists today's counts, busiest first
 (`GET /api/admin/send-usage?day=YYYY-MM-DD`). Counts are kept for a week.
 
 ## API

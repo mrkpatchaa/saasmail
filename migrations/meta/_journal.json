@@ -600,15 +600,36 @@
     {
       "idx": 85,
       "version": "6",
-      "when": 1793172624724,
-      "tag": "0085_remove-subscribe-forms-data",
+      "when": 1793180290033,
+      "tag": "0085_upstream_gmail_accounts",
       "breakpoints": true
     },
     {
       "idx": 86,
       "version": "6",
-      "when": 1793172654241,
-      "tag": "0086_remove-subscribe-forms",
+      "when": 1793186236220,
+      "tag": "0086_upstream_gmail_outlook",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "6",
+      "when": 1793200836303,
+      "tag": "0087_upstream_user_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "6",
+      "when": 1793224212066,
+      "tag": "0088_upstream_better_auth_1_7",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "6",
+      "when": 1793231833591,
+      "tag": "0089_row_pins",
       "breakpoints": true
     }
   ]

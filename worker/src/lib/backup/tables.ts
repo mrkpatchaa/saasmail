@@ -14,12 +14,21 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   "oauth_access_tokens",
   "oauth_refresh_tokens",
   "jwkss",
+  // Used client-assertion ids, kept only until the assertion expires.
+  "oauth_client_assertions",
   "auth_rate_limits",
   "jmap_changes",
   "send_idempotency",
   "send_counters",
   // The backups' own history describes this instance's bucket.
   "backup_runs",
+  // Gmail and Outlook refresh tokens are encrypted with this instance's
+  // TOKEN_ENCRYPTION_KEY: another instance cannot decrypt them, so a mailbox
+  // is reconnected after a restore.
+  "gmail_accounts",
+  "outlook_accounts",
+  // The installer's record of this instance (its id and ownership nonce).
+  "install_state",
 ]);
 
 export interface BackupTable {

@@ -15,7 +15,7 @@ import {
   mailboxFlagsBefore,
   needsFlagsBefore,
 } from "../audit/mail-events";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { users } from "../../db/auth.schema";
@@ -26,11 +26,14 @@ import { mailboxMessageState } from "../../db/mailbox-message-state.schema";
 import { mailboxes } from "../../db/mailboxes.schema";
 import { messageMailboxes } from "../../db/message-mailboxes.schema";
 import { suggestedReplies } from "../../db/suggested-replies.schema";
+import { userRowPins } from "../../db/user-row-pins.schema";
 import {
   isInboxAllowed,
+  jsonList,
   resolveAllowedInboxes,
   type AllowedInboxes,
 } from "../inbox-permissions";
+import { rowKey, visibleRows, type RowRef } from "./row-state";
 import type { MessageRef } from "./types";
 
 export class MessageStateAccessError extends Error {
@@ -777,6 +780,70 @@ export async function setMailboxMembership(
   );
 }
 
+const ROW_PIN_ROWS_PER_STATEMENT = Math.floor(90 / 4);
+
+/**
+ * Pin or unpin inbox-list rows for one user (docs/mailbox-state.md § Rows in
+ * the inbox list). Pinning skips rows with no message in the caller's
+ * inboxes; unpinning deletes only the caller's pins.
+ */
+export async function setRowPins(
+  db: DrizzleD1Database<any>,
+  userId: string,
+  allowed: AllowedInboxes,
+  items: RowRef[],
+  pinned: boolean,
+): Promise<void> {
+  if (items.length === 0) return;
+  if (!pinned) {
+    await db
+      .delete(userRowPins)
+      .where(
+        and(
+          eq(userRowPins.userId, userId),
+          sql`(${userRowPins.itemType} || ':' || ${userRowPins.itemId}) IN ${jsonList(items.map(rowKey))}`,
+        ),
+      );
+    return;
+  }
+  const visible = await visibleRows(db, allowed, items);
+  const now = Math.floor(Date.now() / 1000);
+  const rows = items
+    .filter((item) => visible.has(rowKey(item)))
+    .map((item) => ({
+      userId,
+      itemType: item.type,
+      itemId: item.id,
+      pinnedAt: now,
+    }));
+  const statements: any[] = [];
+  for (
+    let start = 0;
+    start < rows.length;
+    start += ROW_PIN_ROWS_PER_STATEMENT
+  ) {
+    statements.push(
+      db
+        .insert(userRowPins)
+        .values(rows.slice(start, start + ROW_PIN_ROWS_PER_STATEMENT))
+        .onConflictDoNothing(),
+    );
+  }
+  await runWriteBatches(db, statements);
+}
+
+/** Every user's pin on a person's row, for when the person is deleted. */
+export async function deletePersonRowPins(
+  db: DrizzleD1Database<any>,
+  personId: string,
+): Promise<void> {
+  await db
+    .delete(userRowPins)
+    .where(
+      and(eq(userRowPins.itemType, "person"), eq(userRowPins.itemId, personId)),
+    );
+}
+
 const DELETE_BATCH_SIZE = 40;
 
 export async function deleteMessageState(
@@ -817,4 +884,42 @@ export async function deleteMessageState(
       }
     }
   }
+}
+
+/**
+ * The statements of `deleteMessageState` for the sent messages a subquery
+ * selects, for a caller that must run them in the same `db.batch` as the hard
+ * delete: the rows are matched when the batch runs, not when it is built, so a
+ * row written in between loses its state with it.
+ */
+export function deleteSentMessageStateStatements(
+  db: DrizzleD1Database<any>,
+  sentIds: SQL,
+) {
+  return [
+    db
+      .delete(messageUserState)
+      .where(
+        and(
+          eq(messageUserState.messageKind, "sent"),
+          sql`${messageUserState.messageId} IN ${sentIds}`,
+        ),
+      ),
+    db
+      .delete(mailboxMessageState)
+      .where(
+        and(
+          eq(mailboxMessageState.messageKind, "sent"),
+          sql`${mailboxMessageState.messageId} IN ${sentIds}`,
+        ),
+      ),
+    db
+      .delete(messageMailboxes)
+      .where(
+        and(
+          eq(messageMailboxes.messageKind, "sent"),
+          sql`${messageMailboxes.messageId} IN ${sentIds}`,
+        ),
+      ),
+  ];
 }

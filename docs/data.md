@@ -213,10 +213,14 @@ table's column names (blobs as `{"$blob": "<base64>"}`), gzip-compressed (a
 file written in steps is several gzip members one after another, which `gunzip`
 and every gzip library read as one stream). Every table is in it except
 sessions and tokens (`sessions`, `verifications`, `oauth_access_tokens`,
-`oauth_refresh_tokens`), the OAuth signing keys (`jwkss`, made again on first
-use) and short-lived counters (`auth_rate_limits`, `jmap_changes`,
-`send_idempotency`, `send_counters`, `backup_runs`).
-Password hashes, API key hashes and passkeys' public keys are included.
+`oauth_refresh_tokens`, `oauth_client_assertions`), the OAuth signing keys
+(`jwkss`, made again on first use) and short-lived counters (`auth_rate_limits`, `jmap_changes`,
+`send_idempotency`, `send_counters`, `backup_runs`), and
+the connected Gmail mailboxes (`gmail_accounts`: their refresh tokens are
+encrypted with this instance's `TOKEN_ENCRYPTION_KEY`, which another instance
+does not have, so a mailbox is reconnected after a restore).
+Password hashes, API key hashes and passkeys' public keys are included, and
+so are each user's pinned inbox rows (`user_row_pins`).
 
 `manifest.json` lists the files in the order a restore loads them (parents
 before the tables that reference them), with each table's rows, columns,

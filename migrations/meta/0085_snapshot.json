@@ -1,8 +1,8 @@
 {
-  "id": "a6d35b2b-c3e1-45af-b38a-9b05efaab2c6",
-  "prevId": "2d658e88-e76b-4e9d-9fdb-c153a5f0dd1d",
   "version": "6",
   "dialect": "sqlite",
+  "id": "13144898-6d0c-429e-953c-f331c9c3b8aa",
+  "prevId": "2d658e88-e76b-4e9d-9fdb-c153a5f0dd1d",
   "tables": {
     "accounts": {
       "name": "accounts",
@@ -113,15 +113,15 @@
         "accounts_user_id_users_id_fk": {
           "name": "accounts_user_id_users_id_fk",
           "tableFrom": "accounts",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -288,54 +288,54 @@
         "oauth_access_tokens_client_id_oauth_clients_client_id_fk": {
           "name": "oauth_access_tokens_client_id_oauth_clients_client_id_fk",
           "tableFrom": "oauth_access_tokens",
+          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
-          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "oauth_access_tokens_session_id_sessions_id_fk": {
           "name": "oauth_access_tokens_session_id_sessions_id_fk",
           "tableFrom": "oauth_access_tokens",
+          "tableTo": "sessions",
           "columnsFrom": [
             "session_id"
           ],
-          "tableTo": "sessions",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "oauth_access_tokens_user_id_users_id_fk": {
           "name": "oauth_access_tokens_user_id_users_id_fk",
           "tableFrom": "oauth_access_tokens",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "oauth_access_tokens_refresh_id_oauth_refresh_tokens_id_fk": {
           "name": "oauth_access_tokens_refresh_id_oauth_refresh_tokens_id_fk",
           "tableFrom": "oauth_access_tokens",
+          "tableTo": "oauth_refresh_tokens",
           "columnsFrom": [
             "refresh_id"
           ],
-          "tableTo": "oauth_refresh_tokens",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -577,15 +577,15 @@
         "oauth_clients_user_id_users_id_fk": {
           "name": "oauth_clients_user_id_users_id_fk",
           "tableFrom": "oauth_clients",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -665,28 +665,28 @@
         "oauth_consents_client_id_oauth_clients_client_id_fk": {
           "name": "oauth_consents_client_id_oauth_clients_client_id_fk",
           "tableFrom": "oauth_consents",
+          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
-          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "oauth_consents_user_id_users_id_fk": {
           "name": "oauth_consents_user_id_users_id_fk",
           "tableFrom": "oauth_consents",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -808,41 +808,41 @@
         "oauth_refresh_tokens_client_id_oauth_clients_client_id_fk": {
           "name": "oauth_refresh_tokens_client_id_oauth_clients_client_id_fk",
           "tableFrom": "oauth_refresh_tokens",
+          "tableTo": "oauth_clients",
           "columnsFrom": [
             "client_id"
           ],
-          "tableTo": "oauth_clients",
           "columnsTo": [
             "client_id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "oauth_refresh_tokens_session_id_sessions_id_fk": {
           "name": "oauth_refresh_tokens_session_id_sessions_id_fk",
           "tableFrom": "oauth_refresh_tokens",
+          "tableTo": "sessions",
           "columnsFrom": [
             "session_id"
           ],
-          "tableTo": "sessions",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "oauth_refresh_tokens_user_id_users_id_fk": {
           "name": "oauth_refresh_tokens_user_id_users_id_fk",
           "tableFrom": "oauth_refresh_tokens",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -950,15 +950,15 @@
         "passkeys_user_id_users_id_fk": {
           "name": "passkeys_user_id_users_id_fk",
           "tableFrom": "passkeys",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1053,15 +1053,15 @@
         "sessions_user_id_users_id_fk": {
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2138,28 +2138,28 @@
         "invitations_used_by_users_id_fk": {
           "name": "invitations_used_by_users_id_fk",
           "tableFrom": "invitations",
+          "tableTo": "users",
           "columnsFrom": [
             "used_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "invitations_created_by_users_id_fk": {
           "name": "invitations_created_by_users_id_fk",
           "tableFrom": "invitations",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2225,15 +2225,15 @@
         "api_keys_user_id_users_id_fk": {
           "name": "api_keys_user_id_users_id_fk",
           "tableFrom": "api_keys",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2588,28 +2588,28 @@
         "inbox_permissions_user_id_users_id_fk": {
           "name": "inbox_permissions_user_id_users_id_fk",
           "tableFrom": "inbox_permissions",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "inbox_permissions_created_by_users_id_fk": {
           "name": "inbox_permissions_created_by_users_id_fk",
           "tableFrom": "inbox_permissions",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -2704,15 +2704,15 @@
         "push_subscriptions_user_id_users_id_fk": {
           "name": "push_subscriptions_user_id_users_id_fk",
           "tableFrom": "push_subscriptions",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -3016,15 +3016,15 @@
         "drafts_user_id_users_id_fk": {
           "name": "drafts_user_id_users_id_fk",
           "tableFrom": "drafts",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4190,6 +4190,101 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "gmail_accounts": {
+      "name": "gmail_accounts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "email_address": {
+          "name": "email_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "refresh_token_encrypted": {
+          "name": "refresh_token_encrypted",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "history_id": {
+          "name": "history_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_synced_at": {
+          "name": "last_synced_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "connected_by": {
+          "name": "connected_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "gmail_accounts_email_address_unique": {
+          "name": "gmail_accounts_email_address_unique",
+          "columns": [
+            "email_address"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "message_user_state": {
       "name": "message_user_state",
       "columns": {
@@ -4250,15 +4345,15 @@
         "message_user_state_user_id_users_id_fk": {
           "name": "message_user_state_user_id_users_id_fk",
           "tableFrom": "message_user_state",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -4364,15 +4459,15 @@
         "mailbox_message_state_updated_by_users_id_fk": {
           "name": "mailbox_message_state_updated_by_users_id_fk",
           "tableFrom": "mailbox_message_state",
+          "tableTo": "users",
           "columnsFrom": [
             "updated_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -4484,15 +4579,15 @@
         "mailboxes_parent_id_mailboxes_id_fk": {
           "name": "mailboxes_parent_id_mailboxes_id_fk",
           "tableFrom": "mailboxes",
+          "tableTo": "mailboxes",
           "columnsFrom": [
             "parent_id"
           ],
-          "tableTo": "mailboxes",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4552,15 +4647,15 @@
         "message_mailboxes_mailbox_id_mailboxes_id_fk": {
           "name": "message_mailboxes_mailbox_id_mailboxes_id_fk",
           "tableFrom": "message_mailboxes",
+          "tableTo": "mailboxes",
           "columnsFrom": [
             "mailbox_id"
           ],
-          "tableTo": "mailboxes",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -4643,28 +4738,28 @@
         "inbox_conversation_state_snoozed_by_users_id_fk": {
           "name": "inbox_conversation_state_snoozed_by_users_id_fk",
           "tableFrom": "inbox_conversation_state",
+          "tableTo": "users",
           "columnsFrom": [
             "snoozed_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         },
         "inbox_conversation_state_assigned_user_id_users_id_fk": {
           "name": "inbox_conversation_state_assigned_user_id_users_id_fk",
           "tableFrom": "inbox_conversation_state",
+          "tableTo": "users",
           "columnsFrom": [
             "assigned_user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -4739,15 +4834,15 @@
         "agent_sessions_user_id_users_id_fk": {
           "name": "agent_sessions_user_id_users_id_fk",
           "tableFrom": "agent_sessions",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4836,15 +4931,15 @@
         "suggested_replies_email_id_emails_id_fk": {
           "name": "suggested_replies_email_id_emails_id_fk",
           "tableFrom": "suggested_replies",
+          "tableTo": "emails",
           "columnsFrom": [
             "email_id"
           ],
-          "tableTo": "emails",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -4971,15 +5066,15 @@
         "rules_created_by_users_id_fk": {
           "name": "rules_created_by_users_id_fk",
           "tableFrom": "rules",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5025,15 +5120,15 @@
         "auto_reply_log_rule_id_rules_id_fk": {
           "name": "auto_reply_log_rule_id_rules_id_fk",
           "tableFrom": "auto_reply_log",
+          "tableTo": "rules",
           "columnsFrom": [
             "rule_id"
           ],
-          "tableTo": "rules",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5092,41 +5187,41 @@
         "customer_people_customer_id_customers_id_fk": {
           "name": "customer_people_customer_id_customers_id_fk",
           "tableFrom": "customer_people",
+          "tableTo": "customers",
           "columnsFrom": [
             "customer_id"
           ],
-          "tableTo": "customers",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "customer_people_person_id_people_id_fk": {
           "name": "customer_people_person_id_people_id_fk",
           "tableFrom": "customer_people",
+          "tableTo": "people",
           "columnsFrom": [
             "person_id"
           ],
-          "tableTo": "people",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "customer_people_linked_by_users_id_fk": {
           "name": "customer_people_linked_by_users_id_fk",
           "tableFrom": "customer_people",
+          "tableTo": "users",
           "columnsFrom": [
             "linked_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5177,15 +5272,15 @@
         "customers_created_by_users_id_fk": {
           "name": "customers_created_by_users_id_fk",
           "tableFrom": "customers",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5542,15 +5637,15 @@
         "jmap_message_content_created_by_users_id_fk": {
           "name": "jmap_message_content_created_by_users_id_fk",
           "tableFrom": "jmap_message_content",
+          "tableTo": "users",
           "columnsFrom": [
             "created_by"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "set null"
+          "onDelete": "set null",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5685,28 +5780,28 @@
         "jmap_drafts_user_id_users_id_fk": {
           "name": "jmap_drafts_user_id_users_id_fk",
           "tableFrom": "jmap_drafts",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "jmap_drafts_content_id_jmap_message_content_id_fk": {
           "name": "jmap_drafts_content_id_jmap_message_content_id_fk",
           "tableFrom": "jmap_drafts",
+          "tableTo": "jmap_message_content",
           "columnsFrom": [
             "content_id"
           ],
-          "tableTo": "jmap_message_content",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5895,15 +5990,15 @@
         "jmap_submissions_user_id_users_id_fk": {
           "name": "jmap_submissions_user_id_users_id_fk",
           "tableFrom": "jmap_submissions",
+          "tableTo": "users",
           "columnsFrom": [
             "user_id"
           ],
-          "tableTo": "users",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -6497,9 +6592,9 @@
   "views": {},
   "enums": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
+    "tables": {},
+    "columns": {}
   },
   "internal": {
     "indexes": {}
