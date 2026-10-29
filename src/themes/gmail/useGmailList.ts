@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  deletePerson,
   fetchGroupedIds,
   fetchGroupedPeople,
   fetchStats,
   markConversationsRead,
   markPeopleRead,
+  undoMailState,
   updateMailState,
   type GroupedItem,
   type InboxSort,
@@ -15,7 +15,12 @@ import {
   type Stats,
 } from "@/lib/api";
 import { itemKey, itemRef } from "@/hooks/useMailList";
-import { applyToFolder, markFolderRead } from "@/lib/folder-actions";
+import {
+  applyToFolder,
+  markFolderRead,
+  pinUndo,
+  purgeRows,
+} from "@/lib/folder-actions";
 import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import { onInboxRefresh } from "@/lib/inbox-events";
 import { showToast } from "@/lib/toast";
@@ -235,18 +240,27 @@ export function useGmailList(query: GmailListQuery) {
           : next;
       });
       if (opts?.removeFromView) setTotal((t) => Math.max(0, t - keys.size));
-      const undoPatch = opts?.undo;
-      const undo = undoPatch
-        ? () => {
-            undoRef.current = null;
-            updateMailState(targets.map(itemRef), undoPatch)
-              .then(() => load({ silent: true }))
-              .catch(() => {});
-          }
-        : null;
-      undoRef.current = undo;
+      undoRef.current = null;
       try {
-        await updateMailState(targets.map(itemRef), patch);
+        const res = await updateMailState(targets.map(itemRef), patch);
+        // Undo puts back exactly what changed (docs/mailbox-state.md).
+        const pins = pinUndo(targets, patch.pinned);
+        const undo = opts?.undo
+          ? () => {
+              undoRef.current = null;
+              undoMailState(res.undo)
+                .then(() =>
+                  pins
+                    ? updateMailState(pins.items, { pinned: pins.pinned })
+                    : undefined,
+                )
+                .then(() => load({ silent: true }))
+                .catch(() =>
+                  showToast({ kind: "error", message: "Couldn't undo" }),
+                );
+            }
+          : null;
+        undoRef.current = undo;
         if (opts?.message) {
           showToast({
             kind: "info",
@@ -397,19 +411,21 @@ export function useGmailList(query: GmailListQuery) {
       undo?: StatePatch,
     ) => {
       try {
-        const refs = await applyToFolder(params(), patch);
+        const res = await applyToFolder(params(), patch);
         const undoFn = undo
           ? () => {
               undoRef.current = null;
-              void Promise.all(
-                chunk(refs).map((c) => updateMailState(c, undo)),
-              ).then(() => load({ silent: true }));
+              undoMailState(res.undo)
+                .then(() => load({ silent: true }))
+                .catch(() =>
+                  showToast({ kind: "error", message: "Couldn't undo" }),
+                );
             }
           : null;
         undoRef.current = undoFn;
         showToast({
           kind: "info",
-          message: message.replace("{n}", String(refs.length)),
+          message: message.replace("{n}", String(res.rows)),
           action: undoFn
             ? {
                 label: "Undo",
@@ -470,22 +486,26 @@ export function useGmailList(query: GmailListQuery) {
         void load({ silent: true });
       }
     },
-    /** Permanently delete people (and their mail). Groups are skipped. */
+    /**
+     * Delete forever the trashed messages of some rows, for everyone in the
+     * inbox (admins only). The contacts stay.
+     */
     deleteForever: async (targets: GroupedItem[]) => {
-      const people = targets.filter((t) => t.type === "person");
-      if (people.length === 0) return;
-      const keys = new Set(people.map(itemKey));
+      if (targets.length === 0) return;
+      const keys = new Set(targets.map(itemKey));
       setItems((prev) => prev.filter((it) => !keys.has(itemKey(it))));
       setTotal((t) => Math.max(0, t - keys.size));
       undoRef.current = null;
       try {
-        await Promise.all(people.map((p) => deletePerson(p.id)));
+        const res = await purgeRows(targets.map(itemRef));
+        if (res.failed > 0)
+          throw new Error("Some messages were not deleted. Try again.");
         showToast({
           kind: "success",
           message:
-            people.length === 1
+            res.deleted === 1
               ? "Conversation deleted forever"
-              : `${people.length} conversations deleted forever`,
+              : `${res.deleted} conversations deleted forever`,
         });
         loadStats();
       } catch (e) {
@@ -532,9 +552,3 @@ export function useGmailList(query: GmailListQuery) {
 }
 
 export type GmailList = ReturnType<typeof useGmailList>;
-
-function chunk<T>(xs: T[], n = 100): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n));
-  return out;
-}

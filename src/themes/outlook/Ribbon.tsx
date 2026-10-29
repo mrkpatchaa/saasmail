@@ -53,20 +53,7 @@ import {
 } from "./Conversation";
 import { useMailUi } from "./actions";
 import { itemKey } from "@/hooks/useMailList";
-import { FILTER_LABELS, listFilterAvailable, type ListFilter } from "./lib";
-import { MAIL_STATE_ACTIONS_ENABLED } from "@/lib/mail-state-actions";
-
-/** Ribbon buttons that delete, archive, flag, pin, snooze, move or sweep. */
-const STATE_RIBBON_IDS = [
-  "delete",
-  "archive",
-  "empty",
-  "sweep",
-  "move",
-  "flag",
-  "pin",
-  "snooze",
-];
+import { FILTER_LABELS, type ListFilter } from "./lib";
 import { FlagGlyph } from "./ui";
 
 type Tab = "home" | "view" | "help";
@@ -231,13 +218,11 @@ export default function Ribbon({
       value={mail.filter}
       onValueChange={(v) => mail.setFilter(v as ListFilter)}
     >
-      {(Object.keys(FILTER_LABELS) as ListFilter[])
-        .filter(listFilterAvailable)
-        .map((f) => (
-          <MenuRadioItem key={f} value={f}>
-            {FILTER_LABELS[f]}
-          </MenuRadioItem>
-        ))}
+      {(Object.keys(FILTER_LABELS) as ListFilter[]).map((f) => (
+        <MenuRadioItem key={f} value={f}>
+          {FILTER_LABELS[f]}
+        </MenuRadioItem>
+      ))}
     </MenuRadioGroup>
   );
 
@@ -255,7 +240,7 @@ export default function Ribbon({
           title={
             inTrash
               ? mail.canDeleteForever
-                ? "Delete permanently, with their mail, for the whole team"
+                ? "Delete the trashed mail permanently, for everyone in the inbox"
                 : "Only an admin can delete permanently"
               : "Move to Deleted Items (Delete)"
           }
@@ -330,7 +315,7 @@ export default function Ribbon({
               <RBtn
                 icon={<Trash2 size={18} />}
                 label="Empty folder"
-                title="Permanently delete everyone in Deleted Items and their mail, for the whole team"
+                title="Permanently delete everything in Deleted Items, for everyone in the inbox"
                 onClick={() => void mail.ops.emptyTrash()}
               />
             ),
@@ -823,9 +808,7 @@ export default function Ribbon({
     },
   ];
 
-  const items = (tab === "home" ? home : tab === "view" ? view : help).filter(
-    (i) => MAIL_STATE_ACTIONS_ENABLED || !STATE_RIBBON_IDS.includes(i.id),
-  );
+  const items = tab === "home" ? home : tab === "view" ? view : help;
 
   // Fit as many items as there is room for; the rest go in "…".
   const barRef = useRef<HTMLDivElement>(null);

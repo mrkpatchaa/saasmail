@@ -1,5 +1,8 @@
-import { deletePerson, fetchGroupedIds } from "@/lib/api";
-import { markFolderRead as markQueryRead } from "@/lib/folder-actions";
+import { fetchGroupedIds } from "@/lib/api";
+import {
+  markFolderRead as markQueryRead,
+  purgeRows,
+} from "@/lib/folder-actions";
 import { dispatchInboxRefresh } from "@/lib/inbox-events";
 import { showToast } from "@/lib/toast";
 import { folderQuery } from "./lib";
@@ -27,36 +30,32 @@ export async function markFolderRead(t: FolderTarget): Promise<number> {
 }
 
 /**
- * Empty Deleted Items: permanently delete every person in the user's Trash
- * and their mail, for the whole team (asks first; admin-only on the server,
- * so callers offer it to admins only). Group conversations can't be purged
- * by the server and stay.
+ * Empty Deleted Items: permanently delete every message in Trash, for
+ * everyone in the inbox (asks first; admin-only on the server, so callers
+ * offer it to admins only). The contacts stay.
  */
 export async function emptyTrash(): Promise<number> {
   try {
     const { data } = await fetchGroupedIds({ folder: "trash" });
-    const people = data.filter((r) => r.type === "person");
     if (!data.length) {
       showToast({ kind: "info", message: "Deleted Items is already empty" });
       return 0;
     }
-    const groups = data.length - people.length;
     if (
       !window.confirm(
-        `Permanently delete the ${people.length} ${people.length === 1 ? "person" : "people"} in Deleted Items and all of their mail? This removes it for everyone on the team and can't be undone.` +
-          (groups
-            ? ` ${groups} group conversation${groups === 1 ? "" : "s"} can't be deleted permanently and will stay.`
-            : ""),
+        `Permanently delete the ${data.length} conversation${data.length === 1 ? "" : "s"} in Deleted Items? This removes the mail for everyone in the inbox and can't be undone. Contacts stay.`,
       )
     )
       return 0;
-    for (const p of people) await deletePerson(p.id);
+    const res = await purgeRows(data.map(({ type, id }) => ({ type, id })));
+    if (res.failed > 0)
+      throw new Error("Some messages were not deleted. Try again.");
     showToast({
       kind: "success",
-      message: `Deleted ${people.length} conversation${people.length === 1 ? "" : "s"} permanently`,
+      message: `Deleted ${res.deleted} conversation${res.deleted === 1 ? "" : "s"} permanently`,
     });
     dispatchInboxRefresh();
-    return people.length;
+    return res.deleted;
   } catch (e) {
     showToast({
       kind: "error",

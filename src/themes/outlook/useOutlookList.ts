@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  deletePerson,
   fetchGroupedPeople,
   fetchStats,
   markConversationsRead,
@@ -9,8 +8,10 @@ import {
   type GroupedItem,
   type MailCategory,
   type MailFolder,
+  type MailStateUndoStep,
   type Stats,
 } from "@/lib/api";
+import { purgeRows } from "@/lib/folder-actions";
 import { itemKey, itemRef } from "@/hooks/useMailList";
 import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import { onInboxRefresh } from "@/lib/inbox-events";
@@ -216,10 +217,17 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
     [],
   );
 
-  /** Optimistic mail-state change; reloads on failure. */
+  /**
+   * Optimistic mail-state change; reloads on failure. Returns the server's
+   * undo steps, or null when nothing was sent or it failed.
+   */
   const applyState = useCallback(
-    async (targets: GroupedItem[], patch: StatePatch, remove: boolean) => {
-      if (targets.length === 0) return false;
+    async (
+      targets: GroupedItem[],
+      patch: StatePatch,
+      remove: boolean,
+    ): Promise<MailStateUndoStep[] | null> => {
+      if (targets.length === 0) return null;
       const local: Partial<GroupedItem> = {};
       if (patch.starred !== undefined) local.starred = patch.starred;
       if (patch.pinned !== undefined) local.pinned = patch.pinned;
@@ -233,15 +241,14 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
         local.trashedAt = patch.trashed ? Math.floor(Date.now() / 1000) : null;
       patchLocal(targets, local, remove);
       try {
-        await updateMailState(targets.map(itemRef), patch);
-        return true;
+        return (await updateMailState(targets.map(itemRef), patch)).undo;
       } catch (e) {
         showToast({
           kind: "error",
           message: e instanceof Error ? e.message : "Could not update mail",
         });
         void load({ silent: true });
-        return false;
+        return null;
       }
     },
     [patchLocal, load],
@@ -271,19 +278,24 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
     [patchLocal, loadStats, load],
   );
 
-  const deletePeople = useCallback(
+  /**
+   * Delete forever the trashed messages of some rows, for everyone in the
+   * inbox (admins only). The contacts stay.
+   */
+  const deleteForever = useCallback(
     async (targets: GroupedItem[]) => {
-      const people = targets.filter((t) => t.type === "person");
-      if (!people.length) return;
-      patchLocal(people, {}, true);
+      if (!targets.length) return;
+      patchLocal(targets, {}, true);
       try {
-        await Promise.all(people.map((p) => deletePerson(p.id)));
+        const res = await purgeRows(targets.map(itemRef));
+        if (res.failed > 0)
+          throw new Error("Some messages were not deleted. Try again.");
         showToast({
           kind: "success",
           message:
-            people.length === 1
+            res.deleted === 1
               ? "Conversation deleted permanently"
-              : `${people.length} conversations deleted permanently`,
+              : `${res.deleted} conversations deleted permanently`,
         });
         loadStats();
       } catch (e) {
@@ -312,7 +324,7 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
     patchLocal,
     applyState,
     markRead,
-    deletePeople,
+    deleteForever,
   };
 }
 

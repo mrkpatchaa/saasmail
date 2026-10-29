@@ -8,13 +8,15 @@ import {
   fetchPerson,
   fetchPersonEmails,
   markEmailRead,
+  undoMailState,
   updateMailState,
   type GroupedItem,
   type MailCategory,
   type MailFolder,
+  type MailStateUndoStep,
   setCategoryOverride,
 } from "@/lib/api";
-import { markFolderRead } from "@/lib/folder-actions";
+import { markFolderRead, pinUndo } from "@/lib/folder-actions";
 import { emptyTrash } from "./folderOps";
 import { REPLY_REOPEN_EVENT } from "./InlineReply";
 import { usePreferences } from "@/lib/preferences";
@@ -61,24 +63,6 @@ function parseOpen(
   return { type, id };
 }
 
-/** Snapshot of a row's mail state, so Undo restores exactly. */
-interface Snapshot {
-  item: GroupedItem;
-  state: Required<StatePatch>;
-}
-function snapshot(items: GroupedItem[]): Snapshot[] {
-  return items.map((item) => ({
-    item,
-    state: {
-      starred: item.starred,
-      pinned: item.pinned,
-      archived: !!item.archivedAt,
-      snoozedUntil: item.snoozedUntil,
-      trashed: !!item.trashedAt,
-    },
-  }));
-}
-
 /**
  * Everything the Outlook mail module needs, desktop and mobile: folder and
  * search state from the URL (with Outlook query syntax), the list with
@@ -90,8 +74,8 @@ export function useOutlookMail() {
   const [params, setParams] = useSearchParams();
   const routeParams = useParams<{ inbox?: string; personId?: string }>();
   const o = useOutlook();
-  // Permanent delete (DELETE /api/people/:id) is admin-only on the server:
-  // it removes the person and their mail for the whole team.
+  // Permanent delete (POST /api/mail-state/purge) is admin-only on the
+  // server: it removes the trashed mail for everyone in the inbox.
   const { data: session } = useSession();
   const canDeleteForever = session?.user?.role === "admin";
 
@@ -483,28 +467,29 @@ export function useOutlookMail() {
   );
 
   // ── Undo stack ────────────────────────────────────────────────────────
-  const [undoStack, setUndoStack] = useState<
-    Array<{ label: string; snaps: Snapshot[] }>
-  >([]);
-  const pushUndo = (labelText: string, snaps: Snapshot[]) =>
-    setUndoStack((s) => [...s.slice(-19), { label: labelText, snaps }]);
+  // Each entry puts back exactly what one change did (docs/mailbox-state.md).
+  type UndoEntry = { label: string; run: () => Promise<void> };
+  const [undoStack, setUndoStack] = useState<UndoEntry[]>([]);
+  const pushUndo = (entry: UndoEntry) =>
+    setUndoStack((s) => [...s.slice(-19), entry]);
 
-  const restore = useCallback(
-    async (snaps: Snapshot[]) => {
-      const byState = new Map<string, Snapshot[]>();
-      for (const s of snaps) {
-        const k = JSON.stringify(s.state);
-        byState.set(k, [...(byState.get(k) ?? []), s]);
-      }
-      await Promise.all(
-        [...byState.values()].map((g) =>
-          updateMailState(
-            g.map((s) => itemRef(s.item)),
-            g[0].state,
-          ),
-        ),
-      );
-      list.refresh();
+  /** The undo of one change: the server's steps, then any pins it flipped. */
+  const undoEntry = useCallback(
+    (
+      labelText: string,
+      items: GroupedItem[],
+      patch: StatePatch,
+      steps: MailStateUndoStep[],
+    ): UndoEntry => {
+      const pins = pinUndo(items, patch.pinned);
+      return {
+        label: labelText,
+        run: async () => {
+          await undoMailState(steps);
+          if (pins) await updateMailState(pins.items, { pinned: pins.pinned });
+          list.refresh();
+        },
+      };
     },
     [list],
   );
@@ -517,12 +502,22 @@ export function useOutlookMail() {
     }
     setUndoStack((s) => s.slice(0, -1));
     try {
-      await restore(last.snaps);
+      await last.run();
       showToast({ kind: "info", message: `Undone: ${last.label}` });
     } catch {
       showToast({ kind: "error", message: "Couldn't undo" });
+      list.refresh();
     }
-  }, [undoStack, restore]);
+  }, [undoStack, list]);
+
+  /** Toast Undo: take the entry off the stack and run it. */
+  const undoNow = (entry: UndoEntry) => {
+    setUndoStack((s) => s.filter((e) => e !== entry));
+    entry.run().catch(() => {
+      showToast({ kind: "error", message: "Couldn't undo" });
+      list.refresh();
+    });
+  };
 
   // ── Actions ───────────────────────────────────────────────────────────
   const serverFolder = query.folder;
@@ -545,12 +540,13 @@ export function useOutlookMail() {
     toast?: string,
   ) => {
     if (!items.length) return;
-    const snaps = snapshot(items);
     const remove = leaves(patch);
     if (remove) openNeighbour(items);
-    pushUndo(labelText, snaps);
-    void list.applyState(items, patch, remove).then((ok) => {
-      if (ok && toast)
+    void list.applyState(items, patch, remove).then((steps) => {
+      if (!steps) return;
+      const entry = undoEntry(labelText, items, patch, steps);
+      pushUndo(entry);
+      if (toast)
         showToast({
           kind: "info",
           message: toast,
@@ -558,8 +554,7 @@ export function useOutlookMail() {
             label: "Undo",
             onClick: (dismiss) => {
               dismiss();
-              setUndoStack((s) => s.filter((e) => e.snaps !== snaps));
-              void restore(snaps);
+              undoNow(entry);
             },
           },
         });
@@ -645,7 +640,7 @@ export function useOutlookMail() {
       if (items.some((i) => i.unreadCount > 0)) ops.markRead(items);
       else void ops.markUnread(items);
     },
-    /** Delete = move to Deleted Items (per-user Trash), with Undo. */
+    /** Delete = move to Deleted Items (shared by the inbox's members), with Undo. */
     delete: (items: GroupedItem[]) => {
       if (serverFolder === "trash") {
         if (canDeleteForever) return void ops.deleteForever(items);
@@ -675,7 +670,10 @@ export function useOutlookMail() {
         "Restore",
         n(items, "Restored", "conversations restored"),
       ),
-    /** Permanent delete (people only; the server can't purge a group). */
+    /**
+     * Permanent delete: the rows' trashed messages, for everyone in the
+     * inbox. The contacts stay.
+     */
     deleteForever: async (
       items: GroupedItem[],
       opts?: { skipConfirm?: boolean },
@@ -687,33 +685,21 @@ export function useOutlookMail() {
         });
         return;
       }
-      const people = items.filter((i) => i.type === "person");
-      if (people.length === 0) {
-        showToast({
-          kind: "warning",
-          message: "Group conversations can't be deleted permanently",
-          description: "They stay in Deleted Items until restored.",
-        });
-        return;
-      }
-      const skipped = items.length - people.length;
+      if (!items.length) return;
       if (
         !opts?.skipConfirm &&
         !window.confirm(
-          (people.length === 1
-            ? `Permanently delete ${itemTitle(people[0])} and all of their mail?`
-            : `Permanently delete ${people.length} people and all of their mail?`) +
-            " This removes it for everyone on the team and can't be undone." +
-            (skipped
-              ? ` (${skipped} group conversation(s) will stay in Deleted Items.)`
-              : ""),
+          (items.length === 1
+            ? `Permanently delete the mail in Deleted Items from ${itemTitle(items[0])}?`
+            : `Permanently delete the mail in Deleted Items from ${items.length} conversations?`) +
+            " This removes it for everyone in the inbox and can't be undone. Contacts stay.",
         )
       )
         return;
-      openNeighbour(people);
-      await list.deletePeople(people);
+      openNeighbour(items);
+      await list.deleteForever(items);
     },
-    /** Empty Deleted Items: permanently delete every person in Trash. */
+    /** Empty Deleted Items: permanently delete every message in Trash. */
     emptyTrash: async () => {
       if (!canDeleteForever) return;
       await emptyTrash();
@@ -838,11 +824,12 @@ export function useOutlookMail() {
         return 0;
       }
       if (action === "archive") {
-        const snaps = snapshot(rows);
         openNeighbour(rows);
-        pushUndo("Sweep", snaps);
         list.patchLocal(rows, {}, serverFolder === "inbox");
-        await updateMailState(rows.map(itemRef), { archived: true });
+        const patch: StatePatch = { archived: true };
+        const res = await updateMailState(rows.map(itemRef), patch);
+        const entry = undoEntry("Sweep", rows, patch, res.undo);
+        pushUndo(entry);
         showToast({
           kind: "info",
           message: `Moved ${rows.length} conversation${rows.length === 1 ? "" : "s"} from ${sender} to Archive`,
@@ -850,7 +837,7 @@ export function useOutlookMail() {
             label: "Undo",
             onClick: (dismiss) => {
               dismiss();
-              void restore(snaps);
+              undoNow(entry);
             },
           },
         });

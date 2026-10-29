@@ -10,9 +10,7 @@ import { RotateCw, WifiOff } from "lucide-react";
 import {
   EMPTY_MAIL_ROW_STATE,
   fetchConversationEmails,
-  fetchGroupedIds,
   fetchGroupedPeople,
-  deletePerson,
   setCategoryOverride,
   fetchPerson,
   fetchPersonEmails,
@@ -22,6 +20,7 @@ import {
   type MailCategory,
   type MailItemRef,
 } from "@/lib/api";
+import { deleteFolderForever } from "@/lib/folder-actions";
 import { itemKey, itemTitle } from "@/hooks/useMailList";
 import { usePullToRefresh } from "@/hooks/usePullToRefresh";
 import { useSession } from "@/lib/auth-client";
@@ -32,7 +31,6 @@ import type { ComposePrefill } from "@/pages/ComposeModal";
 import { cn } from "@/lib/utils";
 import "./gmail.css";
 import {
-  availableCommand,
   buildListSearch,
   CATEGORY_LABELS,
   FOLDER_LABELS,
@@ -89,7 +87,6 @@ import {
   startRowDrag,
 } from "./dnd";
 import type { InlineMode } from "./InlineComposer";
-import { mailStateOptionAvailable } from "@/lib/mail-state-gates";
 
 type Patch = Partial<
   Pick<
@@ -166,11 +163,7 @@ export default function GmailInbox() {
     tabsOn && state.folder === "inbox" && !state.label && !searching;
   const activeTab: MailCategory = state.tab ?? "primary";
   const inboxType =
-    state.folder === "inbox" &&
-    !searching &&
-    mailStateOptionAvailable(view.inboxType)
-      ? view.inboxType
-      : "default";
+    state.folder === "inbox" && !searching ? view.inboxType : "default";
 
   const list = useGmailList({
     folder: fq.folder,
@@ -595,14 +588,6 @@ export default function GmailInbox() {
         });
         return;
       }
-      if (!its.some((i) => i.type === "person")) {
-        showToast({
-          kind: "info",
-          message:
-            "Group conversations can't be deleted forever. They stay in Trash until restored.",
-        });
-        return;
-      }
       setConfirm({ items: its, after });
     },
     restore: (its) => {
@@ -739,15 +724,13 @@ export default function GmailInbox() {
   };
   const deleteForeverAll = async () => {
     try {
-      const { data } = await fetchGroupedIds(list.folderParams());
-      const people = data.filter((r) => r.type === "person");
-      for (let i = 0; i < people.length; i += 8)
-        await Promise.all(
-          people.slice(i, i + 8).map((p) => deletePerson(p.id)),
-        );
+      const res = await deleteFolderForever(list.folderParams());
       showToast({
-        kind: "success",
-        message: `${people.length} conversation${people.length === 1 ? "" : "s"} deleted forever`,
+        kind: res.failed > 0 ? "error" : "success",
+        message:
+          res.failed > 0
+            ? "Some messages were not deleted. Try again."
+            : `${res.deleted} conversation${res.deleted === 1 ? "" : "s"} deleted forever`,
       });
       clearSelection();
       list.refresh();
@@ -950,7 +933,7 @@ export default function GmailInbox() {
         e.preventDefault();
         return;
       }
-      const cmd = availableCommand(res.cmd);
+      const cmd = res.cmd;
       if (!cmd) return;
       const targets = s.openItem
         ? [s.openItem]
@@ -1214,22 +1197,17 @@ export default function GmailInbox() {
         title={
           confirm?.all
             ? "Empty Trash?"
-            : confirm &&
-                confirm.items.filter((i) => i.type === "person").length > 1
-              ? `Delete ${confirm.items.filter((i) => i.type === "person").length} conversations forever?`
+            : confirm && confirm.items.length > 1
+              ? `Delete ${confirm.items.length} conversations forever?`
               : "Delete forever?"
         }
         body={
           (confirm?.all
-            ? "Every person in Trash, with all their mail and attachments, will be deleted for the whole team, not just removed from your Trash. This can't be undone."
-            : (confirm &&
-              confirm.items.filter((i) => i.type === "person").length > 1
-                ? "This deletes these people and all their mail and attachments"
-                : "This deletes this person and all their mail and attachments") +
-              " for the whole team, not just from your Trash. This can't be undone.") +
-          (confirm?.all || confirm?.items.some((i) => i.type === "group")
-            ? " Group conversations stay in Trash (they can only be restored)."
-            : "")
+            ? "Every message in Trash, with its attachments, will be deleted"
+            : confirm && confirm.items.length > 1
+              ? "This deletes the trashed mail and attachments in these conversations"
+              : "This deletes the trashed mail and attachments in this conversation") +
+          " for everyone in the inbox. Contacts stay. This can't be undone."
         }
         confirmLabel={confirm?.all ? "Empty Trash" : "Delete forever"}
         onConfirm={() => {
@@ -1238,10 +1216,9 @@ export default function GmailInbox() {
             void deleteForeverAll();
             return;
           }
-          const people = confirm.items.filter((i) => i.type === "person");
-          void list.actions.deleteForever(people);
-          patchLocal(people, "remove");
-          leaveIfOpen(people);
+          void list.actions.deleteForever(confirm.items);
+          patchLocal(confirm.items, "remove");
+          leaveIfOpen(confirm.items);
           confirm.after?.();
         }}
         onClose={() => setConfirm(null)}

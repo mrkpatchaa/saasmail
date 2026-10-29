@@ -80,7 +80,6 @@ import {
   LabelChip,
   SnoozeMenu,
 } from "./ui";
-import { MAIL_STATE_ACTIONS_ENABLED } from "@/lib/mail-state-actions";
 
 /* ── helpers ───────────────────────────────────────────────────────── */
 
@@ -760,29 +759,13 @@ export default function Conversation({
 
   const inView = inInboxView(item);
   const trashed = !!item.trashedAt;
-  // Delete moves to Trash; inside Trash only people can be deleted forever.
-  const canDelete = !trashed || item.type === "person";
-  // Delete forever is admin-only (it removes the person for the whole team).
-  const showDelete =
-    (!trashed || act.canDeleteForever) && MAIL_STATE_ACTIONS_ENABLED;
-  const deleteLabel = !trashed
-    ? "Delete"
-    : canDelete
-      ? "Delete forever"
-      : "Group conversations stay in Trash";
+  // Delete moves to Trash; inside Trash it deletes forever, admins only
+  // (the trashed mail, for everyone in the inbox).
+  const showDelete = !trashed || act.canDeleteForever;
+  const deleteLabel = !trashed ? "Delete" : "Delete forever";
 
   /* ── toolbar ── */
-  const STATE = { stateAction: true };
   const tb = (
-    label: string,
-    icon: ReactNode,
-    onClick: () => void,
-    opts?: { disabled?: boolean; testId?: string; stateAction?: boolean },
-  ) =>
-    opts?.stateAction && !MAIL_STATE_ACTIONS_ENABLED
-      ? null
-      : anyTb(label, icon, onClick, opts);
-  const anyTb = (
     label: string,
     icon: ReactNode,
     onClick: () => void,
@@ -820,14 +803,12 @@ export default function Conversation({
           <GmMenuItem
             icon={<Clock size={20} />}
             onSelect={() => act.pickSnooze([item])}
-            stateAction
           >
             Snooze
           </GmMenuItem>
           <GmMenuItem
             icon={<Star size={20} />}
             onSelect={() => act.star([item])}
-            stateAction
           >
             {item.starred ? "Remove star" : "Add star"}
           </GmMenuItem>
@@ -837,18 +818,13 @@ export default function Conversation({
               onSelect={() => {
                 act.moveToInbox([item]);
               }}
-              stateAction
             >
               Move to inbox
             </GmMenuItem>
           )}
         </>
       )}
-      <GmMenuItem
-        icon={<Pin size={20} />}
-        onSelect={() => act.pin([item])}
-        stateAction
-      >
+      <GmMenuItem icon={<Pin size={20} />} onSelect={() => act.pin([item])}>
         {item.pinned ? "Unpin" : "Pin"}
       </GmMenuItem>
       <GmMenuItem icon={<Forward size={20} />} onSelect={() => forward(latest)}>
@@ -891,29 +867,14 @@ export default function Conversation({
       {tb("Back", <ArrowLeft size={24} />, onBack, { testId: "gmail-back" })}
       <div className="flex-1" />
       {trashed
-        ? tb(
-            "Restore",
-            <ArchiveRestore size={22} />,
-            () => act.restore([item]),
-            STATE,
-          )
+        ? tb("Restore", <ArchiveRestore size={22} />, () => act.restore([item]))
         : inView
-          ? tb(
-              "Archive",
-              <Archive size={22} />,
-              () => act.archive([item]),
-              STATE,
-            )
-          : tb(
-              "Move to inbox",
-              <InboxIcon size={22} />,
-              () => act.moveToInbox([item]),
-              STATE,
+          ? tb("Archive", <Archive size={22} />, () => act.archive([item]))
+          : tb("Move to inbox", <InboxIcon size={22} />, () =>
+              act.moveToInbox([item]),
             )}
       {showDelete &&
-        tb(deleteLabel, <Trash2 size={22} />, () => act.requestDelete([item]), {
-          disabled: !canDelete,
-        })}
+        tb(deleteLabel, <Trash2 size={22} />, () => act.requestDelete([item]))}
       {tb("Mark as unread", <Mail size={22} />, () => {
         void act.markUnread([item]).then(onBack);
       })}
@@ -933,24 +894,17 @@ export default function Conversation({
             () => act.restore([item]),
             {
               testId: "gmail-conv-restore",
-              stateAction: true,
             },
           )
         : inView
           ? tb("Archive", <Archive size={20} />, () => act.archive([item]), {
               testId: "gmail-conv-archive",
-              stateAction: true,
             })
-          : tb(
-              "Move to inbox",
-              <InboxIcon size={20} />,
-              () => act.moveToInbox([item]),
-              STATE,
+          : tb("Move to inbox", <InboxIcon size={20} />, () =>
+              act.moveToInbox([item]),
             )}
       {showDelete &&
-        tb(deleteLabel, <Trash2 size={20} />, () => act.requestDelete([item]), {
-          disabled: !canDelete,
-        })}
+        tb(deleteLabel, <Trash2 size={20} />, () => act.requestDelete([item]))}
       <span className="mx-1 h-5 w-px bg-border" />
       {tb("Mark as unread", <Mail size={20} />, () => {
         void act.markUnread([item]).then(onBack);
@@ -977,7 +931,6 @@ export default function Conversation({
           className={item.starred ? "fill-current text-star" : undefined}
         />,
         () => act.star([item]),
-        STATE,
       )}
       {moreMenu}
       <div className="flex-1" />
@@ -1077,7 +1030,7 @@ export default function Conversation({
               )}
             </div>
           )}
-          {mobile && MAIL_STATE_ACTIONS_ENABLED && (
+          {mobile && (
             <button
               type="button"
               className="gm-icon-btn ml-auto"

@@ -1,14 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   applyToFolder,
-  applyToRefs,
   deleteFolderForever,
   markFolderRead,
+  pinUndo,
 } from "@/lib/folder-actions";
 import {
   fetchGroupedIds,
   markConversationsRead,
   markPeopleRead,
+  purgeMailRows,
   updateMailState,
 } from "@/lib/api";
 
@@ -16,6 +17,7 @@ vi.mock("@/lib/api", () => ({
   fetchGroupedIds: vi.fn(),
   markPeopleRead: vi.fn(),
   markConversationsRead: vi.fn(),
+  purgeMailRows: vi.fn(),
   updateMailState: vi.fn(),
 }));
 
@@ -23,6 +25,7 @@ const mIds = vi.mocked(fetchGroupedIds);
 const mPeopleRead = vi.mocked(markPeopleRead);
 const mConvRead = vi.mocked(markConversationsRead);
 const mState = vi.mocked(updateMailState);
+const mPurge = vi.mocked(purgeMailRows);
 
 type Row = { type: "person" | "group"; id: string; unread: boolean };
 function rows(people: number, groups: number): Row[] {
@@ -44,7 +47,8 @@ beforeEach(() => {
   mIds.mockReset();
   mPeopleRead.mockReset().mockResolvedValue(undefined as never);
   mConvRead.mockReset().mockResolvedValue(undefined as never);
-  mState.mockReset().mockResolvedValue({ data: [] });
+  mState.mockReset().mockResolvedValue({ data: [], undo: [] });
+  mPurge.mockReset();
 });
 
 describe("markFolderRead", () => {
@@ -81,52 +85,79 @@ describe("markFolderRead", () => {
   });
 });
 
-describe("applyToFolder / applyToRefs", () => {
-  it("patches every matching row and returns them for Undo", async () => {
+describe("applyToFolder", () => {
+  it("patches every matching row in calls of 100 and collects the undo steps", async () => {
     mIds.mockResolvedValue({
       data: rows(120, 1),
       total: 121,
       truncated: false,
     });
-    const refs = await applyToFolder({ folder: "inbox" }, { trashed: true });
-    expect(refs).toHaveLength(121);
-    expect(refs[0]).toEqual({ type: "person", id: "p0" });
+    mState
+      .mockResolvedValueOnce({
+        data: [],
+        undo: [
+          { kind: "mailbox", refs: ["received:a"], change: { trashed: false } },
+        ],
+      })
+      .mockResolvedValueOnce({
+        data: [],
+        undo: [
+          { kind: "mailbox", refs: ["received:b"], change: { trashed: false } },
+        ],
+      });
+    const res = await applyToFolder({ folder: "inbox" }, { trashed: true });
+    expect(res.rows).toBe(121);
     expect(mState).toHaveBeenCalledTimes(2);
+    expect(mState.mock.calls[0][0][0]).toEqual({ type: "person", id: "p0" });
     expect(mState.mock.calls[0][1]).toEqual({ trashed: true });
-
-    mState.mockClear();
-    await applyToRefs(refs, { trashed: false });
-    expect(mState).toHaveBeenCalledTimes(2);
     expect(mState.mock.calls[1][0]).toHaveLength(21);
-    expect(mState.mock.calls[1][0].at(-1)).toEqual({ type: "group", id: "g0" });
+    expect(res.undo.flatMap((s) => s.refs)).toEqual([
+      "received:a",
+      "received:b",
+    ]);
+  });
+});
+
+describe("pinUndo", () => {
+  it("puts back only the pins a change flipped", () => {
+    const rows = [
+      { type: "person" as const, id: "p0", pinned: true },
+      { type: "group" as const, id: "g0", pinned: false },
+    ];
+    expect(pinUndo(rows, true)).toEqual({
+      items: [{ type: "group", id: "g0" }],
+      pinned: false,
+    });
+    expect(pinUndo(rows, undefined)).toBeNull();
+    expect(pinUndo([rows[0]], true)).toBeNull();
   });
 });
 
 describe("deleteFolderForever (Empty Trash)", () => {
-  it("deletes people only and counts the groups it has to leave", async () => {
-    mIds.mockResolvedValue({ data: rows(5, 2), total: 7, truncated: false });
-    const del = vi.fn().mockResolvedValue({ success: true });
-    const res = await deleteFolderForever({ folder: "trash" }, del);
+  it("purges every row, people and groups, in calls of 100", async () => {
+    mIds.mockResolvedValue({
+      data: rows(150, 2),
+      total: 152,
+      truncated: false,
+    });
+    mPurge.mockResolvedValue({ success: true, deleted: 1 });
+    const res = await deleteFolderForever({ folder: "trash" });
     expect(mIds).toHaveBeenCalledWith({ folder: "trash" });
-    expect(del).toHaveBeenCalledTimes(5);
-    expect(del.mock.calls.map((c) => c[0])).toEqual([
-      "p0",
-      "p1",
-      "p2",
-      "p3",
-      "p4",
-    ]);
-    expect(res).toEqual({ deleted: 5, failed: 0, skippedGroups: 2 });
+    expect(mPurge).toHaveBeenCalledTimes(2);
+    expect(mPurge.mock.calls[1][0].at(-1)).toEqual({ type: "group", id: "g1" });
+    expect(res).toEqual({ deleted: 152, failed: 0 });
   });
 
-  it("keeps going when one delete fails, and reports it", async () => {
-    mIds.mockResolvedValue({ data: rows(3, 0), total: 3, truncated: false });
-    const del = vi
-      .fn()
-      .mockResolvedValueOnce({})
+  it("keeps going when one call fails, and reports it", async () => {
+    mIds.mockResolvedValue({
+      data: rows(150, 0),
+      total: 150,
+      truncated: false,
+    });
+    mPurge
       .mockRejectedValueOnce(new Error("Forbidden"))
-      .mockResolvedValueOnce({});
-    const res = await deleteFolderForever({ folder: "trash" }, del);
-    expect(res).toEqual({ deleted: 2, failed: 1, skippedGroups: 0 });
+      .mockResolvedValueOnce({ success: true, deleted: 1 });
+    const res = await deleteFolderForever({ folder: "trash" });
+    expect(res).toEqual({ deleted: 50, failed: 100 });
   });
 });
