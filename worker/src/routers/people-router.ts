@@ -22,9 +22,13 @@ import {
   isInboxAllowed,
   jsonList,
 } from "../lib/inbox-permissions";
-import { deleteMessageState } from "../lib/messages/state";
+import { deleteMessageState, deletePersonRowPins } from "../lib/messages/state";
 import { buildMessageQuerySql } from "../lib/messages/query";
-import { rowKey, rowMailState } from "../lib/messages/row-state";
+import {
+  markSeenForViewer,
+  rowKey,
+  rowMailState,
+} from "../lib/messages/row-state";
 import { cancelScheduledSendsFor } from "../lib/scheduled-sends";
 import {
   collectPersonGroupConversations,
@@ -1303,6 +1307,7 @@ peopleRouter.openapi(deletePersonRoute, async (c) => {
     })),
     ...sent.map((message) => ({ kind: "sent" as const, id: message.id })),
   ]);
+  await deletePersonRowPins(db, id);
 
   // Delete R2 attachments for all received emails belonging to this person
   const atts = await db
@@ -1457,6 +1462,14 @@ peopleRouter.openapi(bulkMarkReadRoute, async (c) => {
         .set({ unreadCount: row?.count ?? 0 })
         .where(eq(people.id, pid));
     }
+  }
+  // The inbox list reads the caller's own seen state (docs/mailbox-state.md).
+  const user = c.get("user");
+  if (user) {
+    await markSeenForViewer(db, user.id, allowed, {
+      personIds,
+      ...(recipientScope ? { inboxes: recipientScope } : {}),
+    });
   }
 
   return c.json({ success: true, affected }, 200);

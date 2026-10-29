@@ -2,8 +2,13 @@ import { and, eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { userRowPins } from "../../db/user-row-pins.schema";
 import { jsonList, type AllowedInboxes } from "../inbox-permissions";
-import { buildMessageQuerySql, type MessageQuery } from "./query";
-import type { MessageKind } from "./types";
+import {
+  buildMessageQuerySql,
+  MESSAGE_REFS_PER_QUERY,
+  type MessageQuery,
+} from "./query";
+import { setUserState } from "./state";
+import type { MessageKind, MessageRef } from "./types";
 
 /**
  * The inbox list's rows (`computeGroupedRows` in people-router.ts) read and
@@ -250,6 +255,60 @@ export async function rowMessages(
     if (out.length >= limit) break;
   }
   return out;
+}
+
+/** Which of `items` have at least one message in the caller's inboxes. */
+export async function visibleRows(
+  db: DrizzleD1Database<any>,
+  allowed: AllowedInboxes,
+  items: RowRef[],
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const filter of rowQueries(items)) {
+    const built = buildMessageQuerySql(allowed, { ...filter, limit: null });
+    if (!built) continue;
+    const rows = await db.all<{ type: RowType; id: string }>(sql`
+      SELECT DISTINCT ${ROW_TYPE} AS type, ${ROW_ID} AS id
+      FROM (${built.statement})
+    `);
+    for (const r of rows) if (r.id !== null) out.add(rowKey(r));
+  }
+  return out;
+}
+
+/**
+ * Mark as seen, for one user, the received messages they have not seen among
+ * some people's or conversations' mail (the inbox list's "mark read"). The
+ * caller still updates `emails.is_read`; this is what the list's unread count
+ * reads (docs/mailbox-state.md § Rows in the inbox list).
+ */
+export async function markSeenForViewer(
+  db: DrizzleD1Database<any>,
+  userId: string,
+  allowed: AllowedInboxes,
+  filter: Pick<MessageQuery, "personIds" | "conversationIds" | "inboxes">,
+): Promise<void> {
+  const built = buildMessageQuerySql(allowed, {
+    ...filter,
+    viewer: { userId },
+    unseen: true,
+    limit: null,
+  });
+  if (!built) return;
+  const rows = await db.all<{ id: string }>(
+    sql`SELECT id FROM (${built.statement}) WHERE kind = 'received'`,
+  );
+  const refs: MessageRef[] = rows.map((r) => ({ kind: "received", id: r.id }));
+  for (let start = 0; start < refs.length; start += MESSAGE_REFS_PER_QUERY) {
+    await setUserState(
+      db,
+      userId,
+      refs.slice(start, start + MESSAGE_REFS_PER_QUERY),
+      {
+        seen: true,
+      },
+    );
+  }
 }
 
 /** The row a message belongs to. */
