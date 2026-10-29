@@ -1,15 +1,15 @@
 // e2e/specs/delete-person.spec.ts
 // Covers: the row menu on person rows (admin test id), Delete moving a
-// person to Trash with Undo, Restore from Trash, and "Delete forever" — which
-// now lives only inside Trash, asks first, removes the person for good and
-// survives a reload. Non-admin users never see the admin kebab.
+// person's mail to Trash with Undo, Restore from Trash, and "Delete forever" —
+// which lives only inside Trash, asks first, deletes the row's trashed
+// messages for good (the contact itself stays) and survives a reload.
+// Non-admin users never see the admin kebab.
 //
 // Seed gives us Alice (p_alice) and Bob (p_bob) in the person list.
 import type { Page } from "@playwright/test";
 import { test, expect } from "../fixtures/test";
 import { truncateAndReseed } from "../support/reset-db";
 import { TEST_IDS } from "../support/selectors";
-import { MAIL_STATE_ACTIONS_ENABLED } from "../../src/lib/mail-state-actions";
 import { resolve } from "node:path";
 
 const AUTH_DIR = resolve(process.cwd(), "e2e/.auth");
@@ -35,7 +35,6 @@ test.describe.serial("delete person", () => {
   test("admin sees kebab menu on hover with Move to Trash", async ({
     page,
   }) => {
-    test.skip(!MAIL_STATE_ACTIONS_ENABLED, "Trash arrives later");
     await page.goto("/");
     await expect(row(page, "p_alice")).toBeVisible();
     await openKebab(page, "p_alice");
@@ -50,7 +49,6 @@ test.describe.serial("delete person", () => {
   test("Move to Trash hides the person; Restore brings them back", async ({
     page,
   }) => {
-    test.skip(!MAIL_STATE_ACTIONS_ENABLED, "Trash arrives later");
     await page.goto("/");
     await openKebab(page, "p_alice");
     await page.getByTestId(TEST_IDS.mailTrashItem).click();
@@ -69,7 +67,6 @@ test.describe.serial("delete person", () => {
   test("cancelling Delete forever keeps the person in Trash", async ({
     page,
   }) => {
-    test.skip(!MAIL_STATE_ACTIONS_ENABLED, "Trash arrives later");
     await page.goto("/");
     await openKebab(page, "p_bob");
     await page.getByTestId(TEST_IDS.mailTrashItem).click();
@@ -82,10 +79,9 @@ test.describe.serial("delete person", () => {
     await expect(row(page, "p_bob")).toBeVisible();
   });
 
-  test("confirming Delete forever removes the person and clears the right panel", async ({
+  test("confirming Delete forever removes the row and clears the right panel", async ({
     page,
   }) => {
-    test.skip(!MAIL_STATE_ACTIONS_ENABLED, "Trash arrives later");
     await page.goto("/?folder=trash");
     const bobRow = row(page, "p_bob");
     await expect(bobRow).toBeVisible();
@@ -105,7 +101,6 @@ test.describe.serial("delete person", () => {
   });
 
   test("deletion persists after page reload", async ({ page }) => {
-    test.skip(!MAIL_STATE_ACTIONS_ENABLED, "Trash arrives later");
     await page.goto("/?folder=trash");
     await page.reload();
     await expect(row(page, "p_bob")).not.toBeVisible();
