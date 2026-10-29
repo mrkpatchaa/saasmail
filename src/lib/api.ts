@@ -593,7 +593,12 @@ function groupedQueryString(params: GroupedQuery): URLSearchParams {
 export async function fetchGroupedIds(
   params: Omit<GroupedQuery, "page" | "limit" | "withTabCounts">,
 ): Promise<{
-  data: Array<{ type: "person" | "group"; id: string; unread: boolean }>;
+  data: Array<{
+    type: "person" | "group";
+    id: string;
+    unread: boolean;
+    pinned: boolean;
+  }>;
   total: number;
   truncated: boolean;
 }> {

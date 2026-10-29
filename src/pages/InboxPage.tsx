@@ -43,6 +43,7 @@ import {
   deleteFolderForever,
   markFolderRead,
   pinUndo,
+  undoFolderChange,
 } from "@/lib/folder-actions";
 import {
   parseInboxSort,
@@ -871,14 +872,14 @@ export default function InboxPage() {
     if (!allMatching) return false;
     setBulkBusy(true);
     applyToFolder(folderQuery, patch)
-      .then(({ rows, undo }) => {
+      .then((res) => {
         clearSelection();
         refreshPeople();
         refreshMailCounts();
         const runUndo = opts.undo
           ? () => {
               lastUndoRef.current = null;
-              undoMailState(undo)
+              undoFolderChange(res)
                 .then(() => {
                   refreshPeople();
                   refreshMailCounts();
@@ -891,7 +892,7 @@ export default function InboxPage() {
         lastUndoRef.current = runUndo;
         showToast({
           kind: "success",
-          message: opts.message(rows),
+          message: opts.message(res.rows),
           action: runUndo
             ? {
                 label: "Undo",
@@ -904,7 +905,9 @@ export default function InboxPage() {
         });
       })
       .catch(() => {
-        // A failure part-way leaves some rows changed: refetch.
+        // A failure part-way leaves some rows changed, and an older Undo
+        // no longer matches them: refetch and drop it.
+        lastUndoRef.current = null;
         refreshPeople();
         refreshMailCounts();
         showToast({

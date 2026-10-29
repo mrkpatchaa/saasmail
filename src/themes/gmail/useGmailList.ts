@@ -16,7 +16,12 @@ import {
   type Stats,
 } from "@/lib/api";
 import { itemKey, itemRef } from "@/hooks/useMailList";
-import { applyToFolder, markFolderRead, pinUndo } from "@/lib/folder-actions";
+import {
+  applyToFolder,
+  markFolderRead,
+  pinUndo,
+  undoFolderChange,
+} from "@/lib/folder-actions";
 import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import { onInboxRefresh } from "@/lib/inbox-events";
 import { showToast } from "@/lib/toast";
@@ -411,7 +416,7 @@ export function useGmailList(query: GmailListQuery) {
         const undoFn = undo
           ? () => {
               undoRef.current = null;
-              undoMailState(res.undo)
+              undoFolderChange(res)
                 .then(() => load({ silent: true }))
                 .catch(() =>
                   showToast({ kind: "error", message: "Couldn't undo" }),
@@ -434,6 +439,11 @@ export function useGmailList(query: GmailListQuery) {
         });
         refreshAll();
       } catch (e) {
+        // A failure part-way leaves some rows changed, and an older Undo
+        // no longer matches them: refetch and drop it.
+        undoRef.current = null;
+        void load({ silent: true });
+        refreshAll();
         showToast({
           kind: "error",
           message: e instanceof Error ? e.message : "Could not update mail",

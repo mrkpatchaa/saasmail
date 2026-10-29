@@ -4,11 +4,13 @@ import {
   deleteFolderForever,
   markFolderRead,
   pinUndo,
+  undoFolderChange,
 } from "@/lib/folder-actions";
 import {
   fetchGroupedIds,
   markConversationsRead,
   markPeopleRead,
+  undoMailState,
   updateMailState,
 } from "@/lib/api";
 
@@ -17,25 +19,34 @@ vi.mock("@/lib/api", () => ({
   markPeopleRead: vi.fn(),
   markConversationsRead: vi.fn(),
   updateMailState: vi.fn(),
+  undoMailState: vi.fn(),
 }));
 
 const mIds = vi.mocked(fetchGroupedIds);
 const mPeopleRead = vi.mocked(markPeopleRead);
 const mConvRead = vi.mocked(markConversationsRead);
 const mState = vi.mocked(updateMailState);
+const mUndo = vi.mocked(undoMailState);
 
-type Row = { type: "person" | "group"; id: string; unread: boolean };
+type Row = {
+  type: "person" | "group";
+  id: string;
+  unread: boolean;
+  pinned: boolean;
+};
 function rows(people: number, groups: number): Row[] {
   return [
     ...Array.from({ length: people }, (_, i) => ({
       type: "person" as const,
       id: `p${i}`,
       unread: true,
+      pinned: false,
     })),
     ...Array.from({ length: groups }, (_, i) => ({
       type: "group" as const,
       id: `g${i}`,
       unread: true,
+      pinned: false,
     })),
   ];
 }
@@ -45,6 +56,7 @@ beforeEach(() => {
   mPeopleRead.mockReset().mockResolvedValue(undefined as never);
   mConvRead.mockReset().mockResolvedValue(undefined as never);
   mState.mockReset().mockResolvedValue({ data: [], undo: [] });
+  mUndo.mockReset().mockResolvedValue(undefined);
 });
 
 describe("markFolderRead", () => {
@@ -110,6 +122,31 @@ describe("applyToFolder", () => {
     expect(res.undo.flatMap((s) => s.refs)).toEqual([
       "received:a",
       "received:b",
+    ]);
+    expect(res.pins).toBeNull();
+  });
+
+  it("returns the pins each batch flipped, and Undo puts back only those", async () => {
+    const data = rows(150, 1).map((r, i) => ({ ...r, pinned: i % 2 === 0 }));
+    mIds.mockResolvedValue({ data, total: 151, truncated: false });
+    const res = await applyToFolder({ folder: "inbox" }, { pinned: true });
+    expect(mState).toHaveBeenCalledTimes(2);
+    // The odd rows were unpinned: 75 people across both batches, plus g0
+    // (index 150, even, so already pinned).
+    const flipped = data.filter((r) => !r.pinned);
+    expect(res.pins).toEqual({
+      items: flipped.map(({ type, id }) => ({ type, id })),
+      pinned: false,
+    });
+    expect(res.pins?.items).toHaveLength(75);
+
+    mState.mockClear();
+    await undoFolderChange(res);
+    expect(mUndo).toHaveBeenCalledWith(res.undo);
+    expect(mState).toHaveBeenCalledTimes(1);
+    expect(mState.mock.calls[0]).toEqual([
+      flipped.map(({ type, id }) => ({ type, id })),
+      { pinned: false },
     ]);
   });
 });

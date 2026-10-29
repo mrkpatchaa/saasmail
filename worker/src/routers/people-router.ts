@@ -1081,7 +1081,7 @@ const groupedIdsRoute = createRoute({
   path: "/grouped/ids",
   tags: ["People"],
   description:
-    "Every row matching the same filters as /grouped, as `{type, id, unread}` refs (capped at 5000). Lets a client act on a whole folder — mark all read, archive all — without paging through it.",
+    "Every row matching the same filters as /grouped, as `{type, id, unread, pinned}` refs (capped at 5000). Lets a client act on a whole folder — mark all read, archive all — without paging through it; `pinned` lets it undo a pin-all exactly.",
   request: { query: GroupedQuerySchema },
   responses: {
     ...json200Response(
@@ -1091,6 +1091,7 @@ const groupedIdsRoute = createRoute({
             type: z.enum(["person", "group"]),
             id: z.string(),
             unread: z.boolean(),
+            pinned: z.boolean(),
           }),
         ),
         total: z.number(),
@@ -1110,6 +1111,7 @@ peopleRouter.openapi(groupedIdsRoute, async (c) => {
         type: r.type,
         id: r.id,
         unread: r.unreadCount > 0,
+        pinned: r.pinned,
       })),
       total: merged.length,
       truncated: merged.length > CAP,

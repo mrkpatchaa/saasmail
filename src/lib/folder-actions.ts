@@ -2,6 +2,7 @@ import {
   fetchGroupedIds,
   markConversationsRead,
   markPeopleRead,
+  undoMailState,
   updateMailState,
   type GroupedQuery,
   type MailItemRef,
@@ -32,21 +33,43 @@ export async function markFolderRead(
   return data.length;
 }
 
+/** The pins a whole-folder change flipped, and the value to put back. */
+export type FolderPinUndo = { items: MailItemRef[]; pinned: boolean } | null;
+
 /**
  * Apply a mail-state patch to every row matching a list query. Returns how
- * many rows it covered and the undo steps of every call, for
- * `undoMailState`.
+ * many rows it covered, the undo steps of every call (for `undoMailState`)
+ * and the pins it flipped (the server's undo steps don't carry pins), so
+ * `undoFolderChange` can put both back.
  */
 export async function applyToFolder(
   query: Omit<GroupedQuery, "page" | "limit" | "withTabCounts">,
   patch: Parameters<typeof updateMailState>[1],
-): Promise<{ rows: number; undo: MailStateUndoStep[] }> {
+): Promise<{ rows: number; undo: MailStateUndoStep[]; pins: FolderPinUndo }> {
   const { data } = await fetchGroupedIds(query);
-  const refs = data.map(({ type, id }) => ({ type, id }));
   const undo: MailStateUndoStep[] = [];
-  for (const c of chunks(refs))
-    undo.push(...(await updateMailState(c, patch)).undo);
-  return { rows: refs.length, undo };
+  const flipped: MailItemRef[] = [];
+  for (const batch of chunks(data)) {
+    const refs = batch.map(({ type, id }) => ({ type, id }));
+    undo.push(...(await updateMailState(refs, patch)).undo);
+    flipped.push(...(pinUndo(batch, patch.pinned)?.items ?? []));
+  }
+  const pins: FolderPinUndo =
+    flipped.length > 0 && patch.pinned !== undefined
+      ? { items: flipped, pinned: !patch.pinned }
+      : null;
+  return { rows: data.length, undo, pins };
+}
+
+/** Undo an `applyToFolder` change: its state steps, then its pins. */
+export async function undoFolderChange(res: {
+  undo: MailStateUndoStep[];
+  pins: FolderPinUndo;
+}): Promise<void> {
+  await undoMailState(res.undo);
+  if (!res.pins) return;
+  for (const c of chunks(res.pins.items))
+    await updateMailState(c, { pinned: res.pins.pinned });
 }
 
 /**
