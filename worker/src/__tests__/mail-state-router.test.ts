@@ -15,8 +15,7 @@ import { queryMessages } from "../lib/messages/query";
 import { setMailboxState, setUserState } from "../lib/messages/state";
 
 /**
- * PATCH /api/mail-state and POST /api/mail-state/purge: the inbox list's row
- * actions, stored in the per-message state that /mail and JMAP read
+ * PATCH /api/mail-state: the inbox list's row actions, stored in the per-message state that /mail and JMAP read
  * (docs/mailbox-state.md § Rows in the inbox list).
  */
 
@@ -564,61 +563,6 @@ describe("mail-state router", () => {
       "SELECT COUNT(*) AS n FROM user_row_pins",
     ).first<{ n: number }>();
     expect(pins!.n).toBe(0);
-  });
-
-  it("11. purge deletes only the row's trashed messages, admins only", async () => {
-    const { apiKey, userId } = await admin();
-    const member = await createTestUser({
-      id: "ms-member",
-      email: "ms-member@example.com",
-      role: "member",
-    });
-    await grant(member.userId, INBOX);
-    await createTestPerson({ id: "p1", email: "p1@example.com" });
-    await createTestEmail({ id: "one", personId: "p1", recipient: INBOX });
-    await createTestEmail({
-      id: "grp",
-      personId: "p1",
-      recipient: INBOX,
-      messageId: "grp",
-      conversationId: "conv-9",
-    });
-    await createTestSentEmail({
-      id: "later",
-      personId: "p1",
-      fromAddress: INBOX,
-      status: "scheduled",
-      sentAt: NOW + 3600,
-    });
-    await setMailboxState(
-      getDb(),
-      { isAdmin: true },
-      userId,
-      [{ kind: "received", id: "one" }],
-      { trashed: true },
-    );
-
-    const denied = await authFetch("/api/mail-state/purge", {
-      method: "POST",
-      apiKey: member.apiKey,
-      body: JSON.stringify({ items: [person("p1")] }),
-    });
-    expect(denied.status).toBe(403);
-
-    const res = await authFetch("/api/mail-state/purge", {
-      method: "POST",
-      apiKey,
-      body: JSON.stringify({ items: [person("p1")] }),
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, deleted: 1 });
-    const left = await env.DB.prepare(
-      "SELECT id FROM emails UNION ALL SELECT id FROM sent_emails ORDER BY id",
-    ).all<{ id: string }>();
-    expect(left.results.map((r) => r.id)).toEqual(["grp", "later"]);
-    expect(
-      await env.DB.prepare("SELECT id FROM people WHERE id = 'p1'").first(),
-    ).not.toBeNull();
   });
 
   it("12. pins are personal, put the row first in inbox, and go with the person", async () => {

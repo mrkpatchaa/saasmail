@@ -195,7 +195,7 @@ export async function rowMailState(
 /**
  * The messages of some rows in the caller's inboxes, with the viewer's state,
  * newest first, at most `limit` of them (callers pass one over their cap to
- * tell "at the cap" from "over it"). `extra` narrows further, e.g. to a folder.
+ * tell "at the cap" from "over it").
  */
 export async function rowMessages(
   db: DrizzleD1Database<any>,
@@ -204,12 +204,10 @@ export async function rowMessages(
   items: RowRef[],
   now: number,
   limit: number,
-  extra: Pick<MessageQuery, "folder"> = {},
 ): Promise<RowMessage[]> {
   const out: RowMessage[] = [];
   for (const filter of rowQueries(items)) {
     const built = buildMessageQuerySql(allowed, {
-      ...extra,
       ...filter,
       viewer,
       withState: true,

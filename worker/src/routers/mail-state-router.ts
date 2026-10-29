@@ -1,5 +1,4 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { deleteEmailWithAttachments } from "../lib/delete-email";
 import {
   MAX_SNOOZE_SECONDS,
   snoozeConversations,
@@ -27,7 +26,7 @@ import type { Variables } from "../variables";
  * per-message state that /mail, JMAP and the agent read (docs/mailbox-state.md
  * § Rows in the inbox list). Star and pin are the caller's own; archive,
  * snooze and trash are shared by everyone in the inbox. Every write goes
- * through lib/messages/state.ts, conversation-state.ts or delete-email.ts.
+ * through lib/messages/state.ts or conversation-state.ts's snoozeConversations.
  */
 export const mailStateRouter = new OpenAPIHono<{
   Bindings: CloudflareBindings;
@@ -91,7 +90,7 @@ const updateRoute = createRoute({
             snoozedUntil: z.number().int().nullable().optional(),
             trashed: z.boolean().optional().openapi({
               description:
-                "Move the row's messages to (or out of) the inbox's Trash, shared by everyone in it. Permanent deletion is POST /api/mail-state/purge.",
+                "Move the row's messages to (or out of) the inbox's Trash, shared by everyone in it.",
             }),
           }),
         },
@@ -117,47 +116,6 @@ const updateRoute = createRoute({
     400: {
       content: { "application/json": { schema: ErrorSchema } },
       description: "Invalid request; nothing was written",
-    },
-  },
-});
-
-const purgeRoute = createRoute({
-  method: "post",
-  path: "/purge",
-  tags: ["Mail state"],
-  description:
-    "Admins only. Permanently delete the trashed messages of each row, for everyone in the inbox, with their attachments. Messages not in Trash, the person and their other rows are left alone. A request over 5,000 messages answers 400; a failure after the first delete answers 500 with `partial: true`.",
-  request: {
-    body: {
-      content: {
-        "application/json": {
-          schema: z.object({
-            items: z.array(ItemRefSchema).min(1).max(100),
-          }),
-        },
-      },
-    },
-  },
-  responses: {
-    500: {
-      description:
-        "Failed after a partial write: `{ error, partial: true }`; the same request finishes it",
-    },
-    200: {
-      description: "Trashed messages deleted",
-      content: {
-        "application/json": {
-          schema: z.object({ success: z.boolean(), deleted: z.number() }),
-        },
-      },
-    },
-    400: {
-      content: { "application/json": { schema: ErrorSchema } },
-      description: "Too many messages; nothing was deleted",
-    },
-    403: {
-      content: { "application/json": { schema: ErrorSchema } },
-      description: "Not an admin",
     },
   },
 });
@@ -383,53 +341,4 @@ mailStateRouter.openapi(updateRoute, async (c) => {
     },
     200,
   );
-});
-
-mailStateRouter.openapi(purgeRoute, async (c) => {
-  const db = c.get("db");
-  const user = c.get("user");
-  if (!user || user.role !== "admin") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-  const allowed = c.get("allowedInboxes")!;
-  const items = dedupeItems(c.req.valid("json").items);
-  const now = Math.floor(Date.now() / 1000);
-
-  // The row's messages in Trash right now (spam included), newest first.
-  const trashed = await rowMessages(
-    db,
-    allowed,
-    { userId: user.id },
-    items,
-    now,
-    MAX_ROW_STATE_MESSAGES + 1,
-    { folder: "trash" },
-  );
-  if (trashed.length > MAX_ROW_STATE_MESSAGES) {
-    return c.json({ error: tooMany }, 400);
-  }
-
-  let deleted = 0;
-  try {
-    for (const m of trashed) {
-      const result = await deleteEmailWithAttachments(
-        db,
-        c.env.R2,
-        m.id,
-        allowed,
-      );
-      if (result) deleted++;
-    }
-  } catch (error) {
-    if (deleted === 0) throw error;
-    console.error("mail-state purge: failed after a partial delete", error);
-    return c.json(
-      {
-        error: "Some messages were not deleted. Try again.",
-        partial: true as const,
-      },
-      500,
-    );
-  }
-  return c.json({ success: true, deleted }, 200);
 });

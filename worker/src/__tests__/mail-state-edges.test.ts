@@ -17,9 +17,8 @@ import { snoozeConversations } from "../lib/messages/conversation-state";
 
 /**
  * Edges of the inbox list's row actions (docs/mailbox-state.md § Rows in the
- * inbox list): a row whose mail spans an inbox the caller cannot see, purge
- * of every kind of trashed message in a row, and Undo replayed after mixed
- * snooze states and another user's edit.
+ * inbox list): a row whose mail spans an inbox the caller cannot see, and
+ * Undo replayed after mixed snooze states and another user's edit.
  */
 
 const INBOX = "support@saasmail.test";
@@ -237,90 +236,6 @@ describe("mail-state row actions at their edges", () => {
       pinned: false,
       trashedAt: null,
     });
-  });
-
-  it("purge deletes every trashed message of a group row (received, sent, spam) with its state and R2 objects, and nothing else", async () => {
-    const { apiKey, userId } = await createTestUser({
-      id: "purge-admin",
-      email: "purge-admin@example.com",
-    });
-    await createTestPerson({ id: "p", email: "p@example.com" });
-    const inRow = { personId: "p", recipient: INBOX, conversationId: "conv" };
-    await createTestEmail({ ...inRow, id: "trashed", messageId: "t@x" });
-    await createTestEmail({ ...inRow, id: "spam-trashed", messageId: "st@x" });
-    await createTestEmail({ ...inRow, id: "spam-only", messageId: "so@x" });
-    await createTestEmail({ ...inRow, id: "kept", messageId: "k@x" });
-    await createTestSentEmail({
-      id: "sent-trashed",
-      personId: "p",
-      fromAddress: INBOX,
-      conversationId: "conv",
-    });
-    await createTestAttachment({
-      id: "att",
-      emailId: "trashed",
-      r2Key: "attachments/trashed/file.txt",
-    });
-    await env.R2.put("attachments/trashed/file.txt", "x");
-    const db = getDb();
-    const all = { isAdmin: true } as const;
-    await setMailboxState(
-      db,
-      all,
-      userId,
-      [
-        { kind: "received", id: "trashed" },
-        { kind: "sent", id: "sent-trashed" },
-      ],
-      { trashed: true },
-    );
-    await setMailboxState(
-      db,
-      all,
-      userId,
-      [{ kind: "received", id: "spam-trashed" }],
-      { spam: true, trashed: true },
-    );
-    await setMailboxState(
-      db,
-      all,
-      userId,
-      [{ kind: "received", id: "spam-only" }],
-      { spam: true },
-    );
-    await setUserState(db, userId, [{ kind: "received", id: "trashed" }], {
-      starred: true,
-    });
-
-    const res = await authFetch("/api/mail-state/purge", {
-      method: "POST",
-      apiKey,
-      body: JSON.stringify({ items: [group("conv")] }),
-    });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ success: true, deleted: 3 });
-
-    const left = await env.DB.prepare(
-      "SELECT id FROM emails UNION ALL SELECT id FROM sent_emails ORDER BY id",
-    ).all<{ id: string }>();
-    expect(left.results.map((r) => r.id)).toEqual(["kept", "spam-only"]);
-    expect(
-      await env.DB.prepare("SELECT id FROM attachments").all(),
-    ).toMatchObject({ results: [] });
-    expect(await env.R2.head("attachments/trashed/file.txt")).toBeNull();
-    // deleteMessageState ran for each deleted message.
-    const state = await env.DB.prepare(
-      `SELECT message_id FROM mailbox_message_state
-       UNION ALL SELECT message_id FROM message_user_state
-       ORDER BY message_id`,
-    ).all<{ message_id: string }>();
-    expect(state.results.map((r) => r.message_id)).toEqual(["spam-only"]);
-    expect(
-      await env.DB.prepare("SELECT id FROM people WHERE id = 'p'").first(),
-    ).not.toBeNull();
-    // The row is back in Inbox with only its untrashed message.
-    expect(await folderIds(apiKey, "trash")).toEqual([]);
-    expect(await folderIds(apiKey, "inbox")).toEqual(["conv"]);
   });
 
   it("undo restores each conversation's own previous snooze and leaves another user's edit to other messages alone", async () => {
