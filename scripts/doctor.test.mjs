@@ -135,6 +135,18 @@ describe("parseArgs", () => {
   it("refuses a missing option or a bad URL", () => {
     expect(() => parseArgs(["--config", "x"])).toThrow(/Usage/);
     expect(() => parseArgs(["--config", "x", "--url", "nope"])).toThrow();
+    expect(() =>
+      parseArgs(["--config", "x", "--url", "http://mail.example.com"]),
+    ).toThrow(/https/);
+    for (const url of [
+      "http://localhost:8788",
+      "http://127.0.0.1:8788",
+      "http://[::1]:8788",
+    ]) {
+      expect(parseArgs(["--config", "x", "--url", url]).url).toBe(
+        new URL(url).origin,
+      );
+    }
   });
 });
 
@@ -204,6 +216,16 @@ describe("main", () => {
     expect(lines.filter((l) => l.status === "fail")).toEqual([]);
     expect(code).toBe(0);
     expect(world.out.join("\n")).toContain("Cloudflare API: skipped");
+  });
+
+  it("says it could not compare the commit outside a git checkout", async () => {
+    const world = deps();
+    world.deps.git = async () => null;
+    const { lines } = await main(ARGS, world.deps);
+    const line = lines.find((l) => l.label.startsWith("Deployed commit"));
+    expect(line.status).toBe("info");
+    expect(line.label).toContain("could not compare");
+    expect(line.label).not.toContain("matches");
   });
 
   it("never prints the admin key or the token", async () => {
@@ -398,6 +420,13 @@ describe("Email Routing rules", () => {
       rules: [{ to: "E@Five.test", actions: toWorker("saasmail") }],
       catchAll: { enabled: false },
     },
+    // A disabled literal rule is not applied: the catch-all decides.
+    "six.test": {
+      rules: [
+        { to: "f@six.test", actions: toWorker("other-worker"), enabled: false },
+      ],
+      catchAll: toWorker("saasmail"),
+    },
   };
 
   it("passes a catch-all or literal rule to this Worker and fails one to another", async () => {
@@ -411,6 +440,7 @@ describe("Email Routing rules", () => {
               (email) => ({ email, source: "cloudflare" }),
             ),
             { email: "e@five.test", source: "cloudflare" },
+            { email: "f@six.test", source: "cloudflare" },
             { email: "me@gmail.com", source: "gmail" },
           ]);
         }
@@ -439,7 +469,7 @@ describe("Email Routing rules", () => {
           return json({
             success: true,
             result: zone.rules.map((r) => ({
-              enabled: true,
+              enabled: r.enabled ?? true,
               matchers: [{ type: "literal", field: "to", value: r.to }],
               actions: r.actions,
             })),
@@ -459,6 +489,7 @@ describe("Email Routing rules", () => {
     expect(routing("c@three.test")).toBe("fail");
     expect(routing("d@four.test")).toBe("fail");
     expect(routing("e@five.test")).toBe("pass");
+    expect(routing("f@six.test")).toBe("pass");
     expect(
       lines.find((l) => l.label.includes("not applicable to 1 Gmail"))?.status,
     ).toBe("info");

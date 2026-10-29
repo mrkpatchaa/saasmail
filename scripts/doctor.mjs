@@ -12,7 +12,7 @@
 // the admin key or the token.
 
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
 
@@ -73,6 +73,13 @@ export function parseArgs(argv) {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error(`--url must be http(s): ${options.url}`);
+  }
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (url.protocol === "http:" && !local) {
+    // The admin key would travel in clear text.
+    throw new Error(
+      `--url must use https:// for ${url.hostname} (http:// is only for localhost).`,
+    );
   }
   options.url = url.origin;
   return options;
@@ -246,8 +253,9 @@ async function findZone(fetchImpl, token, domain) {
   return null;
 }
 
+const enabled = (rule) => rule?.enabled !== false;
 const routesToWorker = (rule, worker) =>
-  rule?.enabled !== false &&
+  enabled(rule) &&
   (rule?.actions ?? []).some(
     (a) =>
       a?.type === "worker" &&
@@ -302,13 +310,16 @@ async function cloudflareLines({ fetchImpl, token, worker, inboxes, runtime }) {
         );
       }
       const [rules, catchAll] = await rulesByZone.get(zone.id);
-      const own = (rules ?? []).find((rule) =>
-        (rule?.matchers ?? []).some(
-          (m) =>
-            m?.type === "literal" &&
-            m?.field === "to" &&
-            String(m?.value).toLowerCase() === address,
-        ),
+      // Cloudflare does not apply a disabled rule: the catch-all decides then.
+      const own = (rules ?? []).find(
+        (rule) =>
+          enabled(rule) &&
+          (rule?.matchers ?? []).some(
+            (m) =>
+              m?.type === "literal" &&
+              m?.field === "to" &&
+              String(m?.value).toLowerCase() === address,
+          ),
       );
       const ok = own
         ? routesToWorker(own, worker)
@@ -561,6 +572,11 @@ export async function main(argv, deps = {}) {
         status: "warn",
         label: `Deployed: ${build.version}, commit unknown (built without git).`,
       });
+    } else if (!head && !originMain) {
+      emit({
+        status: "info",
+        label: `Deployed commit ${short(deployed)} (${build.version}, built ${build.builtAt}): could not compare, no local HEAD or origin/main (not a git checkout).`,
+      });
     } else {
       const differs = [
         head && head !== deployed && `local HEAD is ${short(head)}`,
@@ -639,7 +655,20 @@ export async function main(argv, deps = {}) {
   return { lines, code };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+/** Run directly, also through a symlink (macOS /tmp and /var are symlinks). */
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    return (
+      realpathSync(process.argv[1]) ===
+      realpathSync(fileURLToPath(import.meta.url))
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
   main(process.argv.slice(2))
     .then(({ code }) => process.exit(code))
     .catch((error) => {

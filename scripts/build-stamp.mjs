@@ -14,14 +14,24 @@ function git(root, args) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 10_000,
-  }).trimEnd(); // not trim(): a porcelain line can start with a space
+  }).replace(/\n$/, ""); // not trim(): a porcelain entry can start with a space
 }
 
-/** The path of one `git status --porcelain` line (the new name of a rename). */
-function porcelainPath(line) {
-  const path = line.slice(3);
-  const arrow = path.indexOf(" -> ");
-  return arrow === -1 ? path : path.slice(arrow + 4);
+/**
+ * The paths of `git status --porcelain -z`: NUL-separated and never quoted, so
+ * a name with a space or an accent stays plain. A rename or copy entry
+ * (`R`/`C`) is followed by its old path as one more field, which is skipped.
+ */
+export function porcelainPaths(output) {
+  const fields = output.split("\0");
+  const paths = [];
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    paths.push(entry.slice(3));
+    if ("RC".includes(entry[0]) || "RC".includes(entry[1])) i++;
+  }
+  return paths;
 }
 
 export function computeBuildStamp(root, now = new Date()) {
@@ -53,10 +63,11 @@ export function computeBuildStamp(root, now = new Date()) {
     stamp.commit = commit;
     stamp.commitShort = commit.slice(0, 7);
     stamp.commitTime = git(root, ["log", "-1", "--format=%cI"]) || null;
-    const changed = git(root, ["status", "--porcelain"])
-      .split("\n")
-      .filter(Boolean)
-      .map(porcelainPath);
+    // -uall: an untracked directory's files one by one, so a deeper
+    // `--allow-dirty` path can cover them.
+    const changed = porcelainPaths(
+      git(root, ["status", "--porcelain", "-z", "-uall"]),
+    );
     stamp.dirty = changed.length > 0;
     stamp.dirtyFiles = changed.slice(0, MAX_DIRTY_FILES);
     stamp.dirtyCount = changed.length;

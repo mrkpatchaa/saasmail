@@ -55,14 +55,14 @@ export CLOUDFLARE_API_TOKEN=…             # optional, for the Cloudflare check
 yarn doctor --config wrangler.jsonc --url https://mail.example.com
 ```
 
-Options: `--strict` (exit 1 on a warning too), `--allow-dirty <path>…` (paths a deploy overlays on purpose, such as a logo; a directory covers what is under it), `--local` (against `yarn dev`: lists migrations with `--local` and skips the secret list). Keep the admin key outside the repository, for example in `~/.config/saasmail-doctor.env`. The script never prints the key or the token.
+Options: `--strict` (exit 1 on a warning too), `--allow-dirty <path>…` (paths a deploy overlays on purpose, such as a logo; a directory covers what is under it), `--local` (against `yarn dev`: lists migrations with `--local` and skips the secret list). `--url` must be `https://` except for `localhost`, `127.0.0.1` and `[::1]`, so the admin key never travels in clear text. Keep the admin key outside the repository, for example in `~/.config/saasmail-doctor.env`. The script never prints the key or the token.
 
 It runs, in order, one line per result (`✓` pass, `!` warning, `✗` failure, `i` note), then a summary:
 
 1. **Config**: parses the Wrangler file (JSONC) and names the Worker, the D1 database and which bindings it declares.
 2. **Pending migrations**: `npx wrangler d1 migrations list <db> --remote`. Any pending, or a failing or timed-out command: **fail**.
 3. **Secrets**: `npx wrangler secret list` (names only). Fails only when `BETTER_AUTH_SECRET` or `UNSUBSCRIBE_SECRET` is neither a secret nor a var in the config; the runtime checks are authoritative for the rest. A failing command: **warn**.
-4. **Deployed commit**: compares the stamp's commit with local `HEAD` and `origin/main` (**warn** when different), and **warns** about uncommitted changes in the build that `--allow-dirty` does not cover. An endpoint that is unreachable, answers 401, 403 or 5xx, times out, or returns a body without `build` and `checks`: **fail**.
+4. **Deployed commit**: compares the stamp's commit with local `HEAD` and `origin/main` (**warn** when different); outside a git checkout it says it could not compare (`i`), and **warns** about uncommitted changes in the build that `--allow-dirty` does not cover. An endpoint that is unreachable, answers 401, 403 or 5xx, times out, or returns a body without `build` and `checks`: **fail**.
 5. **Runtime checks**: the endpoint's checks as they are.
 6. **Cloudflare API** (with `CLOUDFLARE_API_TOKEN`; otherwise one `i` line):
    - For each inbox whose source is Cloudflare: its address (or the zone's catch-all) has an Email Routing rule whose action is this Worker, else **fail**. Gmail- and Outlook-sourced inboxes are not applicable.
