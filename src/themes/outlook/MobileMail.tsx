@@ -778,9 +778,7 @@ function MobileConversation({
             icon: <Trash2 size={20} />,
             danger: true,
             // In Deleted Items, Delete is permanent: admins only.
-            hidden:
-              mail.folder === "deleted" &&
-              (!mail.canDeleteForever || item.type !== "person"),
+            hidden: mail.folder === "deleted" && !mail.canDeleteForever,
             onSelect: () => void mail.ops.delete([item]),
           },
         ]}

@@ -583,14 +583,7 @@ export const MailRow = memo(function MailRow({
             type="button"
             className="gm-icon-btn gm-sm"
             aria-label={item.trashedAt ? "Delete forever" : "Delete"}
-            title={
-              !item.trashedAt
-                ? "Delete"
-                : item.type === "person"
-                  ? "Delete forever"
-                  : "Group conversations stay in Trash"
-            }
-            disabled={!!item.trashedAt && item.type !== "person"}
+            title={item.trashedAt ? "Delete forever" : "Delete"}
             onClick={() => act.requestDelete([item])}
             data-testid="gmail-row-delete"
           >
