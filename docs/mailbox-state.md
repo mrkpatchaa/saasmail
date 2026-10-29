@@ -305,13 +305,11 @@ flipped.
 
 ### Delete forever and Empty Trash
 
-`POST /api/mail-state/purge` (admins only, `items` 1–100 rows) deletes for
-good the messages of each row that are in Trash at that moment, with their
-attachments, for everyone in the inbox. The contact, the row's other mail,
-group mail not in Trash and scheduled sends stay. Delete forever and Empty
-Trash in every layout use it, for person and group rows alike. Deleting a
-contact is a separate action (`DELETE /api/people/{id}`), not offered from
-Trash.
+Delete forever and Empty Trash work as upstream's: admins only, they call
+`DELETE /api/people/{id}` for each person row in Trash, which deletes the
+person and all their mail, for everyone. Group rows can only be restored;
+they stay in Trash. Deleting a person also removes every user's pin for that
+person's row.
 
 ## Drafts
 

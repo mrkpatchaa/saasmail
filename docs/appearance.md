@@ -98,11 +98,13 @@ nothing else ([how](mailbox-state.md#changing-a-row)).
 Inside Trash:
 
 - **Restore** puts the conversation back where it was.
-- **Delete forever** (admins only) deletes the conversation's mail that is in
-  Trash, with its attachments, **for everyone** in the inbox. The contact stays,
-  and so does their mail that is not in Trash. It asks first and can't be undone.
-- **Empty Trash** (admins only) does Delete forever for every conversation in
-  Trash, people and group conversations alike, after asking.
+- **Delete forever** (admins only) removes the person and **all of their mail, for
+  everyone** on the workspace. It asks first and can't be undone.
+- **Empty Trash** (admins only) does Delete forever for every person in Trash,
+  after asking.
+- Group conversations (several outside participants) can't be deleted forever.
+  They can only be restored, or left in Trash; Empty Trash leaves them there and
+  says how many it skipped.
 
 ## Undo Send
 
@@ -149,7 +151,6 @@ the preview.
 | `GET /api/user/preferences`                                      | `{ uiTheme, colorMode, density }` for the signed-in user                                                                                                                                                                             |
 | `PATCH /api/user/preferences`                                    | Change any of them                                                                                                                                                                                                                   |
 | `PATCH /api/mail-state`                                          | Star, pin, archive, snooze or trash up to 100 rows: `{ items: [{ type: "person" \| "group", id }], starred?, pinned?, archived?, snoozedUntil?, trashed? }` (unix seconds; `null` wakes). Answers `{ data, undo }`                   |
-| `POST /api/mail-state/purge`                                     | Admins only: delete forever the mail in Trash of up to 100 rows, `{ items }`                                                                                                                                                         |
 | `GET /api/people/grouped?folder=&category=&from=&hasAttachment=` | `all` (default, everything not in Trash), `inbox`, `starred`, `snoozed`, `archive`, `sent`, `trash`. Rows carry `starred`, `pinned`, `archivedAt`, `snoozedUntil`, `trashedAt`, `hasSent`, `latestSubject`, `snippet` and `category` |
 | `GET /api/people/grouped/ids`                                    | Every row matching the same filters (up to 5000), for whole-folder actions such as Mark all as read, Select all N and Empty Trash                                                                                                    |
 | `PUT /api/people/category`                                       | `{ senders: [email], category }` moves senders to a tab for the signed-in user; `category: null` removes the correction                                                                                                              |
