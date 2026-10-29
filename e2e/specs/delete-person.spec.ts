@@ -1,9 +1,8 @@
 // e2e/specs/delete-person.spec.ts
 // Covers: the row menu on person rows (admin test id), Delete moving a
-// person's mail to Trash with Undo, Restore from Trash, and "Delete forever" —
-// which lives only inside Trash, asks first, deletes the row's trashed
-// messages for good (the contact itself stays) and survives a reload.
-// Non-admin users never see the admin kebab.
+// person to Trash with Undo, Restore from Trash, and "Delete forever" — which
+// now lives only inside Trash, asks first, removes the person for good and
+// survives a reload. Non-admin users never see the admin kebab.
 //
 // Seed gives us Alice (p_alice) and Bob (p_bob) in the person list.
 import type { Page } from "@playwright/test";
@@ -79,7 +78,7 @@ test.describe.serial("delete person", () => {
     await expect(row(page, "p_bob")).toBeVisible();
   });
 
-  test("confirming Delete forever removes the row and clears the right panel", async ({
+  test("confirming Delete forever removes the person and clears the right panel", async ({
     page,
   }) => {
     await page.goto("/?folder=trash");

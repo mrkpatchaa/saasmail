@@ -74,8 +74,8 @@ export function useOutlookMail() {
   const [params, setParams] = useSearchParams();
   const routeParams = useParams<{ inbox?: string; personId?: string }>();
   const o = useOutlook();
-  // Permanent delete (POST /api/mail-state/purge) is admin-only on the
-  // server: it removes the trashed mail for everyone in the inbox.
+  // Permanent delete (DELETE /api/people/:id) is admin-only on the server:
+  // it removes the person and their mail for the whole team.
   const { data: session } = useSession();
   const canDeleteForever = session?.user?.role === "admin";
 
@@ -670,10 +670,7 @@ export function useOutlookMail() {
         "Restore",
         n(items, "Restored", "conversations restored"),
       ),
-    /**
-     * Permanent delete: the rows' trashed messages, for everyone in the
-     * inbox. The contacts stay.
-     */
+    /** Permanent delete (people only; the server can't purge a group). */
     deleteForever: async (
       items: GroupedItem[],
       opts?: { skipConfirm?: boolean },
@@ -685,21 +682,33 @@ export function useOutlookMail() {
         });
         return;
       }
-      if (!items.length) return;
+      const people = items.filter((i) => i.type === "person");
+      if (people.length === 0) {
+        showToast({
+          kind: "warning",
+          message: "Group conversations can't be deleted permanently",
+          description: "They stay in Deleted Items until restored.",
+        });
+        return;
+      }
+      const skipped = items.length - people.length;
       if (
         !opts?.skipConfirm &&
         !window.confirm(
-          (items.length === 1
-            ? `Permanently delete the mail in Deleted Items from ${itemTitle(items[0])}?`
-            : `Permanently delete the mail in Deleted Items from ${items.length} conversations?`) +
-            " This removes it for everyone in the inbox and can't be undone. Contacts stay.",
+          (people.length === 1
+            ? `Permanently delete ${itemTitle(people[0])} and all of their mail?`
+            : `Permanently delete ${people.length} people and all of their mail?`) +
+            " This removes it for everyone on the team and can't be undone." +
+            (skipped
+              ? ` (${skipped} group conversation(s) will stay in Deleted Items.)`
+              : ""),
         )
       )
         return;
-      openNeighbour(items);
-      await list.deleteForever(items);
+      openNeighbour(people);
+      await list.deletePeople(people);
     },
-    /** Empty Deleted Items: permanently delete every message in Trash. */
+    /** Empty Deleted Items: permanently delete every person in Trash. */
     emptyTrash: async () => {
       if (!canDeleteForever) return;
       await emptyTrash();

@@ -108,6 +108,7 @@ export function ListToolbar({
   const allPinned = n > 0 && selected.every((s) => s.pinned);
   const anyUnread = selected.some((s) => s.unreadCount > 0);
   const inTrash = folder === "trash";
+  const canDelete = !inTrash || selected.some((s) => s.type === "person");
   // In Trash, Delete means delete forever: admins only.
   const showDelete = !inTrash || act.canDeleteForever;
   const canMoveTab = canMoveToTab(selected);
@@ -211,8 +212,15 @@ export function ListToolbar({
           )}
           {showDelete && (
             <IconBtn
-              label={inTrash ? "Delete forever" : "Delete"}
+              label={
+                inTrash
+                  ? canDelete
+                    ? "Delete forever"
+                    : "Group conversations stay in Trash"
+                  : "Delete"
+              }
               onClick={() => act.requestDelete(selected)}
+              disabled={!canDelete}
               testId="gmail-bulk-delete"
             >
               <Trash2 size={20} />
@@ -583,7 +591,14 @@ export const MailRow = memo(function MailRow({
             type="button"
             className="gm-icon-btn gm-sm"
             aria-label={item.trashedAt ? "Delete forever" : "Delete"}
-            title={item.trashedAt ? "Delete forever" : "Delete"}
+            title={
+              !item.trashedAt
+                ? "Delete"
+                : item.type === "person"
+                  ? "Delete forever"
+                  : "Group conversations stay in Trash"
+            }
+            disabled={!!item.trashedAt && item.type !== "person"}
             onClick={() => act.requestDelete([item])}
             data-testid="gmail-row-delete"
           >

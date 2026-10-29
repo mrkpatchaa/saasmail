@@ -19,6 +19,7 @@ import AgentPlan from "@/components/AgentPlan";
 import {
   addBlock,
   EMPTY_MAIL_ROW_STATE,
+  deletePerson,
   fetchPerson,
   fetchStats,
   fetchGroupedPeople,
@@ -42,7 +43,6 @@ import {
   deleteFolderForever,
   markFolderRead,
   pinUndo,
-  purgeRows,
 } from "@/lib/folder-actions";
 import {
   parseInboxSort,
@@ -688,48 +688,67 @@ export default function InboxPage() {
   }
 
   /**
-   * Delete forever: the rows' trashed messages, for everyone in the inbox
-   * (the contacts stay), so it asks first. Admins only; offered only inside
-   * Trash.
+   * Delete forever: people only (a group conversation can't be
+   * hard-deleted). Removes the person and all their mail for everyone, so
+   * it asks first. Admins only; offered only inside Trash.
    */
   async function deleteForever(list: GroupedItem[]) {
-    if (list.length === 0) return;
+    const people = list.filter(
+      (it): it is GroupedPerson => it.type === "person",
+    );
+    const groups = list.length - people.length;
+    if (people.length === 0) {
+      showToast({
+        kind: "info",
+        message: "Group conversations can't be deleted forever",
+        description: "Restore them, or leave them in Trash.",
+      });
+      return;
+    }
+    const who =
+      people.length === 1
+        ? `${people[0].name || people[0].email} and all ${people[0].totalCount} email${people[0].totalCount !== 1 ? "s" : ""}`
+        : `${people.length} people and all their emails`;
     if (
       !confirm(
-        `Delete the trashed mail in ${list.length === 1 ? "this conversation" : `${list.length} conversations`} forever? It's deleted for everyone in the inbox and can't be undone.`,
+        `Delete ${who} forever? This removes them for everyone on this workspace and cannot be undone.${groups > 0 ? ` ${groups} group conversation${groups !== 1 ? "s" : ""} in the selection will stay in Trash.` : ""}`,
       )
     )
       return;
     setBulkBusy(true);
-    let res: { deleted: number; failed: number };
+    const gone = new Set<string>();
     try {
-      res = await purgeRows(list.map(itemRef));
+      for (const p of people) {
+        try {
+          await deletePerson(p.id);
+          gone.add(p.id);
+        } catch {
+          /* counted below */
+        }
+      }
     } finally {
       setBulkBusy(false);
     }
-    const gone = new Set(list.map(keyOf));
-    if (res.failed === 0) {
-      setItems((prev) => prev.filter((it) => !gone.has(keyOf(it))));
-      setPeopleTotal((t) => Math.max(0, t - list.length));
-      if (selectedPerson && gone.has(`person:${selectedPerson.id}`))
-        setSelectedPerson(null);
-      if (selectedConversation && gone.has(`group:${selectedConversation.id}`))
-        setSelectedConversation(null);
-    } else {
-      void refreshPeople();
-    }
+    setItems((prev) =>
+      prev.filter((it) => !(it.type === "person" && gone.has(it.id))),
+    );
+    setPeopleTotal((t) => Math.max(0, t - gone.size));
+    if (selectedPerson && gone.has(selectedPerson.id)) setSelectedPerson(null);
     clearSelection();
     refreshMailCounts();
+    const failed = people.length - gone.size;
     showToast({
-      kind: res.failed > 0 ? "error" : "success",
+      kind: failed > 0 ? "error" : "success",
       message:
-        res.deleted === 1
+        gone.size === 1
           ? "Deleted forever"
-          : `${res.deleted} conversations deleted forever`,
+          : `${gone.size} people deleted forever`,
       description:
-        res.failed > 0
-          ? `${res.failed} couldn't be deleted. Try again.`
-          : undefined,
+        failed > 0
+          ? `${failed} couldn't be deleted. Try again.`
+          : groups > 0
+            ? "Group conversations can't be deleted forever; they stay in Trash."
+            : undefined,
     });
   }
 
@@ -778,7 +797,9 @@ export default function InboxPage() {
               { starred: !it.starred },
               { undo: { starred: it.starred } },
             ),
-          ...(isAdmin ? { onDelete: () => deleteForever([it]) } : {}),
+          ...(isAdmin && it.type === "person"
+            ? { onDelete: () => deleteForever([it]) }
+            : {}),
         }
       : {
           onToggleStar: () =>
@@ -982,36 +1003,40 @@ export default function InboxPage() {
 
   /**
    * Empty Trash (or "Delete forever" on "Select all N" in Trash): delete
-   * every trashed message forever, for everyone in the inbox. Contacts stay.
+   * every person in Trash forever. Group conversations can't be
+   * hard-deleted, so they stay (restore-only) and the toast says so.
    */
   async function emptyTrash(
     query: Parameters<typeof deleteFolderForever>[0] = { folder: "trash" },
   ) {
     if (
       !confirm(
-        "Delete every message in Trash forever? It's deleted for everyone in the inbox and can't be undone. Contacts stay.",
+        "Delete every person in Trash forever? This removes them and all their mail for everyone on this workspace, and cannot be undone. Group conversations can't be deleted forever; they stay in Trash.",
       )
     )
       return;
     setBulkBusy(true);
     try {
-      const res = await deleteFolderForever(query);
+      const res = await deleteFolderForever(query, deletePerson);
       setSelectedPerson(null);
       setSelectedConversation(null);
       clearSelection();
       await refreshPeople();
       refreshMailCounts();
+      const notes: string[] = [];
+      if (res.failed > 0) notes.push(`${res.failed} couldn't be deleted.`);
+      if (res.skippedGroups > 0)
+        notes.push(
+          `${res.skippedGroups} group conversation${res.skippedGroups !== 1 ? "s" : ""} can't be deleted forever and stay${res.skippedGroups === 1 ? "s" : ""} in Trash.`,
+        );
       showToast({
         kind: res.failed > 0 ? "error" : "success",
         message:
           res.deleted === 1
-            ? "1 conversation deleted forever"
-            : `${res.deleted.toLocaleString()} conversations deleted forever`,
-        description:
-          res.failed > 0
-            ? `${res.failed} couldn't be deleted. Try again.`
-            : undefined,
-        durationMs: res.failed > 0 ? 7000 : undefined,
+            ? "1 person deleted forever"
+            : `${res.deleted.toLocaleString()} people deleted forever`,
+        description: notes.join(" ") || undefined,
+        durationMs: notes.length ? 7000 : undefined,
       });
     } catch {
       showToast({ kind: "error", message: "Couldn't empty Trash" });
@@ -1512,7 +1537,7 @@ export default function InboxPage() {
                 Conversations in Trash are hidden from the inbox's other
                 folders, for everyone in the inbox. New mail brings one back.{" "}
                 {isAdmin
-                  ? "Delete forever removes the trashed mail for everyone; contacts stay."
+                  ? "Delete forever removes a person and their mail for everyone; group conversations can only be restored."
                   : "Only admins can delete mail forever."}
               </span>
               {isAdmin && peopleTotal > 0 && (

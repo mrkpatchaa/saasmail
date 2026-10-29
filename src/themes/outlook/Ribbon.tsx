@@ -240,7 +240,7 @@ export default function Ribbon({
           title={
             inTrash
               ? mail.canDeleteForever
-                ? "Delete the trashed mail permanently, for everyone in the inbox"
+                ? "Delete permanently, with their mail, for the whole team"
                 : "Only an admin can delete permanently"
               : "Move to Deleted Items (Delete)"
           }
@@ -315,7 +315,7 @@ export default function Ribbon({
               <RBtn
                 icon={<Trash2 size={18} />}
                 label="Empty folder"
-                title="Permanently delete everything in Deleted Items, for everyone in the inbox"
+                title="Permanently delete everyone in Deleted Items and their mail, for the whole team"
                 onClick={() => void mail.ops.emptyTrash()}
               />
             ),

@@ -453,6 +453,7 @@ export function MobileSelectionBar({
   const allStarred = selected.every((s) => s.starred);
   const allPinned = selected.every((s) => s.pinned);
   const inTrash = folder === "trash" || selected.some((s) => !!s.trashedAt);
+  const canDelete = !inTrash || selected.some((s) => s.type === "person");
   const done = (fn: () => void) => () => {
     fn();
     onClear();
@@ -510,6 +511,7 @@ export function MobileSelectionBar({
           className="gm-icon-btn"
           style={{ width: 48, height: 48 }}
           aria-label={inTrash ? "Delete forever" : "Delete"}
+          disabled={!canDelete}
           onClick={() => act.requestDelete(selected, onClear)}
         >
           <Trash2 size={22} />

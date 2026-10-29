@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  deletePerson,
   fetchGroupedPeople,
   fetchStats,
   markConversationsRead,
@@ -11,7 +12,6 @@ import {
   type MailStateUndoStep,
   type Stats,
 } from "@/lib/api";
-import { purgeRows } from "@/lib/folder-actions";
 import { itemKey, itemRef } from "@/hooks/useMailList";
 import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import { onInboxRefresh } from "@/lib/inbox-events";
@@ -278,24 +278,19 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
     [patchLocal, loadStats, load],
   );
 
-  /**
-   * Delete forever the trashed messages of some rows, for everyone in the
-   * inbox (admins only). The contacts stay.
-   */
-  const deleteForever = useCallback(
+  const deletePeople = useCallback(
     async (targets: GroupedItem[]) => {
-      if (!targets.length) return;
-      patchLocal(targets, {}, true);
+      const people = targets.filter((t) => t.type === "person");
+      if (!people.length) return;
+      patchLocal(people, {}, true);
       try {
-        const res = await purgeRows(targets.map(itemRef));
-        if (res.failed > 0)
-          throw new Error("Some messages were not deleted. Try again.");
+        await Promise.all(people.map((p) => deletePerson(p.id)));
         showToast({
           kind: "success",
           message:
-            res.deleted === 1
+            people.length === 1
               ? "Conversation deleted permanently"
-              : `${res.deleted} conversations deleted permanently`,
+              : `${people.length} conversations deleted permanently`,
         });
         loadStats();
       } catch (e) {
@@ -324,7 +319,7 @@ export function useOutlookList(query: OutlookListQuery, enabled = true) {
     patchLocal,
     applyState,
     markRead,
-    deleteForever,
+    deletePeople,
   };
 }
 

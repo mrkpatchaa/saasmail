@@ -2,7 +2,6 @@ import {
   fetchGroupedIds,
   markConversationsRead,
   markPeopleRead,
-  purgeMailRows,
   updateMailState,
   type GroupedQuery,
   type MailItemRef,
@@ -66,33 +65,29 @@ export function pinUndo(
 }
 
 /**
- * Delete forever the trashed messages of every row matching a list query
- * (Empty Trash), people and group conversations alike, for everyone in the
- * inbox. The contacts stay. Admins only (the server refuses others).
+ * Delete forever every person row matching a list query (Empty Trash).
+ * Group conversations can't be hard-deleted, so they are left as they are
+ * and counted in `skippedGroups`. Admins only (the server refuses others).
  */
 export async function deleteFolderForever(
   query: Omit<GroupedQuery, "page" | "limit" | "withTabCounts">,
-): Promise<{ deleted: number; failed: number }> {
+  deleteOne: (personId: string) => Promise<unknown>,
+): Promise<{ deleted: number; failed: number; skippedGroups: number }> {
   const { data } = await fetchGroupedIds(query);
-  return purgeRows(data.map(({ type, id }) => ({ type, id })));
-}
-
-/**
- * Delete forever the trashed messages of some rows, 100 rows per call.
- * Returns how many rows were purged and how many failed.
- */
-export async function purgeRows(
-  rows: MailItemRef[],
-): Promise<{ deleted: number; failed: number }> {
+  const people = data.filter((r) => r.type === "person").map((r) => r.id);
   let deleted = 0;
   let failed = 0;
-  for (const c of chunks(rows)) {
-    try {
-      await purgeMailRows(c);
-      deleted += c.length;
-    } catch {
-      failed += c.length;
+  // A few at a time: each delete also removes the person's attachments.
+  for (const batch of chunks(people, 4)) {
+    const results = await Promise.allSettled(batch.map((id) => deleteOne(id)));
+    for (const r of results) {
+      if (r.status === "fulfilled") deleted++;
+      else failed++;
     }
   }
-  return { deleted, failed };
+  return {
+    deleted,
+    failed,
+    skippedGroups: data.length - people.length,
+  };
 }

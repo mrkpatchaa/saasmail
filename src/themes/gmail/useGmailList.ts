@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  deletePerson,
   fetchGroupedIds,
   fetchGroupedPeople,
   fetchStats,
@@ -15,12 +16,7 @@ import {
   type Stats,
 } from "@/lib/api";
 import { itemKey, itemRef } from "@/hooks/useMailList";
-import {
-  applyToFolder,
-  markFolderRead,
-  pinUndo,
-  purgeRows,
-} from "@/lib/folder-actions";
+import { applyToFolder, markFolderRead, pinUndo } from "@/lib/folder-actions";
 import { useRealtimeUpdates } from "@/hooks/useRealtimeUpdates";
 import { onInboxRefresh } from "@/lib/inbox-events";
 import { showToast } from "@/lib/toast";
@@ -486,26 +482,22 @@ export function useGmailList(query: GmailListQuery) {
         void load({ silent: true });
       }
     },
-    /**
-     * Delete forever the trashed messages of some rows, for everyone in the
-     * inbox (admins only). The contacts stay.
-     */
+    /** Permanently delete people (and their mail). Groups are skipped. */
     deleteForever: async (targets: GroupedItem[]) => {
-      if (targets.length === 0) return;
-      const keys = new Set(targets.map(itemKey));
+      const people = targets.filter((t) => t.type === "person");
+      if (people.length === 0) return;
+      const keys = new Set(people.map(itemKey));
       setItems((prev) => prev.filter((it) => !keys.has(itemKey(it))));
       setTotal((t) => Math.max(0, t - keys.size));
       undoRef.current = null;
       try {
-        const res = await purgeRows(targets.map(itemRef));
-        if (res.failed > 0)
-          throw new Error("Some messages were not deleted. Try again.");
+        await Promise.all(people.map((p) => deletePerson(p.id)));
         showToast({
           kind: "success",
           message:
-            res.deleted === 1
+            people.length === 1
               ? "Conversation deleted forever"
-              : `${res.deleted} conversations deleted forever`,
+              : `${people.length} conversations deleted forever`,
         });
         loadStats();
       } catch (e) {

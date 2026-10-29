@@ -479,7 +479,7 @@ export async function updateMailState(
     pinned?: boolean;
     archived?: boolean;
     snoozedUntil?: number | null;
-    /** The inbox's shared Trash; permanent delete is purgeMailRows. */
+    /** The inbox's shared Trash; permanent delete is deletePerson. */
     trashed?: boolean;
   },
 ): Promise<{ data: MailItemState[]; undo: MailStateUndoStep[] }> {
@@ -510,20 +510,6 @@ export async function undoMailState(undo: MailStateUndoStep[]): Promise<void> {
       }
     }
   }
-}
-
-/**
- * Permanently delete the trashed messages of inbox rows (at most 100), for
- * everyone in the inbox. The contact and their other mail stay. Admins only.
- */
-export async function purgeMailRows(
-  items: MailItemRef[],
-): Promise<{ success: boolean; deleted: number }> {
-  return apiFetch(`/api/mail-state/purge`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
-  });
 }
 
 export type UiTheme = "default" | "gmail" | "outlook";

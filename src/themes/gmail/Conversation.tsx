@@ -759,10 +759,15 @@ export default function Conversation({
 
   const inView = inInboxView(item);
   const trashed = !!item.trashedAt;
-  // Delete moves to Trash; inside Trash it deletes forever, admins only
-  // (the trashed mail, for everyone in the inbox).
+  // Delete moves to Trash; inside Trash only people can be deleted forever.
+  const canDelete = !trashed || item.type === "person";
+  // Delete forever is admin-only (it removes the person for the whole team).
   const showDelete = !trashed || act.canDeleteForever;
-  const deleteLabel = !trashed ? "Delete" : "Delete forever";
+  const deleteLabel = !trashed
+    ? "Delete"
+    : canDelete
+      ? "Delete forever"
+      : "Group conversations stay in Trash";
 
   /* ── toolbar ── */
   const tb = (
@@ -874,7 +879,9 @@ export default function Conversation({
               act.moveToInbox([item]),
             )}
       {showDelete &&
-        tb(deleteLabel, <Trash2 size={22} />, () => act.requestDelete([item]))}
+        tb(deleteLabel, <Trash2 size={22} />, () => act.requestDelete([item]), {
+          disabled: !canDelete,
+        })}
       {tb("Mark as unread", <Mail size={22} />, () => {
         void act.markUnread([item]).then(onBack);
       })}
@@ -904,7 +911,9 @@ export default function Conversation({
               act.moveToInbox([item]),
             )}
       {showDelete &&
-        tb(deleteLabel, <Trash2 size={20} />, () => act.requestDelete([item]))}
+        tb(deleteLabel, <Trash2 size={20} />, () => act.requestDelete([item]), {
+          disabled: !canDelete,
+        })}
       <span className="mx-1 h-5 w-px bg-border" />
       {tb("Mark as unread", <Mail size={20} />, () => {
         void act.markUnread([item]).then(onBack);

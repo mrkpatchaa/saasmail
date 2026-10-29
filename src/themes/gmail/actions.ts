@@ -11,8 +11,8 @@ export interface RowActions {
    */
   requestDelete: (items: GroupedItem[], after?: () => void) => void;
   /**
-   * Admins only: deleting forever removes the rows' trashed mail for
-   * everyone in the inbox (`POST /api/mail-state/purge` is admin-gated). Menus
+   * Admins only: deleting forever removes the person and all their mail
+   * for the whole team (`DELETE /api/people/:id` is admin-gated). Menus
    * hide "Delete forever" / "Empty Trash" when this is false.
    */
   canDeleteForever: boolean;

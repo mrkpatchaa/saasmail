@@ -112,6 +112,7 @@ export function RowMenu({
   const allPinned = items.length > 0 && items.every((i) => i.pinned);
   const outOfInbox = items.some((i) => !inInboxView(i));
   const anyTrashed = items.some((i) => !!i.trashedAt);
+  const canDelete = !anyTrashed || items.some((i) => i.type === "person");
   // In Trash, Delete means delete forever: admins only.
   const showDelete = !anyTrashed || act.canDeleteForever;
   const canMoveTab = canMoveToTab(items);
@@ -205,6 +206,7 @@ export function RowMenu({
             <Item
               icon={<Trash2 size={18} />}
               onSelect={run(() => act.requestDelete(items))}
+              disabled={!canDelete}
               hint={anyTrashed ? undefined : "#"}
             >
               {anyTrashed ? "Delete forever" : "Delete"}
