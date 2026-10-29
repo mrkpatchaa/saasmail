@@ -2,7 +2,9 @@ import { and, eq, gt, ne, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { deliveryEvents } from "../../db/delivery-events.schema";
+import { listMembers } from "../../db/list-members.schema";
 import { sentEmails } from "../../db/sent-emails.schema";
+import { suppressions } from "../../db/suppressions.schema";
 import { AUDIT_ACTIONS } from "../audit/events";
 import { recordAudit } from "../audit/record";
 import { bracketedMessageId } from "../message-id";
@@ -126,29 +128,46 @@ export async function recordDeliveryEvent(
   };
 
   const guard = sql`NOT EXISTS (SELECT 1 FROM delivery_events WHERE id = ${id})`;
+  // Query builders, not `db.run`: only builders go into a D1 batch here.
   const statements: unknown[] = [];
   if (suppression) {
+    const insert = db
+      .insert(suppressions)
+      .select(
+        sql`SELECT ${nanoid()}, ${event.recipient}, ${suppression}, ${event.provider}, ${event.smtpStatus}, ${now} WHERE ${guard}`,
+      );
     // A hard bounce outranks whatever reason the address had; the others
     // keep an existing row as it is.
-    const onConflict =
-      suppression === "hard_bounce"
-        ? sql`ON CONFLICT(email) DO UPDATE SET reason = 'hard_bounce', source = excluded.source, note = excluded.note`
-        : sql`ON CONFLICT(email) DO NOTHING`;
     statements.push(
-      db.run(sql`
-        INSERT INTO suppressions (id, email, reason, source, note, created_at)
-        SELECT ${nanoid()}, ${event.recipient}, ${suppression}, ${event.provider}, ${event.smtpStatus}, ${now}
-        WHERE ${guard}
-        ${onConflict}`),
+      suppression === "hard_bounce"
+        ? insert.onConflictDoUpdate({
+            target: suppressions.email,
+            set: {
+              reason: "hard_bounce",
+              source: sql`excluded.source`,
+              note: sql`excluded.note`,
+            },
+          })
+        : insert.onConflictDoNothing({ target: suppressions.email }),
     );
   }
   const listIndex = statements.length;
   if (leavesLists) {
     statements.push(
-      db.run(sql`
-        UPDATE list_members
-           SET status = 'unsubscribed', unsubscribed_at = ${now}, unsubscribe_reason = ${suppression}
-         WHERE email = ${event.recipient} AND status = 'subscribed' AND ${guard}`),
+      db
+        .update(listMembers)
+        .set({
+          status: "unsubscribed",
+          unsubscribedAt: now,
+          unsubscribeReason: suppression,
+        })
+        .where(
+          and(
+            eq(listMembers.email, event.recipient),
+            eq(listMembers.status, "subscribed"),
+            guard,
+          ),
+        ),
     );
   }
   if (opts.extend) statements.push(...opts.extend({ db, outcome, guard }));
