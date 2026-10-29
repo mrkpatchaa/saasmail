@@ -235,6 +235,7 @@ describe("mail-state router", () => {
       items: [person("p1")],
       snoozedUntil: until,
     });
+    expect(res.status).toBe(200);
     const archived = await patch(apiKey, {
       items: [person("p1")],
       archived: true,

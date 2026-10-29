@@ -4,15 +4,12 @@ import {
   applyMigrations,
   authFetch,
   cleanDb,
-  createTestAttachment,
   createTestEmail,
   createTestPerson,
-  createTestSentEmail,
   createTestUser,
   getDb,
 } from "./helpers";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
-import { setMailboxState, setUserState } from "../lib/messages/state";
 import { snoozeConversations } from "../lib/messages/conversation-state";
 
 /**
