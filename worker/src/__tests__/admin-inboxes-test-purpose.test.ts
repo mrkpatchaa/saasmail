@@ -1,0 +1,149 @@
+// docs/inboxes.md, "Test inboxes": an admin turns an empty, Cloudflare-routed
+// inbox into a test inbox; the switch is checked on the resulting state.
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { eq } from "drizzle-orm";
+import {
+  applyMigrations,
+  authFetch,
+  cleanDb,
+  createTestEmail,
+  createTestPerson,
+  createTestUser,
+  getDb,
+} from "./helpers";
+import { senderIdentities } from "../db/sender-identities.schema";
+
+const INBOX = "e2e@saasmail.test";
+
+function patch(apiKey: string, body: unknown, inbox = INBOX) {
+  return authFetch(`/api/admin/inboxes/${encodeURIComponent(inbox)}`, {
+    apiKey,
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+async function identity(inbox = INBOX) {
+  const [row] = await getDb()
+    .select()
+    .from(senderIdentities)
+    .where(eq(senderIdentities.email, inbox));
+  return row;
+}
+
+async function addIdentity(
+  values: Partial<typeof senderIdentities.$inferInsert> = {},
+) {
+  const now = Math.floor(Date.now() / 1000);
+  await getDb()
+    .insert(senderIdentities)
+    .values({ email: INBOX, createdAt: now, updatedAt: now, ...values });
+}
+
+let apiKey = "";
+
+beforeAll(async () => {
+  await applyMigrations();
+});
+
+beforeEach(async () => {
+  await cleanDb();
+  apiKey = (await createTestUser({ role: "admin" })).apiKey;
+});
+
+describe("PATCH /api/admin/inboxes/{email} — purpose", () => {
+  it("turns an empty inbox into a test inbox, lists it, and audits the change", async () => {
+    const res = await patch(apiKey, { purpose: "test", testRetentionDays: 5 });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      purpose: "test",
+      testRetentionDays: 5,
+    });
+    expect(await identity()).toMatchObject({
+      purpose: "test",
+      testRetentionDays: 5,
+    });
+
+    const list = (await (
+      await authFetch("/api/admin/inboxes", { apiKey })
+    ).json()) as Array<{ email: string; purpose: string }>;
+    expect(list.find((r) => r.email === INBOX)?.purpose).toBe("test");
+
+    const audit = await env.DB.prepare(
+      "SELECT details FROM audit_events WHERE action = 'inbox.updated' AND target_id = ?",
+    )
+      .bind(INBOX)
+      .first<{ details: string }>();
+    expect(JSON.parse(audit!.details)).toMatchObject({
+      purpose: { from: "mail", to: "test" },
+    });
+  });
+
+  it("refuses a test inbox that already holds mail (409)", async () => {
+    await createTestPerson();
+    await createTestEmail({ recipient: INBOX });
+    const res = await patch(apiKey, { purpose: "test" });
+    expect(res.status).toBe(409);
+    expect(await identity()).toBeUndefined();
+  });
+
+  it("refuses purpose test on a Gmail-mapped inbox (400)", async () => {
+    await addIdentity({ source: "gmail", gmailAccountId: "g-1" });
+    const res = await patch(apiKey, { purpose: "test" });
+    expect(res.status).toBe(400);
+    expect((await identity()).purpose).toBe("mail");
+  });
+
+  it("refuses purpose test in the same PATCH that maps the inbox to Gmail (400)", async () => {
+    const res = await patch(apiKey, {
+      source: "gmail",
+      gmailAccountId: "g-1",
+      purpose: "test",
+    });
+    expect(res.status).toBe(400);
+    expect(await identity()).toBeUndefined();
+  });
+
+  it("refuses mapping an existing test inbox to Outlook (400)", async () => {
+    await addIdentity({ purpose: "test" });
+    const res = await patch(apiKey, { outlookAccountId: "o-1" });
+    expect(res.status).toBe(400);
+    expect(await identity()).toMatchObject({
+      purpose: "test",
+      source: "cloudflare",
+    });
+  });
+
+  it("refuses retention days on a normal inbox (400)", async () => {
+    const res = await patch(apiKey, { testRetentionDays: 5 });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses retention outside 1–30 (400)", async () => {
+    expect(
+      (await patch(apiKey, { purpose: "test", testRetentionDays: 0 })).status,
+    ).toBe(400);
+    expect(
+      (await patch(apiKey, { purpose: "test", testRetentionDays: 31 })).status,
+    ).toBe(400);
+  });
+
+  it("turns off at any time, keeping the mail, and prunes a default row", async () => {
+    // "chat" is the API's default display mode (the column's is "thread").
+    await addIdentity({
+      purpose: "test",
+      testRetentionDays: 7,
+      displayMode: "chat",
+    });
+    await createTestPerson();
+    await createTestEmail({ recipient: INBOX });
+    const res = await patch(apiKey, { purpose: "mail" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      purpose: "mail",
+      testRetentionDays: null,
+    });
+    expect(await identity()).toBeUndefined();
+  });
+});
