@@ -48,6 +48,7 @@ import { useSession } from "@/lib/auth-client";
 import { showToast } from "@/lib/toast";
 import { copyMessageLink, messageDomId } from "@/lib/message-link";
 import { onEmailSent } from "@/lib/email-events";
+import { onInboxRefresh } from "@/lib/inbox-events";
 import { itemTitle } from "@/hooks/useMailList";
 import ReplyComposer from "@/components/ReplyComposer";
 import DeliveryProblemBadge from "@/components/DeliveryProblemBadge";
@@ -568,6 +569,7 @@ export default function Conversation({
 
   // Replies sent elsewhere (or here) reload the thread.
   useEffect(() => onEmailSent(() => refetch()), [refetch]);
+  useEffect(() => onInboxRefresh(() => refetch()), [refetch]);
 
   const identities = stats?.senderIdentities ?? [];
   const internalDomains = useMemo(() => {
