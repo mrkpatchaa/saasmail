@@ -446,7 +446,9 @@ export function buildMcpServer(ctx: McpContext): McpServer {
           .min(1)
           .max(200)
           .optional()
-          .describe("Case-insensitive substring of the subject."),
+          .describe(
+            "Substring of the subject, case-insensitive for ASCII letters only (an accented letter matches in the case the mail uses).",
+          ),
         from: z.string().email().optional().describe("Exact sender address."),
         timeout: z
           .number()

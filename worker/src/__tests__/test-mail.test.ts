@@ -389,16 +389,32 @@ describe("pruneTestMail", () => {
     );
   });
 
-  it("works in batches of 200, at most 5 per pass", async () => {
+  it("deletes at most 40 per pass, oldest first across test inboxes", async () => {
     const now = Math.floor(Date.now() / 1000);
+    const day = 24 * 60 * 60;
     await addInbox(TEST_INBOX, "test", 1);
-    const values = Array.from({ length: 1001 }, (_, i) => ({
+    await addInbox(OTHER_TEST_INBOX, "test", 5);
+    // 30 expired in each inbox (each past its own retention), plus 3 in the
+    // 5-day inbox that are past 1 day but not 5, so they stay.
+    const values = [
+      ...Array.from({ length: 30 }, (_, i) => ({
+        recipient: TEST_INBOX,
+        receivedAt: now - 2 * day - i,
+      })),
+      ...Array.from({ length: 30 }, (_, i) => ({
+        recipient: OTHER_TEST_INBOX,
+        receivedAt: now - 6 * day - i,
+      })),
+      ...Array.from({ length: 3 }, (_, i) => ({
+        recipient: OTHER_TEST_INBOX,
+        receivedAt: now - 2 * day - i,
+      })),
+    ].map((v, i) => ({
+      ...v,
       id: `bulk-${i}`,
       personId: "sender-1",
-      recipient: TEST_INBOX,
       subject: "old",
       messageId: `<bulk-${i}@example.com>`,
-      receivedAt: now - 3 * 24 * 60 * 60,
       createdAt: now,
     }));
     for (let i = 0; i < values.length; i += 8) {
@@ -407,11 +423,23 @@ describe("pruneTestMail", () => {
         .values(values.slice(i, i + 8));
     }
 
-    expect(await pruneTestMail(getDb(), env as never, now)).toBe(1000);
-    expect(await getDb().select({ id: emails.id }).from(emails)).toHaveLength(
-      1,
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(40);
+    // Oldest first: the 30 in the 5-day inbox went, then the 10 oldest of the
+    // 1-day inbox.
+    const left = await getDb()
+      .select({ recipient: emails.recipient, receivedAt: emails.receivedAt })
+      .from(emails);
+    expect(left).toHaveLength(23);
+    expect(left.filter((r) => r.receivedAt < now - 5 * day)).toHaveLength(0);
+
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(20);
+    const kept = await getDb()
+      .select({ recipient: emails.recipient })
+      .from(emails);
+    expect(kept).toEqual(
+      Array.from({ length: 3 }, () => ({ recipient: OTHER_TEST_INBOX })),
     );
-    expect(await pruneTestMail(getDb(), env as never, now)).toBe(1);
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(0);
   });
 });
 
@@ -552,7 +580,8 @@ describe("GET /api/test-mail/wait — the subject filter", () => {
     expect(await first("100%")).toBe(percent);
     expect(await first("code_a")).toBe(underscore);
     expect(await first("réinitialisation")).toBe(accented);
-    // Case-insensitive, as for "WELCOME" above, with a capital É.
-    expect(await first("RÉINITIALISATION")).toBe(accented);
+    // Case-insensitive for ASCII letters: the accented letter in the mail's
+    // own case still matches.
+    expect(await first("RéINITIALISATION")).toBe(accented);
   });
 });

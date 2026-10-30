@@ -193,7 +193,7 @@ on the **Inboxes** page, or `PATCH /api/admin/inboxes/{email}` with
   inbox. A test uses one address per message.
 - **It deletes its mail.** Messages older than the inbox's retention (3 days by
   default, 1 to 30, the **Keep mail** field or `testRetentionDays`) are deleted
-  by the hourly pass, through the normal delete path, up to 1,000 per pass.
+  by the hourly pass, through the normal delete path: at most 40 per pass, oldest first across test inboxes, so a large backlog takes a few hours.
 - **Only an empty inbox becomes a test inbox.** Turning it on for an inbox that
   holds received mail answers `409`: retention would delete that mail. Create a
   new inbox for tests. Turning it off is always allowed; the mail stays and

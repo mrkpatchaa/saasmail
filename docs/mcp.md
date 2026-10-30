@@ -143,7 +143,8 @@ absent when the message was never checked. Reading never runs the check.
 
 **Waiting for test mail.** `wait_for_test_mail` takes the inputs of
 [`GET /api/test-mail/wait`](test-mail.md) (`inbox`, `detail`, `since`,
-`subject`, `from`, `timeout` up to 30 seconds) and returns
+`subject`, case-insensitive for ASCII letters only, `from`, `timeout` up to
+30 seconds) and returns
 `{ found: true, message }`, with the message's `links` and `codes`, or
 `{ found: false }` when nothing arrived in time. It reads
 [test inboxes](inboxes.md#test-inboxes) only: any other inbox is a tool error.

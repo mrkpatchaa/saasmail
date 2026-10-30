@@ -32,14 +32,14 @@ sends.
 It answers the first message to the test inbox that matches, oldest first, or
 `204` when none arrived before the timeout.
 
-| Query     | Required | Meaning                                                 |
-| --------- | -------- | ------------------------------------------------------- |
-| `inbox`   | yes      | The test inbox address (the base address, no `+detail`) |
-| `detail`  | no       | Only mail sent to `local+detail@`; compared lowercased  |
-| `since`   | yes      | Epoch seconds: only mail received at or after it        |
-| `subject` | no       | Case-insensitive substring of the subject               |
-| `from`    | no       | Exact sender address                                    |
-| `timeout` | no       | Seconds to wait, 1–30, default 25                       |
+| Query     | Required | Meaning                                                                                                                                                          |
+| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inbox`   | yes      | The test inbox address (the base address, no `+detail`)                                                                                                          |
+| `detail`  | no       | Only mail sent to `local+detail@`; compared lowercased                                                                                                           |
+| `since`   | yes      | Epoch seconds: only mail received at or after it                                                                                                                 |
+| `subject` | no       | Substring of the subject, case-insensitive for ASCII letters only: write accented letters in the case the mail uses (`réinitialisation`, not `RÉINITIALISATION`) |
+| `from`    | no       | Exact sender address                                                                                                                                             |
+| `timeout` | no       | Seconds to wait, 1–30, default 25                                                                                                                                |
 
 A `200` body:
 

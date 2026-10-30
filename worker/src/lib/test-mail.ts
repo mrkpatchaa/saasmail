@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../db/emails.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
@@ -218,53 +218,43 @@ export async function waitForTestMail(
   return { error: null, message: null };
 }
 
-const PRUNE_BATCH = 200;
-const PRUNE_MAX_BATCHES = 5;
+/**
+ * Messages one pass deletes at most. Each delete through the normal path is
+ * about 11 D1 statements, and the whole cron chain shares one invocation's
+ * D1 query budget.
+ */
+export const PRUNE_LIMIT = 40;
 
 /**
  * Deletes test-inbox mail older than its inbox's retention, through the
- * normal delete path (attachments, mailbox state, the row). At most 5 batches
- * of 200 per pass; the next hourly pass takes the rest. Returns how many.
+ * normal delete path (attachments, mailbox state, the row): at most 40
+ * messages per pass, oldest first across every test inbox. The next hourly
+ * pass takes the rest. Returns how many it deleted.
  */
 export async function pruneTestMail(
   db: Db,
   env: CloudflareBindings,
   now: number,
 ): Promise<number> {
-  const inboxes = await db
-    .select({
-      email: senderIdentities.email,
-      days: senderIdentities.testRetentionDays,
-    })
-    .from(senderIdentities)
-    .where(eq(senderIdentities.purpose, "test"));
-  let batches = 0;
+  const rows = await db.all<{ id: string }>(sql`
+    SELECT e.id AS id
+    FROM ${emails} e
+    JOIN ${senderIdentities} si ON si.email = e.recipient
+    WHERE si.purpose = 'test'
+      AND e.received_at <
+        ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
+    ORDER BY e.received_at, e.id
+    LIMIT ${PRUNE_LIMIT}
+  `);
   let deleted = 0;
-  for (const inbox of inboxes) {
-    const cutoff =
-      now - (inbox.days ?? DEFAULT_TEST_RETENTION_DAYS) * 24 * 60 * 60;
-    while (batches < PRUNE_MAX_BATCHES) {
-      const rows = await db
-        .select({ id: emails.id })
-        .from(emails)
-        .where(
-          and(eq(emails.recipient, inbox.email), lt(emails.receivedAt, cutoff)),
-        )
-        .limit(PRUNE_BATCH);
-      if (rows.length === 0) break;
-      batches++;
-      for (const row of rows) {
-        const result = await deleteEmailWithAttachments(
-          db,
-          env.R2,
-          row.id,
-          SYSTEM_INBOX_ACCESS,
-        );
-        if (result) deleted++;
-      }
-      if (rows.length < PRUNE_BATCH) break;
-    }
-    if (batches >= PRUNE_MAX_BATCHES) break;
+  for (const row of rows) {
+    const result = await deleteEmailWithAttachments(
+      db,
+      env.R2,
+      row.id,
+      SYSTEM_INBOX_ACCESS,
+    );
+    if (result) deleted++;
   }
   return deleted;
 }
