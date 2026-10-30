@@ -43,15 +43,13 @@ async function addInbox(
   testRetentionDays: number | null = null,
 ) {
   const now = Math.floor(Date.now() / 1000);
-  await getDb()
-    .insert(senderIdentities)
-    .values({
-      email,
-      purpose,
-      testRetentionDays,
-      createdAt: now,
-      updatedAt: now,
-    });
+  await getDb().insert(senderIdentities).values({
+    email,
+    purpose,
+    testRetentionDays,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
 async function grant(userId: string, ...inboxes: string[]) {
