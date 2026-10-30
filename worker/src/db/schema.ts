@@ -15,7 +15,7 @@ import { inboxPermissions } from "./inbox-permissions.schema";
 import { pushSubscriptions } from "./push-subscriptions.schema";
 import { appSettings } from "./app-settings.schema";
 import { suppressions } from "./suppressions.schema";
-import { deliveryEvents } from "./delivery-events.schema";
+import { deliveryEvents, deliveryMessageIds } from "./delivery-events.schema";
 import { blocklist } from "./blocklist.schema";
 import { outboxEmails } from "./outbox-emails.schema";
 import { drafts } from "./drafts.schema";
@@ -73,6 +73,7 @@ export const schema = {
   appSettings,
   suppressions,
   deliveryEvents,
+  deliveryMessageIds,
   blocklist,
   outboxEmails,
   drafts,

@@ -1,7 +1,10 @@
-import { and, eq, gt, ne, sql, type SQL } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
-import { deliveryEvents } from "../../db/delivery-events.schema";
+import {
+  deliveryEvents,
+  deliveryMessageIds,
+} from "../../db/delivery-events.schema";
 import { listMembers } from "../../db/list-members.schema";
 import { sentEmails } from "../../db/sent-emails.schema";
 import { suppressions } from "../../db/suppressions.schema";
@@ -28,8 +31,9 @@ export function deliveryEventId(event: DeliveryEvent): string {
 }
 
 /**
- * The sent message an event is about: one indexed read on
- * `sent_emails.message_id`. Null without a message id or a match.
+ * The sent message an event is about: an indexed read on
+ * `sent_emails.message_id`, then on the copies' ids. Null without a message
+ * id or a match.
  */
 export async function correlateDeliveryEvent(
   db: Db,
@@ -37,11 +41,22 @@ export async function correlateDeliveryEvent(
 ): Promise<DeliveryCorrelation | null> {
   const messageId = event.messageId?.trim();
   if (!messageId) return null;
-  const [row] = await db
-    .select({ id: sentEmails.id, campaignId: sentEmails.campaignId })
+  const bracketed = bracketedMessageId(messageId);
+  const columns = { id: sentEmails.id, campaignId: sentEmails.campaignId };
+  let [row] = await db
+    .select(columns)
     .from(sentEmails)
-    .where(eq(sentEmails.messageId, bracketedMessageId(messageId)))
+    .where(eq(sentEmails.messageId, bracketed))
     .limit(1);
+  if (!row) {
+    // A further copy of a per-recipient send (`delivery_message_ids`).
+    [row] = await db
+      .select(columns)
+      .from(deliveryMessageIds)
+      .innerJoin(sentEmails, eq(sentEmails.id, deliveryMessageIds.sentEmailId))
+      .where(eq(deliveryMessageIds.messageId, bracketed))
+      .limit(1);
+  }
   return row ? { sentEmailId: row.id, campaignId: row.campaignId } : null;
 }
 
@@ -61,15 +76,12 @@ export interface RecordDeliveryEventOptions {
   now?: number;
 }
 
+/** What this event suppresses outright; soft bounces are decided in SQL. */
 function suppressionFor(
   event: DeliveryEvent,
-  earlierBounces: number,
 ): DeliverySuppressionReason | null {
   if (event.kind === "bounced" && event.bounceType === "hard") {
     return "hard_bounce";
-  }
-  if (event.kind === "bounced" && event.bounceType === "soft") {
-    return earlierBounces + 1 >= SOFT_BOUNCE_THRESHOLD ? "soft_bounce" : null;
   }
   if (event.kind === "complained") return "complaint";
   if (event.kind === "rejected" && event.rejectionReason === "suppressed") {
@@ -81,9 +93,10 @@ function suppressionFor(
 /**
  * Record one delivery event and apply what it means (docs/suppressions.md):
  * the event row, the suppression and the list unsubscribes commit in one D1
- * batch. Every effect is guarded by the event row's absence and the row goes
- * in last, so a redelivered event changes nothing and returns null, and a
- * failed batch leaves nothing for the queue's retry to trip over.
+ * batch. The effects before the event row are guarded by its absence, the
+ * soft-bounce suppression after it by its insert, so a redelivered event
+ * changes nothing and returns null, and a failed batch leaves nothing for the
+ * queue's retry to trip over.
  */
 export async function recordDeliveryEvent(
   db: Db,
@@ -97,26 +110,7 @@ export async function recordDeliveryEvent(
       ? opts.correlation
       : await correlateDeliveryEvent(db, event);
 
-  let earlierBounces = 0;
-  if (event.kind === "bounced" && event.bounceType === "soft") {
-    const [row] = await db
-      .select({ count: sql<number>`COUNT(*)` })
-      .from(deliveryEvents)
-      .where(
-        and(
-          eq(deliveryEvents.recipient, event.recipient),
-          gt(
-            deliveryEvents.occurredAt,
-            event.occurredAt - SOFT_BOUNCE_WINDOW_SECONDS,
-          ),
-          eq(deliveryEvents.kind, "bounced"),
-          ne(deliveryEvents.id, id),
-        ),
-      );
-    earlierBounces = row?.count ?? 0;
-  }
-
-  const suppression = suppressionFor(event, earlierBounces);
+  const suppression = suppressionFor(event);
   const leavesLists =
     suppression === "hard_bounce" || suppression === "complaint";
   const outcome: DeliveryEventOutcome = {
@@ -171,6 +165,7 @@ export async function recordDeliveryEvent(
     );
   }
   if (opts.extend) statements.push(...opts.extend({ db, outcome, guard }));
+  const eventIndex = statements.length;
   statements.push(
     db
       .insert(deliveryEvents)
@@ -194,11 +189,18 @@ export async function recordDeliveryEvent(
       .onConflictDoNothing()
       .returning({ id: deliveryEvents.id }),
   );
+  const isSoft = event.kind === "bounced" && event.bounceType === "soft";
+  if (isSoft) statements.push(softBounceSuppression(db, event, now));
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const results = (await db.batch(statements as any)) as unknown[];
-  const inserted = results[results.length - 1] as { id: string }[];
+  const inserted = results[eventIndex] as { id: string }[];
   if (inserted.length === 0) return null;
+  // Reported only when this event added the row: an address already
+  // suppressed for another reason keeps it.
+  if (isSoft && (results[eventIndex + 1] as unknown[]).length > 0) {
+    outcome.suppression = "soft_bounce";
+  }
   if (leavesLists) {
     const changed = results[listIndex] as { meta?: { changes?: number } };
     outcome.listsLeft = changed?.meta?.changes ?? 0;
@@ -222,6 +224,34 @@ export async function recordDeliveryEvent(
     summary: summaryOf(event, outcome),
   });
   return outcome;
+}
+
+/**
+ * The soft-bounce suppression, decided inside the batch right after the event
+ * row so concurrent events serialize: D1 runs a batch as one transaction, and
+ * the last of three sees all three. `changes() = 1` means the insert just
+ * before it added the event (a redelivery adds nothing). The rule: some
+ * 30-day window holding this event holds `SOFT_BOUNCE_THRESHOLD` soft
+ * bounces. Each such window starts at a soft bounce no more than 30 days
+ * before this one, so the anchors are those; events arriving out of order
+ * count by when they occurred, and an old one cannot reach recent ones.
+ */
+function softBounceSuppression(db: Db, event: DeliveryEvent, now: number) {
+  const window = SOFT_BOUNCE_WINDOW_SECONDS;
+  return db
+    .insert(suppressions)
+    .select(
+      sql`SELECT ${nanoid()}, ${event.recipient}, 'soft_bounce', ${event.provider}, ${event.smtpStatus}, ${now}
+          WHERE changes() = 1 AND EXISTS (
+            SELECT 1 FROM delivery_events a
+             WHERE a.recipient = ${event.recipient} AND a.kind = 'bounced' AND a.bounce_type = 'soft'
+               AND a.occurred_at BETWEEN ${event.occurredAt - window} AND ${event.occurredAt}
+               AND (SELECT COUNT(*) FROM delivery_events b
+                     WHERE b.recipient = a.recipient AND b.kind = 'bounced' AND b.bounce_type = 'soft'
+                       AND b.occurred_at BETWEEN a.occurred_at AND a.occurred_at + ${window}) >= ${SOFT_BOUNCE_THRESHOLD})`,
+    )
+    .onConflictDoNothing({ target: suppressions.email })
+    .returning({ id: suppressions.id });
 }
 
 function summaryOf(

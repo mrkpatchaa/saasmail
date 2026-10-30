@@ -19,6 +19,7 @@ import { formatFromAddress } from "./format-from-address";
 import { loadFrozenJmapSend } from "./jmap-frozen-send";
 import { bracketedMessageId } from "./message-id";
 import { hardBouncedAmong } from "./suppressions";
+import { recordCopyMessageIds } from "./delivery/message-ids";
 import { isDemoMode } from "./is-dev";
 import { completeEnrollmentIfDone } from "./enrollment-completion";
 
@@ -245,6 +246,7 @@ export async function sendViaOutbox(
     await db.delete(outboxEmails).where(eq(outboxEmails.id, outboxId));
     throw err;
   }
+  await recordCopyMessageIds(db, sentEmailId, send);
 
   const after = Math.floor(Date.now() / 1000);
 
@@ -513,6 +515,7 @@ export async function attemptOutboxRow(
       ])
     ).length > 0;
   const send = hardBounced ? null : await sendWithSuppressionCheck(input);
+  if (send) await recordCopyMessageIds(db, row.sentEmailId, send);
 
   const after = Math.floor(Date.now() / 1000);
 

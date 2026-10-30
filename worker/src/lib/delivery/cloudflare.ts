@@ -3,12 +3,13 @@ import type { DeliveryEvent, DeliveryEventKind } from "./types";
 /** Every Cloudflare Email Sending event's `type` starts with this. */
 export const CLOUDFLARE_EVENT_PREFIX = "cf.email.sending.message.";
 
-const HANDLED: Record<string, DeliveryEventKind> = {
-  bounced: "bounced",
-  complained: "complained",
-  failed: "failed",
-  rejected: "rejected",
-};
+// A Map, not an object: `message.constructor` must not find a prototype key.
+const HANDLED = new Map<string, DeliveryEventKind>([
+  ["bounced", "bounced"],
+  ["complained", "complained"],
+  ["failed", "failed"],
+  ["rejected", "rejected"],
+]);
 
 const DETAIL_MAX = 500;
 
@@ -40,7 +41,7 @@ export function parseCloudflareEvent(
   const root = obj(body);
   if (!root || typeof root.type !== "string") return null;
   if (!root.type.startsWith(CLOUDFLARE_EVENT_PREFIX)) return null;
-  const kind = HANDLED[root.type.slice(CLOUDFLARE_EVENT_PREFIX.length)];
+  const kind = HANDLED.get(root.type.slice(CLOUDFLARE_EVENT_PREFIX.length));
   if (!kind) return "ignore";
 
   const payload = obj(root.payload);

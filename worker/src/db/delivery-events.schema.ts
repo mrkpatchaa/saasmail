@@ -39,3 +39,22 @@ export const deliveryEvents = sqliteTable(
 );
 
 export type DeliveryEventRow = typeof deliveryEvents.$inferSelect;
+
+/**
+ * The provider Message-ID of each further copy of a sent message: a
+ * non-transactional send goes to each recipient separately, and its
+ * `sent_emails` row keeps only the first copy's id. Delivery events about the
+ * other copies correlate through this table.
+ */
+export const deliveryMessageIds = sqliteTable(
+  "delivery_message_ids",
+  {
+    /** Bracketed, as `sent_emails.message_id`. */
+    messageId: text("message_id").primaryKey(),
+    sentEmailId: text("sent_email_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("delivery_message_ids_sent_email_idx").on(table.sentEmailId),
+  ],
+);

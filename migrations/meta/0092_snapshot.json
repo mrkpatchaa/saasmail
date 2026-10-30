@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "134027d3-de76-47b8-b80c-7485737566fb",
+  "id": "0366f405-5648-4126-bf48-36b5b1ebd742",
   "prevId": "dd548a54-ea9a-4560-9f32-b28592a7c257",
   "tables": {
     "accounts": {
@@ -3456,6 +3456,45 @@
           "columns": [
             "campaign_id",
             "kind"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "delivery_message_ids": {
+      "name": "delivery_message_ids",
+      "columns": {
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "sent_email_id": {
+          "name": "sent_email_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "delivery_message_ids_sent_email_idx": {
+          "name": "delivery_message_ids_sent_email_idx",
+          "columns": [
+            "sent_email_id"
           ],
           "isUnique": false
         }
