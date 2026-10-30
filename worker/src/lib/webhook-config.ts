@@ -1,6 +1,6 @@
 import { AUDIT_ACTIONS } from "./audit/events";
 import { recordAudit } from "./audit/record";
-import { eq, sql } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { appSettings } from "../db/app-settings.schema";
 
@@ -217,55 +217,100 @@ const SAME_GENERATION = (generation: number) =>
       AND COALESCE(json_extract(value, '$.generation'), 0) = ${generation}`;
 
 /**
- * After a delivery of `generation` ended failed: add 1 to the config's
- * `failStreak` and, at `AUTO_DISABLE_AFTER`, pause the outbound events, in
- * one statement. Concurrent failures therefore pause once, and a stale
- * generation never touches a newer save. True when this call paused it (and
- * recorded `webhook.auto_disabled`).
+ * After a delivery of `generation` ended failed: the statement that adds 1 to
+ * the config's `failStreak` and, at `AUTO_DISABLE_AFTER`, pauses the outbound
+ * events, in one statement, for the caller to batch with the row's own
+ * transition (it changes nothing unless `when` holds). Concurrent failures
+ * therefore pause once, and a stale generation never touches a newer save.
+ * Its `disabledAt` row is non-null only for the call that paused: pass it to
+ * `auditAutoDisable`.
  */
+export function failureStatement(
+  db: DrizzleD1Database<any>,
+  generation: number,
+  last: { status: number | null; error: string | null },
+  now: number,
+  when: SQL = sql`1`,
+) {
+  const lastResult =
+    last.status !== null ? `HTTP ${last.status}` : (last.error ?? "no answer");
+  const reason = `${AUTO_DISABLE_AFTER} deliveries in a row failed (last: ${lastResult})`;
+  const pauses = sql`${STREAK} + 1 >= ${AUTO_DISABLE_AFTER}`;
+  return db
+    .update(appSettings)
+    .set({
+      value: sql`json_set(value,
+                          '$.failStreak', ${STREAK} + 1,
+                          '$.disabledAt', CASE WHEN ${pauses} THEN ${now} END,
+                          '$.disabledReason', CASE WHEN ${pauses} THEN ${reason} END)`,
+      updatedAt: sql`CASE WHEN ${pauses} THEN ${now} ELSE updated_at END`,
+    })
+    .where(
+      sql`${SAME_GENERATION(generation)}
+          AND json_extract(value, '$.disabledAt') IS NULL AND ${when}`,
+    )
+    .returning({
+      disabledAt: sql<number | null>`json_extract(value, '$.disabledAt')`,
+      reason: sql<string | null>`json_extract(value, '$.disabledReason')`,
+    });
+}
+
+/**
+ * Record `webhook.auto_disabled` when `failureStatement`'s result shows this
+ * call paused. True when it did.
+ */
+export async function auditAutoDisable(
+  db: DrizzleD1Database<any>,
+  generation: number,
+  rows: { disabledAt: number | null; reason: string | null }[],
+): Promise<boolean> {
+  const [row] = rows;
+  if (row?.disabledAt == null) return false;
+  await recordAudit(db, {
+    action: AUDIT_ACTIONS.webhookAutoDisabled,
+    targetType: "setting",
+    targetId: WEBHOOK_KEY,
+    summary: `Paused the webhook's delivery events: ${row.reason}`,
+    details: { key: WEBHOOK_KEY, generation },
+  });
+  return true;
+}
+
+/** `failureStatement` on its own, then its audit event. */
 export async function recordFailure(
   db: DrizzleD1Database<any>,
   generation: number,
   last: { status: number | null; error: string | null },
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
-  const lastResult =
-    last.status !== null ? `HTTP ${last.status}` : (last.error ?? "no answer");
-  const reason = `${AUTO_DISABLE_AFTER} deliveries in a row failed (last: ${lastResult})`;
-  const pauses = sql`${STREAK} + 1 >= ${AUTO_DISABLE_AFTER}`;
-  const [row] = await db.all<{ disabled_at: number | null }>(sql`
-    UPDATE app_settings
-       SET value = json_set(value,
-                            '$.failStreak', ${STREAK} + 1,
-                            '$.disabledAt', CASE WHEN ${pauses} THEN ${now} END,
-                            '$.disabledReason', CASE WHEN ${pauses} THEN ${reason} END),
-           updated_at = CASE WHEN ${pauses} THEN ${now} ELSE updated_at END
-     WHERE ${SAME_GENERATION(generation)}
-       AND json_extract(value, '$.disabledAt') IS NULL
-     RETURNING json_extract(value, '$.disabledAt') AS disabled_at
-  `);
-  if (row?.disabled_at == null) return false;
-  await recordAudit(db, {
-    action: AUDIT_ACTIONS.webhookAutoDisabled,
-    targetType: "setting",
-    targetId: WEBHOOK_KEY,
-    summary: `Paused the webhook's delivery events: ${reason}`,
-    details: { key: WEBHOOK_KEY, generation },
-  });
-  return true;
+  const rows = await failureStatement(db, generation, last, now);
+  return auditAutoDisable(db, generation, rows);
 }
 
 /**
- * After a delivery of `generation` was delivered: the run of failures starts
- * again. Writes nothing when there is no run (the common path).
+ * After a delivery of `generation` was delivered: the statement that starts
+ * the run of failures again, unless `when` fails. It writes nothing when
+ * there is no run (the common path), nor while paused: the pause keeps the
+ * run that caused it.
  */
+export function successStatement(
+  db: DrizzleD1Database<any>,
+  generation: number,
+  when: SQL = sql`1`,
+) {
+  return db
+    .update(appSettings)
+    .set({ value: sql`json_set(value, '$.failStreak', 0)` })
+    .where(
+      sql`${SAME_GENERATION(generation)} AND ${STREAK} > 0
+          AND json_extract(value, '$.disabledAt') IS NULL AND ${when}`,
+    );
+}
+
+/** `successStatement` on its own. */
 export async function recordSuccess(
   db: DrizzleD1Database<any>,
   generation: number,
 ): Promise<void> {
-  await db.run(sql`
-    UPDATE app_settings
-       SET value = json_set(value, '$.failStreak', 0)
-     WHERE ${SAME_GENERATION(generation)} AND ${STREAK} > 0
-  `);
+  await successStatement(db, generation);
 }

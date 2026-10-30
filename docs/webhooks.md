@@ -90,7 +90,7 @@ Delivery events carry the same `X-SaaSMail-Signature` and `X-SaaSMail-Event` hea
 
 `message.received` keeps its single best-effort attempt. Delivery events are retried and delivered **at least once**: up to 4 attempts, 1, 5 and 30 minutes apart, on a network error, a timeout, `408`, `429` or a `5xx`. Any other `4xx` fails at once. Every attempt sends exactly the same body. Saving the config (a new URL or secret) cancels the deliveries still pending from before it.
 
-**Pause after 20 failures.** When 20 deliveries in a row fail (retries spent, or refused with a `4xx`), the delivery events pause: none are recorded until an admin re-enables them (a delivered event starts the count again; saving or re-enabling starts it at 0), and the audit log records `webhook.auto_disabled`. The API keys page shows "Delivery events paused after 20 failed deliveries" with the last result and a **Re-enable** button (`POST /api/webhook/enable`, audited as `webhook.enabled`). Saving the config re-enables it too. `message.received` keeps being sent while paused and never counts.
+**Pause after 20 failures.** When 20 deliveries in a row fail (retries spent, or refused with a `4xx`), the delivery events pause: none are recorded until an admin re-enables them (a delivered event starts the count again, except one that finishes after the pause; saving or re-enabling starts it at 0), and the audit log records `webhook.auto_disabled`. The API keys page shows "Delivery events paused after 20 failed deliveries" with the last result and a **Re-enable** button (`POST /api/webhook/enable`, audited as `webhook.enabled`). Saving the config re-enables it too. `message.received` keeps being sent while paused and never counts.
 
 ### Recent deliveries
 

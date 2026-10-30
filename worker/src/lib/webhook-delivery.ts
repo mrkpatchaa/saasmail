@@ -1,4 +1,5 @@
 import { and, eq, gte, isNull, lt, or, sql, type SQL } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { sentEmails } from "../db/sent-emails.schema";
@@ -6,9 +7,10 @@ import { webhookDeliveries } from "../db/webhook-deliveries.schema";
 import { isDemoMode } from "./is-dev";
 import { bracketedMessageId } from "./message-id";
 import {
+  auditAutoDisable,
+  failureStatement,
   getWebhookConfig,
-  recordFailure,
-  recordSuccess,
+  successStatement,
   webhookWants,
   type OutboundWebhookEvent,
   type WebhookConfig,
@@ -264,18 +266,22 @@ function parseAddressList(value: string | null): { email: string }[] {
   }
 }
 
-/** The `message` object of a sent row, or null when it does not exist. */
+/**
+ * The `message` object of a sent row, and its Bcc addresses (trimmed, lower
+ * case, never in the payload), or null when the row does not exist.
+ */
 export async function webhookMessageOf(
   db: Db,
   sentEmailId: string,
   baseUrl: string,
-): Promise<OutboundWebhookMessage | null> {
+): Promise<{ message: OutboundWebhookMessage; bcc: string[] } | null> {
   const [row] = await db
     .select({
       fromAddress: sentEmails.fromAddress,
       toAddress: sentEmails.toAddress,
       additionalTo: sentEmails.additionalTo,
       cc: sentEmails.cc,
+      bcc: sentEmails.bcc,
       subject: sentEmails.subject,
       messageId: sentEmails.messageId,
       campaignId: sentEmails.campaignId,
@@ -288,19 +294,24 @@ export async function webhookMessageOf(
     .limit(1);
   if (!row) return null;
   return {
-    id: sentEmailId,
-    messageId: row.messageId,
-    from: row.fromAddress,
-    recipients: webhookRecipients(row.toAddress, [
-      parseAddressList(row.additionalTo),
-      parseAddressList(row.cc),
-    ]),
-    subject: row.subject,
-    campaignId: row.campaignId,
-    sequenceId: row.sequenceId,
-    sequenceEnrollmentId: row.sequenceEnrollmentId,
-    conversationId: row.conversationId,
-    url: messageUrl(baseUrl, sentEmailId),
+    message: {
+      id: sentEmailId,
+      messageId: row.messageId,
+      from: row.fromAddress,
+      recipients: webhookRecipients(row.toAddress, [
+        parseAddressList(row.additionalTo),
+        parseAddressList(row.cc),
+      ]),
+      subject: row.subject,
+      campaignId: row.campaignId,
+      sequenceId: row.sequenceId,
+      sequenceEnrollmentId: row.sequenceEnrollmentId,
+      conversationId: row.conversationId,
+      url: messageUrl(baseUrl, sentEmailId),
+    },
+    bcc: parseAddressList(row.bcc).map((entry) =>
+      entry.email.trim().toLowerCase(),
+    ),
   };
 }
 
@@ -521,7 +532,21 @@ function spent(now: number): SQL {
   )!;
 }
 
-/** Finish a pending row under `guard`; true when this call did it. */
+/**
+ * Marks one finish in `claimed_until`: negative, so never a live claim (a
+ * claim is a future Unix time), and random, so no other finish of the row
+ * carries it.
+ */
+function finishMarker(): number {
+  return -1 - Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+}
+
+/**
+ * Finish a pending row under `guard`; `finished` is true when this call did
+ * it. `then` builds a statement that runs in the same D1 batch (one
+ * transaction), given the condition that holds only when this call's
+ * transition happened; `followUp` is its result.
+ */
 async function finishDelivery(
   db: Db,
   id: string,
@@ -529,13 +554,15 @@ async function finishDelivery(
   guard: SQL,
   fields: { lastStatus?: number | null; lastError?: string | null } = {},
   now: number = nowSeconds(),
-): Promise<boolean> {
-  const rows = await db
+  then?: (finished: SQL) => BatchItem<"sqlite">,
+): Promise<{ finished: boolean; followUp: unknown }> {
+  const marker = finishMarker();
+  const update = db
     .update(webhookDeliveries)
     .set({
       status,
       payload: null,
-      claimedUntil: null,
+      claimedUntil: marker,
       finishedAt: now,
       ...fields,
     })
@@ -547,28 +574,53 @@ async function finishDelivery(
       ),
     )
     .returning({ id: webhookDeliveries.id });
-  return rows.length > 0;
+  if (!then) {
+    return { finished: (await update).length > 0, followUp: null };
+  }
+  const finished = sql`EXISTS (SELECT 1 FROM webhook_deliveries AS wd
+                               WHERE wd.id = ${id} AND wd.status = ${status}
+                                 AND wd.claimed_until = ${marker})`;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [rows, followUp] = (await db.batch([
+    update,
+    then(finished),
+  ] as any)) as [unknown[], unknown];
+  return { finished: rows.length > 0, followUp };
 }
 
-/** A final failure, counted toward the pause when this call made it. */
+/**
+ * A final failure, counted toward the pause in the same transaction when
+ * this call made it: a D1 error leaves both undone (the row stays pending).
+ */
 async function failDelivery(
   db: Db,
   row: { id: string; generation: number },
   guard: SQL,
   fields: { lastStatus: number | null; lastError: string | null },
-  now?: number,
+  now: number = nowSeconds(),
 ): Promise<boolean> {
-  if (!(await finishDelivery(db, row.id, "failed", guard, fields, now))) {
-    return false;
-  }
-  try {
-    await recordFailure(db, row.generation, {
-      status: fields.lastStatus,
-      error: fields.lastError,
-    });
-  } catch (err) {
-    console.error(`[webhook] failure count not updated:`, err);
-  }
+  const { finished, followUp } = await finishDelivery(
+    db,
+    row.id,
+    "failed",
+    guard,
+    fields,
+    now,
+    (done) =>
+      failureStatement(
+        db,
+        row.generation,
+        { status: fields.lastStatus, error: fields.lastError },
+        now,
+        done,
+      ),
+  );
+  if (!finished) return false;
+  await auditAutoDisable(
+    db,
+    row.generation,
+    followUp as { disabledAt: number | null; reason: string | null }[],
+  ).catch((err) => console.error(`[webhook] pause not audited:`, err));
   return true;
 }
 
@@ -727,11 +779,15 @@ export async function runWebhookDelivery(
       lastError: cut(result.error),
     };
     if (result.ok) {
-      if (await finishDelivery(db, row.id, "delivered", held, fields)) {
-        await recordSuccess(db, row.generation).catch((err) =>
-          console.error(`[webhook] failure count not reset:`, err),
-        );
-      }
+      await finishDelivery(
+        db,
+        row.id,
+        "delivered",
+        held,
+        fields,
+        undefined,
+        (done) => successStatement(db, row.generation, done),
+      );
       msg.ack();
       return;
     }
@@ -830,13 +886,17 @@ export async function sweepWebhookDeliveries(
     .limit(SWEEP_LIMIT);
   for (const row of overdue) {
     if (row.attempts >= WEBHOOK_MAX_ATTEMPTS) {
+      // A D1 error leaves the row pending for the next sweep.
       const failed = await failDelivery(
         db,
         row,
         spent(now),
         { lastStatus: row.lastStatus, lastError: row.lastError },
         now,
-      );
+      ).catch((err) => {
+        console.error(`[webhook] delivery ${row.id} not finished:`, err);
+        return false;
+      });
       if (failed) counts.failed += 1;
       continue;
     }

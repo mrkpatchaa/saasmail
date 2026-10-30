@@ -32,7 +32,10 @@ export const webhookDeliveries = sqliteTable(
     status: text("status").notNull(),
     /** Attempts claimed so far: counted when an attempt starts. */
     attempts: integer("attempts").notNull().default(0),
-    /** Unix seconds until which one consumer holds the current attempt. */
+    /**
+     * Unix seconds until which one consumer holds the current attempt. A
+     * finished row keeps the negative marker of the call that finished it.
+     */
     claimedUntil: integer("claimed_until"),
     /** HTTP status of the last attempt. */
     lastStatus: integer("last_status"),

@@ -25,7 +25,8 @@ import {
 } from "./webhook-fixtures";
 import { auditEvents } from "../db/audit-events.schema";
 import { webhookDeliveries } from "../db/webhook-deliveries.schema";
-import { getWebhookConfig } from "../lib/webhook-config";
+import { sql } from "drizzle-orm";
+import { getWebhookConfig, recordFailure } from "../lib/webhook-config";
 import {
   buildWebhookPayload,
   deliverWebhook,
@@ -167,6 +168,67 @@ describe("outbound delivery edges", () => {
     });
     expect(fetchImpl).toHaveBeenCalledTimes(20);
     expect((await getWebhookConfig(getDb()))?.disabledAt).not.toBeNull();
+  });
+
+  async function failStreak(): Promise<number> {
+    const [row] = await getDb().all<{ streak: number }>(
+      sql`SELECT json_extract(value, '$.failStreak') AS streak FROM app_settings WHERE key = 'webhook'`,
+    );
+    return row.streak;
+  }
+
+  it("never leaves a final failure uncounted when the streak update fails", async () => {
+    await configureWebhook(["message.sent"]);
+    await recordSent("se-1");
+    const pointer = pointerOf(queue.sent[0]);
+    const fetchImpl = scriptedFetch([404]);
+    // Every write to the config fails, as a D1 error after the row update would.
+    await getDb().run(
+      sql`CREATE TRIGGER fail_webhook_setting BEFORE UPDATE ON app_settings WHEN NEW.key = 'webhook' BEGIN SELECT RAISE(ABORT, 'boom'); END`,
+    );
+    try {
+      await runWebhookDelivery(getDb(), bindings, queueMessage(pointer, 1), {
+        fetchImpl,
+      });
+    } finally {
+      await getDb().run(sql`DROP TRIGGER IF EXISTS fail_webhook_setting`);
+    }
+    // The failure and its count commit together or not at all.
+    let [row] = await deliveryRows();
+    expect(row.status).toBe("pending");
+    expect(await failStreak()).toBe(0);
+
+    await runWebhookDelivery(getDb(), bindings, queueMessage(pointer, 2), {
+      fetchImpl,
+    });
+    [row] = await deliveryRows();
+    expect(row.status).toBe("failed");
+    expect(await failStreak()).toBe(1);
+  });
+
+  it("keeps the run of failures when a success finishes after a racing failure paused", async () => {
+    await configureWebhook(["message.sent"]);
+    const { generation } = (await getWebhookConfig(getDb()))!;
+    for (let i = 0; i < 19; i += 1) {
+      await recordFailure(getDb(), generation, { status: 500, error: null });
+    }
+    await recordSent("se-1");
+    // While this POST is in flight, another delivery's 20th failure pauses.
+    const fetchImpl = vi.fn(async () => {
+      await recordFailure(getDb(), generation, { status: 500, error: null });
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+    await runWebhookDelivery(
+      getDb(),
+      bindings,
+      queueMessage(pointerOf(queue.sent[0])),
+      { fetchImpl },
+    );
+    const [row] = await deliveryRows();
+    expect(row.status).toBe("delivered");
+    const cfg = await getWebhookConfig(getDb());
+    expect(cfg?.disabledAt).not.toBeNull();
+    expect(await failStreak()).toBe(20);
   });
 
   it("keeps the 4-attempt cap when the sweep resends a pointer lost after two retried attempts (408, 429)", async () => {
