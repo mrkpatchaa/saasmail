@@ -9,10 +9,13 @@ import {
   cleanDb,
   createTestEmail,
   createTestPerson,
+  createTestSentEmail,
   createTestUser,
   getDb,
 } from "./helpers";
 import { senderIdentities } from "../db/sender-identities.schema";
+import { emails } from "../db/emails.schema";
+import { pruneTestMail } from "../lib/test-mail";
 
 const INBOX = "e2e@saasmail.test";
 
@@ -145,5 +148,63 @@ describe("PATCH /api/admin/inboxes/{email} — purpose", () => {
       testRetentionDays: null,
     });
     expect(await identity()).toBeUndefined();
+  });
+
+  // Retention deletes by the inbox's current purpose, so the switch counts
+  // every received message, archived or trashed ones included, and no sent
+  // one; an inbox switched back to mail keeps what it has.
+  it("counts archived and trashed mail but not sent mail, and stops pruning once switched back", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const day = 24 * 60 * 60;
+    await createTestPerson();
+
+    // Only sent mail: still an empty inbox.
+    await createTestSentEmail({ fromAddress: INBOX });
+    expect((await patch(apiKey, { purpose: "test" })).status).toBe(200);
+
+    // Only archived and trashed received mail: not empty.
+    const ARCHIVED = "archived@saasmail.test";
+    await createTestEmail({
+      id: "archived-1",
+      recipient: ARCHIVED,
+      messageId: "archived-1@example.com",
+    });
+    await env.DB.prepare(
+      "INSERT INTO mailbox_message_state (inbox, message_kind, message_id, archived_at, trashed_at, updated_at) VALUES (?, 'received', 'archived-1', ?, ?, ?)",
+    )
+      .bind(ARCHIVED, now, now, now)
+      .run();
+    expect((await patch(apiKey, { purpose: "test" }, ARCHIVED)).status).toBe(
+      409,
+    );
+    expect(await identity(ARCHIVED)).toBeUndefined();
+
+    const oldMail = (id: string) =>
+      getDb()
+        .insert(emails)
+        .values({
+          id,
+          personId: "sender-1",
+          recipient: INBOX,
+          subject: "old",
+          messageId: `<${id}@example.com>`,
+          receivedAt: now - 10 * day,
+          createdAt: now - 10 * day,
+        });
+    const ids = async () =>
+      (await getDb().select({ id: emails.id }).from(emails)).map((r) => r.id);
+
+    // While it is a test inbox, old mail goes...
+    await oldMail("old-while-test");
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(1);
+    expect(await ids()).not.toContain("old-while-test");
+
+    // ...and once it is a normal inbox again, old mail stays.
+    await oldMail("old-after-switch");
+    expect((await patch(apiKey, { purpose: "mail" })).status).toBe(200);
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(0);
+    expect(await ids()).toEqual(
+      expect.arrayContaining(["old-after-switch", "archived-1"]),
+    );
   });
 });

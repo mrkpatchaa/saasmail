@@ -5,6 +5,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { handleEmail } from "../email-handler";
 import { emails } from "../db/emails.schema";
+import { rules } from "../db/rules.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { setRejectUnknownRecipients } from "../lib/inbound-rejection";
@@ -64,9 +65,9 @@ async function addInbox(email: string, purpose: "mail" | "test") {
     .values({ email, purpose, createdAt: now, updatedAt: now });
 }
 
-async function deliver(to: string, id: string) {
+async function deliver(to: string, id: string, from = "no-reply@example.com") {
   const raw = [
-    "From: App <no-reply@example.com>",
+    `From: App <${from}>`,
     `To: ${to}`,
     "Subject: Reset your password",
     `Message-ID: <${id}@example.com>`,
@@ -77,7 +78,7 @@ async function deliver(to: string, id: string) {
   const setReject = vi.fn();
   const waitUntil = vi.fn();
   const message = {
-    from: "no-reply@example.com",
+    from,
     to,
     raw: new Response(raw).body!,
     rawSize: raw.length,
@@ -244,5 +245,60 @@ describe("ingest — test inboxes", () => {
         .from(emails)
         .where(eq(emails.recipient, "nobody+y@saasmail.test")),
     ).toHaveLength(0);
+  });
+
+  // Where unknown recipients are refused, the plus address must resolve to the
+  // test inbox before that check, and a reject rule must not see test mail;
+  // the blocklist still drops a blocked sender's test mail.
+  it("stores plus mail despite unknown-recipient rejection and a reject rule, but drops a blocked sender", async () => {
+    await addInbox(TEST_INBOX, "test");
+    await setRejectUnknownRecipients(getDb(), true);
+    const now = Math.floor(Date.now() / 1000);
+    await getDb()
+      .insert(rules)
+      .values({
+        id: "reject-all",
+        name: "Refuse everything",
+        inbox: null,
+        trigger: "message.received",
+        conditions: [],
+        actions: [{ type: "reject" }] as never,
+        position: 0,
+        stopProcessing: 0,
+        enabled: 1,
+        matchCount: 0,
+        createdAt: now,
+        updatedAt: now,
+      });
+    await env.DB.prepare(
+      "INSERT INTO blocklist (id, type, value, created_at) VALUES ('b1', 'email', 'spammer@example.com', ?)",
+    )
+      .bind(now)
+      .run();
+
+    const stored = await deliver("e2e+run42@saasmail.test", "ok");
+    const blocked = await deliver(
+      "e2e+run43@saasmail.test",
+      "blocked",
+      "spammer@example.com",
+    );
+
+    expect(stored.setReject).not.toHaveBeenCalled();
+    expect(blocked.setReject).not.toHaveBeenCalled();
+    const rows = await getDb()
+      .select({
+        recipient: emails.recipient,
+        detail: emails.recipientDetail,
+      })
+      .from(emails);
+    expect(rows).toEqual([{ recipient: TEST_INBOX, detail: "run42" }]);
+    const [rule] = await getDb()
+      .select({ matchCount: rules.matchCount })
+      .from(rules);
+    expect(rule.matchCount).toBe(0);
+    const rejections = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM audit_events WHERE action = 'inbound.rejected'",
+    ).first<{ n: number }>();
+    expect(rejections?.n).toBe(0);
   });
 });

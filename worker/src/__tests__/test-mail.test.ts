@@ -515,3 +515,44 @@ describe("test inbox end to end", () => {
     expect(normal.status).toBe(403);
   });
 });
+
+describe("GET /api/test-mail/wait — the subject filter", () => {
+  // The subject is a case-insensitive substring (docs/test-mail.md): a `%` or
+  // `_` in it is a literal character, never a wildcard that lets an earlier
+  // message match, and case folds for French capitals as for ASCII ones.
+  it("treats % and _ literally and folds accented capitals", async () => {
+    const { apiKey } = await createTestUser({ id: "admin-1" });
+    await addInbox(TEST_INBOX, "test");
+    const now = Math.floor(Date.now() / 1000);
+    // Earlier near-matches that a wildcard would let through first.
+    await addMail({ subject: "Remise de 100 euros", receivedAt: now - 50 });
+    await addMail({ subject: "code-a-usage", receivedAt: now - 40 });
+    await addMail({ subject: "Bienvenue", receivedAt: now - 30 });
+    const percent = await addMail({
+      subject: "Remise de 100% sur votre abonnement",
+      receivedAt: now - 20,
+    });
+    const underscore = await addMail({
+      subject: "code_a_usage unique",
+      receivedAt: now - 10,
+    });
+    const accented = await addMail({
+      subject: "Réinitialisation de votre mot de passe",
+      receivedAt: now - 5,
+    });
+
+    const first = async (subject: string) => {
+      const res = await authFetch(
+        waitUrl({ inbox: TEST_INBOX, subject, since: now - 60, timeout: 1 }),
+        { apiKey },
+      );
+      return res.status === 200 ? ((await res.json()) as TestMail).id : null;
+    };
+
+    expect(await first("100%")).toBe(percent);
+    expect(await first("code_a")).toBe(underscore);
+    expect(await first("réinitialisation")).toBe(accented);
+    // Case-insensitive, as for "WELCOME" above, with a capital É.
+    expect(await first("RÉINITIALISATION")).toBe(accented);
+  });
+});
