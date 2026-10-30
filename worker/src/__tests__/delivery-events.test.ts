@@ -1320,18 +1320,26 @@ describe("delivery events raise webhooks", () => {
     expect(await deliveryRows()).toEqual([]);
   });
 
-  it("never names a Bcc recipient in delivery.recipient", async () => {
+  it("never names a Bcc recipient, in delivery.recipient or the provider's text", async () => {
     await createTestSentEmail({ id: "se-1", messageId: MESSAGE_ID });
     await getDb().run(
       sql`UPDATE sent_emails SET bcc = ${JSON.stringify([{ email: "Hidden@Example.com", name: null }])} WHERE id = 'se-1'`,
     );
-    await runQueue(
-      queueMessage(bouncedEvent({ recipient: " hidden@example.com " })),
-    );
+    // SMTP bounce text usually quotes the address.
+    const quoted = "550 5.1.1 <hidden@example.com>: User unknown";
+    const event = bouncedEvent({ recipient: " hidden@example.com " });
+    event.payload.bounce!.reason = quoted;
+    event.payload.delivery.smtpResponse = quoted;
+    await runQueue(queueMessage(event));
     const [row] = await deliveryRows();
     const payload = JSON.parse(row.payload!);
-    expect(payload.delivery.recipient).toBeNull();
-    expect(JSON.stringify(payload)).not.toMatch(/hidden@example\.com/i);
+    expect(payload.delivery).toMatchObject({
+      recipient: null,
+      reason: null,
+      smtpStatus: "550",
+      enhancedStatus: "5.1.1",
+    });
+    expect(row.payload).not.toMatch(/hidden@example\.com/i);
   });
 
   it("raises none for an uncorrelated event or an unticked one", async () => {

@@ -119,7 +119,8 @@ export async function deliveryWebhook(
       status: event.kind,
       bounceType: event.bounceType,
       ...splitSmtpStatus(event.smtpStatus),
-      reason: event.detail ? event.detail.slice(0, 200) : null,
+      // The provider's text usually quotes the address: dropped for a Bcc.
+      reason: !blind && event.detail ? event.detail.slice(0, 200) : null,
       provider: event.provider,
     },
   };

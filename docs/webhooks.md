@@ -81,7 +81,7 @@ Every delivery event has the same shape. It carries addresses and the subject, n
 
 - `message.id` is the `id` that `POST /api/send`, `POST /api/send/reply/{id}` and the MCP send tools return: store it with the send and join on it.
 - `message.recipients` lists the To and Cc recipients that were sent to, never a Bcc.
-- `delivery.recipient` is null when the whole message failed, and when the provider reports about a Bcc recipient (a Bcc stays blind). `delivery.reason` is at most 200 characters.
+- `delivery.recipient` is null when the whole message failed, and when the provider reports about a Bcc recipient, which also nulls `delivery.reason` (a bounce text usually quotes the address, and a Bcc stays blind). `delivery.reason` is at most 200 characters.
 - `occurredAt` is when it happened (unix seconds): reject a request whose `occurredAt` is older than you accept, to refuse old replays.
 
 ### Headers, retries and dedupe
