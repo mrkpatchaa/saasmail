@@ -51,6 +51,7 @@ import { onEmailSent } from "@/lib/email-events";
 import { itemTitle } from "@/hooks/useMailList";
 import ReplyComposer from "@/components/ReplyComposer";
 import DeliveryProblemBadge from "@/components/DeliveryProblemBadge";
+import InjectionChip from "@/components/InjectionChip";
 import EmailHtmlModal from "@/components/EmailHtmlModal";
 import ImageAttachments, {
   splitAttachments,
@@ -270,6 +271,11 @@ function MessageCard({
                 {isSent && email.status === "retrying" && (
                   <span className="ml-1 rounded-[4px] bg-warning-bg px-1.5 text-xs text-warning">
                     Retrying
+                  </span>
+                )}
+                {!isSent && email.injectionVerdict === "flagged" && (
+                  <span className="ml-1">
+                    <InjectionChip verdict={email.injectionVerdict} />
                   </span>
                 )}
               </div>
