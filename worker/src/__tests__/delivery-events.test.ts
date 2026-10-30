@@ -34,7 +34,10 @@ import {
 import { auditEvents } from "../db/audit-events.schema";
 import { campaigns } from "../db/campaigns.schema";
 import { contacts } from "../db/contacts.schema";
-import { deliveryEvents } from "../db/delivery-events.schema";
+import {
+  deliveryEvents,
+  deliveryMessageIds,
+} from "../db/delivery-events.schema";
 import { gmailAccounts } from "../db/gmail-accounts.schema";
 import { jmapSubmissions } from "../db/jmap-submissions.schema";
 import { listMembers } from "../db/list-members.schema";
@@ -1165,6 +1168,55 @@ describe("a Cc copy of a non-transactional send", () => {
         bouncedEvent({
           messageId: "<second@cf.test>",
           recipient: "second@example.com",
+        }),
+      ),
+    );
+    expect(outcome?.sentEmailId).toBe(result.id);
+  });
+
+  it("records all 49 Cc copies in one statement, and the last one correlates", async () => {
+    const sender: EmailSender = {
+      provider: "cloudflare",
+      async send(params) {
+        const local = String(params.to)
+          .replace(/^.*<|>.*$/g, "")
+          .split("@")[0];
+        return {
+          id: `<${local}@cf.test>`,
+          error: null,
+          deliveredMessageId: `<${local}@cf.test>`,
+        };
+      },
+      maxAttachmentBytes: () => 1e7,
+      maxMessageBytes: () => 1e7,
+    };
+    const cc = Array.from({ length: 49 }, (_, n) => ({
+      email: `cc${n + 1}@example.com`,
+    }));
+    const result = await sendEmail({
+      db: getDb(),
+      env: env as unknown as CloudflareBindings,
+      payload: {
+        to: "first@example.com",
+        cc,
+        fromAddress: INBOX,
+        subject: "News",
+        bodyHtml: "<p>news</p>",
+        transactional: false,
+      },
+      files: [],
+      allowed: { isAdmin: true },
+      sender,
+    });
+    expect(result.ok).toBe(true);
+    expect(await getDb().select().from(deliveryMessageIds)).toHaveLength(49);
+
+    const outcome = await recordDeliveryEvent(
+      getDb(),
+      parse(
+        bouncedEvent({
+          messageId: "<cc49@cf.test>",
+          recipient: "cc49@example.com",
         }),
       ),
     );

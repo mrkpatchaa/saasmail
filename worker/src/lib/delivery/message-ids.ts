@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { deliveryMessageIds } from "../../db/delivery-events.schema";
 import { bracketedMessageId } from "../message-id";
@@ -25,10 +26,12 @@ export async function recordCopyMessageIds(
   if (ids.length === 0) return;
   const now = Math.floor(Date.now() / 1000);
   try {
+    // One JSON parameter, not three per copy: D1 binds at most 100 values
+    // per statement, and a send may have up to 49 Cc copies.
     await db
       .insert(deliveryMessageIds)
-      .values(
-        ids.map((messageId) => ({ messageId, sentEmailId, createdAt: now })),
+      .select(
+        sql`SELECT value, ${sentEmailId}, ${now} FROM json_each(${JSON.stringify(ids)}) WHERE true`,
       )
       .onConflictDoNothing();
   } catch (error) {
