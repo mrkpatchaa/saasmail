@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyMigrations,
   authFetch,
@@ -229,20 +229,35 @@ describe("webhooks router", () => {
     expect(text).not.toContain("alice@example.com");
   });
 
-  it("POST /test sends a synthetic outbound event when asked", async () => {
+  it("POST /test sends a synthetic payload of the requested outbound event", async () => {
     const { apiKey } = await createTestUser({ role: "admin" });
     await authFetch("/api/webhook", {
       apiKey,
       method: "PUT",
-      body: JSON.stringify({ url: "http://127.0.0.1:1/webhook" }),
+      body: JSON.stringify({ url: "https://hook.example.com/events" }),
     });
-    const res = await authFetch("/api/webhook/test", {
-      apiKey,
-      method: "POST",
-      body: JSON.stringify({ event: "message.bounced" }),
-    });
-    expect(res.status).toBe(200);
-    expect(((await res.json()) as { ok: boolean }).ok).toBe(false);
+    const hook = vi.fn<typeof fetch>(
+      async () => new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", hook);
+    try {
+      const res = await authFetch("/api/webhook/test", {
+        apiKey,
+        method: "POST",
+        body: JSON.stringify({ event: "message.bounced" }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { ok: boolean }).ok).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(hook).toHaveBeenCalledOnce();
+    const [url, init] = hook.mock.calls[0];
+    expect(url).toBe("https://hook.example.com/events");
+    expect(new Headers(init?.headers).get("X-SaaSMail-Event")).toBe(
+      "message.bounced",
+    );
+    expect(JSON.parse(init?.body as string).event).toBe("message.bounced");
     expect(await getDb().select().from(webhookDeliveries)).toEqual([]);
   });
 });
