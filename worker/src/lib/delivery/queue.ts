@@ -106,14 +106,16 @@ export async function deliveryWebhook(
   const config = await getWebhookConfig(db);
   const name = WEBHOOK_EVENT[event.kind];
   if (!webhookWants(config, name)) return null;
-  const message = await webhookMessageOf(db, sentEmailId, env.BASE_URL);
-  if (!message) return null;
+  const sent = await webhookMessageOf(db, sentEmailId, env.BASE_URL);
+  if (!sent) return null;
+  // A Bcc recipient stays blind: the event never names them.
+  const blind = sent.bcc.includes(event.recipient.trim().toLowerCase());
   const input = {
     event: name,
     occurredAt: event.occurredAt,
-    message,
+    message: sent.message,
     delivery: {
-      recipient: event.recipient,
+      recipient: blind ? null : event.recipient,
       status: event.kind,
       bounceType: event.bounceType,
       ...splitSmtpStatus(event.smtpStatus),

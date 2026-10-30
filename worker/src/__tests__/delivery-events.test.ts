@@ -11,7 +11,7 @@ import {
   vi,
 } from "vitest";
 import { env } from "cloudflare:workers";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
   applyMigrations,
   authFetch,
@@ -1318,6 +1318,20 @@ describe("delivery events raise webhooks", () => {
     ).rejects.toThrow();
     expect(await getDb().select().from(deliveryEvents)).toEqual([]);
     expect(await deliveryRows()).toEqual([]);
+  });
+
+  it("never names a Bcc recipient in delivery.recipient", async () => {
+    await createTestSentEmail({ id: "se-1", messageId: MESSAGE_ID });
+    await getDb().run(
+      sql`UPDATE sent_emails SET bcc = ${JSON.stringify([{ email: "Hidden@Example.com", name: null }])} WHERE id = 'se-1'`,
+    );
+    await runQueue(
+      queueMessage(bouncedEvent({ recipient: " hidden@example.com " })),
+    );
+    const [row] = await deliveryRows();
+    const payload = JSON.parse(row.payload!);
+    expect(payload.delivery.recipient).toBeNull();
+    expect(JSON.stringify(payload)).not.toMatch(/hidden@example\.com/i);
   });
 
   it("raises none for an uncorrelated event or an unticked one", async () => {
