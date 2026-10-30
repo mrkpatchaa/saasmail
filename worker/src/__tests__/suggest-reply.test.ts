@@ -342,6 +342,7 @@ describe("suggested reply consumer", () => {
       .set({
         bodyText: null,
         bodyHtml: "<p>Hello <strong>there</strong> &amp; welcome.</p>",
+        subject: `${"s".repeat(1000)}PAST-THE-SCREEN`,
       })
       .where(eq(emails.id, emailId));
     const model = textModel(["SAFE", "Thanks for the note."]);
@@ -363,6 +364,10 @@ describe("suggested reply consumer", () => {
     );
     expect(JSON.stringify(model.doGenerateCalls[1])).toContain(
       "Hello there & welcome.",
+    );
+    // The draft sees no more of the subject than the check did.
+    expect(JSON.stringify(model.doGenerateCalls[1])).not.toContain(
+      "PAST-THE-SCREEN",
     );
   });
 

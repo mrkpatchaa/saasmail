@@ -52,8 +52,11 @@ Return exactly one token: SAFE or FLAG.`;
 export const SCREEN_TIMEOUT_MS = 15_000;
 export const SCREEN_OUTPUT_TOKENS = 256;
 
-/** What a verdict covers: at least what any unattended consumer sends. */
-const SUBJECT_LIMIT = 1000;
+/**
+ * What a verdict covers: at least what any unattended consumer sends. An
+ * unattended consumer quotes no more of the subject than this.
+ */
+export const SCREEN_SUBJECT_CHARS = 1000;
 const BODY_LIMIT = 4000;
 const ATTACHMENT_LIMIT = 20;
 const ATTACHMENT_FIELD_LIMIT = 100;
@@ -162,7 +165,7 @@ export function buildScreenPrompt(message: ScreenedMessage): string {
   return quoteUntrusted("MESSAGE", {
     from: message.from,
     fromName: message.fromName,
-    subject: message.subject?.slice(0, SUBJECT_LIMIT) ?? null,
+    subject: message.subject?.slice(0, SCREEN_SUBJECT_CHARS) ?? null,
     body: (text || html).slice(0, BODY_LIMIT),
     ...(text && htmlDiffers ? { htmlBody: html.slice(0, BODY_LIMIT) } : {}),
     attachments: message.attachments

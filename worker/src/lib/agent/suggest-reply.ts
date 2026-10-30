@@ -14,6 +14,7 @@ import { queryMessages } from "../messages/query";
 import { resolveCustomerScope } from "../customers";
 import {
   NO_REASONING_OPTIONS,
+  SCREEN_SUBJECT_CHARS,
   checkInbound,
   quoteUntrusted,
 } from "../injection-guard";
@@ -264,7 +265,8 @@ export async function runSuggestedReply(
       instructions,
       prompt: [
         quoteUntrusted("CURRENT MESSAGE", {
-          subject: email.subject,
+          // No more of the subject than the check saw.
+          subject: email.subject?.slice(0, SCREEN_SUBJECT_CHARS) ?? null,
           body: currentBody,
         }),
         quoteUntrusted("RECENT HISTORY", history),
