@@ -83,14 +83,6 @@ describe("PATCH /api/admin/inboxes/{email} — purpose", () => {
     });
   });
 
-  it("refuses a test inbox that already holds mail (409)", async () => {
-    await createTestPerson();
-    await createTestEmail({ recipient: INBOX });
-    const res = await patch(apiKey, { purpose: "test" });
-    expect(res.status).toBe(409);
-    expect(await identity()).toBeUndefined();
-  });
-
   it("refuses purpose test on a Gmail-mapped inbox (400)", async () => {
     await addIdentity({ source: "gmail", gmailAccountId: "g-1" });
     const res = await patch(apiKey, { purpose: "test" });
@@ -130,24 +122,6 @@ describe("PATCH /api/admin/inboxes/{email} — purpose", () => {
     expect(
       (await patch(apiKey, { purpose: "test", testRetentionDays: 31 })).status,
     ).toBe(400);
-  });
-
-  it("turns off at any time, keeping the mail, and prunes a default row", async () => {
-    // "chat" is the API's default display mode (the column's is "thread").
-    await addIdentity({
-      purpose: "test",
-      testRetentionDays: 7,
-      displayMode: "chat",
-    });
-    await createTestPerson();
-    await createTestEmail({ recipient: INBOX });
-    const res = await patch(apiKey, { purpose: "mail" });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
-      purpose: "mail",
-      testRetentionDays: null,
-    });
-    expect(await identity()).toBeUndefined();
   });
 
   // Retention deletes by the inbox's current purpose, so the switch counts

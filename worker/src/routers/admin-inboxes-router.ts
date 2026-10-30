@@ -1,7 +1,7 @@
 import { AUDIT_ACTIONS } from "../lib/audit/events";
 import { recordAudit } from "../lib/audit/record";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
 import { emails } from "../db/emails.schema";
@@ -939,50 +939,121 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
     nextPurpose === "mail" &&
     nextTestRetentionDays === null
   ) {
-    // Only while the mode is still the default: another admin may have just
-    // switched it (their backfill is running).
-    await db
+    // Only while every field this request leaves alone is still at its
+    // default (another admin may have just changed one, or switched the mode
+    // and started a backfill), checked by the DELETE itself.
+    const untouchedAtDefault = (given: boolean, condition: SQL) =>
+      given ? [] : [condition];
+    const s = senderIdentities;
+    const mappingGiven = sourceGiven || accountGiven || outlookGiven;
+    const purposeGiven =
+      body.purpose !== undefined || body.testRetentionDays !== undefined;
+    const removed = await db
       .delete(senderIdentities)
       .where(
         and(
-          eq(senderIdentities.email, email),
-          eq(senderIdentities.threadingMode, "relationship"),
+          eq(s.email, email),
+          eq(s.threadingMode, "relationship"),
+          ...untouchedAtDefault(
+            body.displayName !== undefined,
+            isNull(s.displayName),
+          ),
+          ...untouchedAtDefault(
+            body.displayMode !== undefined,
+            eq(s.displayMode, "chat"),
+          ),
+          ...untouchedAtDefault(
+            body.signatureHtml !== undefined,
+            isNull(s.signatureHtml),
+          ),
+          ...untouchedAtDefault(
+            body.forwardTo !== undefined,
+            isNull(s.forwardTo),
+          ),
+          ...untouchedAtDefault(
+            body.spamThreshold !== undefined,
+            isNull(s.spamThreshold),
+          ),
+          ...untouchedAtDefault(
+            body.agentInstructions !== undefined,
+            isNull(s.agentInstructions),
+          ),
+          ...untouchedAtDefault(
+            body.agentAutodraft !== undefined,
+            eq(s.agentAutodraft, 0),
+          ),
+          ...untouchedAtDefault(
+            mappingGiven,
+            sql`${s.source} = 'cloudflare' AND ${s.gmailAccountId} IS NULL AND ${s.outlookAccountId} IS NULL`,
+          ),
+          ...untouchedAtDefault(
+            purposeGiven,
+            sql`${s.purpose} = 'mail' AND ${s.testRetentionDays} IS NULL`,
+          ),
         ),
+      )
+      .returning({ email: s.email });
+    // No row, or one still at its defaults: the inbox is at its defaults.
+    // A row someone changed meanwhile is updated below instead.
+    if (removed.length > 0 || !currentRow) {
+      if (mappingChanged) await clearGmailThreadIds(db, [email]);
+      await startBackfill();
+      await auditInboxUpdate();
+      return c.json(
+        {
+          email,
+          displayName: null,
+          displayMode: "chat",
+          threadingMode: "relationship",
+          threadBackfill,
+          signatureHtml: null,
+          forwardTo: null,
+          spamThreshold: null,
+          agentInstructions: null,
+          agentAutodraft: false,
+          source: "cloudflare",
+          gmailAccountId: null,
+          outlookAccountId: null,
+          purpose: "mail" as const,
+          testRetentionDays: null,
+        },
+        200,
       );
-    if (mappingChanged) await clearGmailThreadIds(db, [email]);
-    await startBackfill();
-    await auditInboxUpdate();
-    return c.json(
-      {
-        email,
-        displayName: null,
-        displayMode: "chat",
-        threadingMode: "relationship",
-        threadBackfill,
-        signatureHtml: null,
-        forwardTo: null,
-        spamThreshold: null,
-        agentInstructions: null,
-        agentAutodraft: false,
-        source: "cloudflare",
-        gmailAccountId: null,
-        outlookAccountId: null,
-        purpose: "mail" as const,
-        testRetentionDays: null,
-      },
-      200,
-    );
+    }
   }
 
-  // Mail may land between the check above and this write: the switch turns
-  // on only if the inbox is still empty as the row is written.
+  // `purpose` and `test_retention_days` are written only when the request
+  // names them, so another edit can't write back a purpose read before an
+  // admin changed it. Turning it on is guarded in the write itself: mail may
+  // land between the check above and this statement.
+  const wantsTest = body.purpose === "test";
   const stillEmpty = sql`NOT EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.recipient} = ${email})`;
-  const purposeValue = turningOnTest
-    ? sql`CASE WHEN ${stillEmpty} THEN 'test' ELSE 'mail' END`
-    : nextPurpose;
-  const retentionValue = turningOnTest
-    ? sql`CASE WHEN ${stillEmpty} THEN ${nextTestRetentionDays} ELSE NULL END`
-    : nextTestRetentionDays;
+  const canBeTest = sql`(${senderIdentities.purpose} = 'test' OR ${stillEmpty})`;
+  const insertPurpose = {
+    purpose: wantsTest
+      ? sql`CASE WHEN ${stillEmpty} THEN 'test' ELSE 'mail' END`
+      : ("mail" as const),
+    testRetentionDays: wantsTest
+      ? sql`CASE WHEN ${stillEmpty} THEN ${nextTestRetentionDays} ELSE NULL END`
+      : null,
+  };
+  const updatePurpose =
+    body.purpose === "mail"
+      ? { purpose: "mail" as const, testRetentionDays: null }
+      : wantsTest
+        ? {
+            purpose: sql`CASE WHEN ${canBeTest} THEN 'test' ELSE 'mail' END`,
+            ...(body.testRetentionDays !== undefined
+              ? {
+                  testRetentionDays: sql`CASE WHEN ${canBeTest} THEN ${body.testRetentionDays} ELSE NULL END`,
+                }
+              : {}),
+          }
+        : body.testRetentionDays !== undefined
+          ? {
+              testRetentionDays: sql`CASE WHEN ${senderIdentities.purpose} = 'test' THEN ${body.testRetentionDays} ELSE NULL END`,
+            }
+          : {};
 
   await db
     .insert(senderIdentities)
@@ -999,8 +1070,7 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
       source: nextSource,
       gmailAccountId: nextGmailAccountId,
       outlookAccountId: nextOutlookAccountId,
-      purpose: purposeValue,
-      testRetentionDays: retentionValue,
+      ...insertPurpose,
       createdAt: now,
       updatedAt: now,
     })
@@ -1022,24 +1092,26 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
         source: nextSource,
         gmailAccountId: nextGmailAccountId,
         outlookAccountId: nextOutlookAccountId,
-        purpose: purposeValue,
-        testRetentionDays: retentionValue,
+        ...updatePurpose,
         updatedAt: now,
       },
     });
 
-  let savedPurpose = nextPurpose;
-  if (turningOnTest) {
-    const [saved] = await db
-      .select({ purpose: senderIdentities.purpose })
-      .from(senderIdentities)
-      .where(eq(senderIdentities.email, email))
-      .limit(1);
-    savedPurpose = saved?.purpose ?? "mail";
-    if (savedPurpose !== "test") {
-      delete changes.purpose;
-      delete changes.testRetentionDays;
-    }
+  // What was written: the purpose may be another admin's, or refused.
+  const [saved] = await db
+    .select({
+      purpose: senderIdentities.purpose,
+      testRetentionDays: senderIdentities.testRetentionDays,
+    })
+    .from(senderIdentities)
+    .where(eq(senderIdentities.email, email))
+    .limit(1);
+  const savedPurpose = saved?.purpose ?? "mail";
+  const savedRetention = saved?.testRetentionDays ?? null;
+  const testRefused = wantsTest && savedPurpose !== "test";
+  if (testRefused) {
+    delete changes.purpose;
+    delete changes.testRetentionDays;
   }
 
   await startBackfill();
@@ -1060,7 +1132,7 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
 
   // Mail landed while this was saved: the rest of the request is saved, the
   // inbox stays a normal one.
-  if (savedPurpose !== nextPurpose) {
+  if (testRefused) {
     return c.json({ error: INBOX_HAS_MAIL }, 409);
   }
 
@@ -1079,8 +1151,8 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
       source: nextSource,
       gmailAccountId: nextGmailAccountId,
       outlookAccountId: nextOutlookAccountId,
-      purpose: nextPurpose,
-      testRetentionDays: nextTestRetentionDays,
+      purpose: savedPurpose,
+      testRetentionDays: savedRetention,
     },
     200,
   );

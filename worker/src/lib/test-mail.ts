@@ -2,10 +2,10 @@ import { eq, sql } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { emails } from "../db/emails.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
-import {
-  SYSTEM_INBOX_ACCESS,
-  deleteEmailWithAttachments,
-} from "./delete-email";
+import { attachments } from "../db/attachments.schema";
+import { people } from "../db/people.schema";
+import { auditMailDeleted } from "./audit/mail-events";
+import { deleteReceivedMessageStateStatements } from "./messages/state";
 import { decodeEntities, htmlToText } from "./html-to-text";
 import { isInboxAllowed, type AllowedInboxes } from "./inbox-permissions";
 import { queryMessages } from "./messages/query";
@@ -40,7 +40,15 @@ export function extractLinks(
   if (html) {
     const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
     for (const match of html.matchAll(href)) {
-      found.push(decodeEntities(match[1] ?? match[2] ?? match[3] ?? "").trim());
+      // An entity naming no code point (`&#1114112;`) makes the decoder
+      // throw: that href is skipped, the rest of the message still answers.
+      try {
+        found.push(
+          decodeEntities(match[1] ?? match[2] ?? match[3] ?? "").trim(),
+        );
+      } catch {
+        continue;
+      }
     }
   }
   if (text) {
@@ -179,11 +187,18 @@ async function findTestMail(
     text,
     html,
     links: extractLinks(html, text),
-    codes: extractCodes(
-      message.subject,
-      text ?? (html ? htmlToText(html) : null),
-    ),
+    codes: extractCodes(message.subject, text ?? htmlAsText(html)),
   };
+}
+
+/** The HTML as text, or null when it cannot be converted (see extractLinks). */
+function htmlAsText(html: string | null): string | null {
+  if (!html) return null;
+  try {
+    return htmlToText(html);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -225,36 +240,114 @@ export async function waitForTestMail(
  */
 export const PRUNE_LIMIT = 40;
 
+/** A test-inbox message the prune may delete, evaluated when it runs. */
+function prunableIds(now: number, candidates: string[]) {
+  return sql`(
+    SELECT e.id FROM ${emails} e
+    JOIN ${senderIdentities} si ON si.email = e.recipient
+    WHERE si.purpose = 'test'
+      AND e.received_at <
+        ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
+      AND e.id IN (SELECT value FROM json_each(${JSON.stringify(candidates)}))
+  )`;
+}
+
 /**
- * Deletes test-inbox mail older than its inbox's retention, through the
- * normal delete path (attachments, mailbox state, the row): at most 40
+ * Deletes test-inbox mail older than its inbox's retention: at most 40
  * messages per pass, oldest first across every test inbox. The next hourly
  * pass takes the rest. Returns how many it deleted.
+ *
+ * The candidates are read first, then deleted in one `db.batch` whose every
+ * statement re-checks eligibility: an inbox switched back to normal mail, or
+ * given a longer retention, in between keeps its mail. State goes before the
+ * row, as in `deleteEmailWithAttachments`; files, counts and the audit entry
+ * follow for the rows the batch actually deleted.
  */
 export async function pruneTestMail(
   db: Db,
   env: CloudflareBindings,
   now: number,
+  hooks: { beforeDelete?: () => Promise<void> } = {},
 ): Promise<number> {
-  const rows = await db.all<{ id: string }>(sql`
-    SELECT e.id AS id
-    FROM ${emails} e
-    JOIN ${senderIdentities} si ON si.email = e.recipient
-    WHERE si.purpose = 'test'
-      AND e.received_at <
-        ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
-    ORDER BY e.received_at, e.id
-    LIMIT ${PRUNE_LIMIT}
-  `);
-  let deleted = 0;
-  for (const row of rows) {
-    const result = await deleteEmailWithAttachments(
-      db,
-      env.R2,
-      row.id,
-      SYSTEM_INBOX_ACCESS,
+  const candidates = (
+    await db.all<{ id: string }>(sql`
+      SELECT e.id AS id
+      FROM ${emails} e
+      JOIN ${senderIdentities} si ON si.email = e.recipient
+      WHERE si.purpose = 'test'
+        AND e.received_at <
+          ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
+      ORDER BY e.received_at, e.id
+      LIMIT ${PRUNE_LIMIT}
+    `)
+  ).map((row) => row.id);
+  if (candidates.length === 0) return 0;
+
+  const files = await db
+    .select({ emailId: attachments.emailId, r2Key: attachments.r2Key })
+    .from(attachments)
+    .where(
+      sql`${attachments.emailId} IN (SELECT value FROM json_each(${JSON.stringify(candidates)}))`,
     );
-    if (result) deleted++;
+  await hooks.beforeDelete?.();
+
+  const eligible = prunableIds(now, candidates);
+  const [, ...rest] = await db.batch([
+    db.delete(attachments).where(sql`${attachments.emailId} IN ${eligible}`),
+    ...deleteReceivedMessageStateStatements(db, eligible),
+    db
+      .delete(emails)
+      .where(sql`${emails.id} IN ${eligible}`)
+      .returning({
+        id: emails.id,
+        personId: emails.personId,
+        isRead: emails.isRead,
+        recipient: emails.recipient,
+        subject: emails.subject,
+        rawR2Key: emails.rawR2Key,
+      }),
+  ]);
+  const deleted = rest[rest.length - 1] as {
+    id: string;
+    personId: string;
+    isRead: number;
+    recipient: string;
+    subject: string | null;
+    rawR2Key: string | null;
+  }[];
+  if (deleted.length === 0) return 0;
+
+  const gone = new Set(deleted.map((row) => row.id));
+  const keys = [
+    ...files.filter((f) => gone.has(f.emailId)).map((f) => f.r2Key),
+    ...deleted.flatMap((row) => (row.rawR2Key ? [row.rawR2Key] : [])),
+  ];
+  if (keys.length > 0) await env.R2.delete(keys);
+
+  const counts = new Map<string, { total: number; unread: number }>();
+  for (const row of deleted) {
+    const c = counts.get(row.personId) ?? { total: 0, unread: 0 };
+    c.total++;
+    if (row.isRead === 0) c.unread++;
+    counts.set(row.personId, c);
   }
-  return deleted;
+  for (const [personId, c] of counts) {
+    await db
+      .update(people)
+      .set({
+        totalCount: sql`MAX(${people.totalCount} - ${c.total}, 0)`,
+        unreadCount: sql`MAX(${people.unreadCount} - ${c.unread}, 0)`,
+      })
+      .where(eq(people.id, personId));
+  }
+
+  await auditMailDeleted(
+    db,
+    deleted.map((row) => ({
+      ref: { kind: "received" as const, id: row.id },
+      inbox: row.recipient,
+      subject: row.subject,
+    })),
+  );
+  return deleted.length;
 }

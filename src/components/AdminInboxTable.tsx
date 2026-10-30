@@ -1457,10 +1457,12 @@ function TestInboxControl({ inbox, error, onChange }: TestInboxControlProps) {
           days
         </label>
       )}
-      <p className="text-[11px] font-light leading-snug text-text-tertiary">
-        Mail here skips rules, spam, notifications, webhooks and forwarding, and
-        is deleted after {days} days.
-      </p>
+      {on && (
+        <p className="text-[11px] font-light leading-snug text-text-tertiary">
+          Mail here skips rules, spam, notifications, webhooks and forwarding,
+          and is deleted after {days} days.
+        </p>
+      )}
       {error && (
         <p
           role="alert"

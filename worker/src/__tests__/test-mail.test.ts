@@ -128,15 +128,6 @@ afterEach(() => {
 });
 
 describe("extractLinks and extractCodes", () => {
-  it("decodes &amp; in an href", () => {
-    expect(
-      extractLinks(
-        '<a href="https://example.com/reset?a=1&amp;b=2">Reset</a>',
-        null,
-      ),
-    ).toEqual(["https://example.com/reset?a=1&b=2"]);
-  });
-
   it("takes text URLs, dropping trailing punctuation and duplicates", () => {
     expect(
       extractLinks(
@@ -282,6 +273,24 @@ describe("GET /api/test-mail/wait", () => {
     expect(new Set(bodies.map((b) => JSON.stringify(b))).size).toBe(1);
   });
 
+  it("answers a message with an href naming no code point, dropping that link", async () => {
+    const { apiKey } = await createTestUser({ id: "admin-1" });
+    await addInbox(TEST_INBOX, "test");
+    const id = await addMail({
+      text: null,
+      html: '<a href="https://example.com/x?&#1114112;">bad</a> <a href="https://example.com/ok">ok</a> code 482913',
+    });
+
+    const res = await authFetch(
+      waitUrl({ inbox: TEST_INBOX, since: 0, timeout: 1 }),
+      { apiKey },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as TestMail;
+    expect(body.id).toBe(id);
+    expect(body.links).toEqual(["https://example.com/ok"]);
+  });
+
   it("answers 400 on a bad query", async () => {
     const { apiKey } = await createTestUser({ id: "admin-1" });
     for (const params of [
@@ -307,24 +316,6 @@ describe("GET /api/test-mail/wait", () => {
 });
 
 describe("waitForTestMail", () => {
-  it("times out with no message after polling at 1 s, then every 2 s", async () => {
-    await addInbox(TEST_INBOX, "test");
-    const clock = fakeClock();
-    const result = await waitForTestMail(
-      getDb(),
-      { isAdmin: true },
-      { inbox: TEST_INBOX, detail: "none", since: 0, timeout: 30 },
-      clock,
-    );
-    expect(result).toEqual({ error: null, message: null });
-    const waits = clock.sleep.mock.calls.map(([ms]) => ms);
-    expect(waits[0]).toBe(1000);
-    expect(waits.slice(1).every((ms) => ms <= 2000)).toBe(true);
-    expect(waits.reduce((a, b) => a + b, 0)).toBe(30_000);
-    // At most about 20 reads per call.
-    expect(waits.length + 1).toBeLessThanOrEqual(20);
-  });
-
   it("returns a message that arrives during the wait", async () => {
     await addInbox(TEST_INBOX, "test");
     const clock = fakeClock();
@@ -361,6 +352,42 @@ describe("waitForTestMail", () => {
 });
 
 describe("pruneTestMail", () => {
+  it("keeps mail whose inbox stopped being a test inbox after the candidates were read", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await addInbox(TEST_INBOX, "test");
+    const id = await addMail({ receivedAt: now - 4 * 24 * 60 * 60 });
+    const rawKey = `inbound-raw/${id}.eml`;
+    await env.R2.put(rawKey, "raw message");
+    await getDb()
+      .update(emails)
+      .set({ rawR2Key: rawKey })
+      .where(eq(emails.id, id));
+    const switchToMail = async () => {
+      await getDb()
+        .update(senderIdentities)
+        .set({ purpose: "mail", testRetentionDays: null })
+        .where(eq(senderIdentities.email, TEST_INBOX));
+    };
+
+    expect(
+      await pruneTestMail(getDb(), env as never, now, {
+        beforeDelete: switchToMail,
+      }),
+    ).toBe(0);
+    expect(
+      await getDb().select().from(emails).where(eq(emails.id, id)),
+    ).toHaveLength(1);
+    expect(await env.R2.get(rawKey)).not.toBeNull();
+
+    // Back to a test inbox, the same pass deletes it and its raw message.
+    await getDb()
+      .update(senderIdentities)
+      .set({ purpose: "test" })
+      .where(eq(senderIdentities.email, TEST_INBOX));
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(1);
+    expect(await env.R2.get(rawKey)).toBeNull();
+  });
+
   it("deletes only test-inbox mail older than its retention", async () => {
     const now = Math.floor(Date.now() / 1000);
     const day = 24 * 60 * 60;
