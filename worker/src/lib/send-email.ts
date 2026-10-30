@@ -382,10 +382,15 @@ export async function sendEmail(
   const replyTo = raw.replyTo?.trim().toLowerCase();
   assertInboxAllowed(allowed, fromAddress);
   const now = Math.floor(Date.now() / 1000);
-  const hardBounced = await refuseHardBounced(db, [
-    to,
-    ...(cc ?? []).map((entry) => entry.email),
-  ]);
+  // Only a transactional send skips the suppression list; any other send
+  // already drops a hard-bounced address there and goes to the rest.
+  const hardBounced =
+    transactional === true
+      ? await refuseHardBounced(db, [
+          to,
+          ...(cc ?? []).map((entry) => entry.email),
+        ])
+      : null;
   if (hardBounced) return hardBounced;
 
   const messageId = generateMessageId(fromAddress);

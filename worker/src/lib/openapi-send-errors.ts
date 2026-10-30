@@ -46,7 +46,7 @@ export const idempotencyConflictResponses = {
   },
   422: {
     description:
-      "This idempotency key was already used for a different request (`IDEMPOTENCY_KEY_REUSED`): use a new key for a new message. Or a recipient hard-bounced (`RECIPIENT_HARD_BOUNCED`, with the `addresses`): nothing was sent, and the answer is not kept, so a retry with the same key sends once the address is removed from the suppression list.",
+      "This idempotency key was already used for a different request (`IDEMPOTENCY_KEY_REUSED`): use a new key for a new message. Or a recipient of a transactional send or reply hard-bounced (`RECIPIENT_HARD_BOUNCED`, with the `addresses`): nothing was sent, and the answer is not kept, so a retry with the same key sends once the address is removed from the suppression list.",
     content: {
       "application/json": {
         schema: IdempotencyErrorSchema.extend({

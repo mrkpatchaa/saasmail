@@ -545,6 +545,29 @@ describe("hard bounces block transactional mail", () => {
     expect(await sentCount()).toBe(0);
   });
 
+  it("sends a non-transactional compose to the clean recipient and lists the bounced one as suppressed", async () => {
+    (env as any).DEMO_MODE = "1";
+    await recordDeliveryEvent(getDb(), parse(bouncedEvent()));
+    const res = await authFetch("/api/send", {
+      apiKey,
+      method: "POST",
+      body: buildSendForm({
+        to: "fine@example.com",
+        cc: [{ email: DEAD }],
+        fromAddress: INBOX,
+        subject: "News",
+        bodyHtml: "<p>news</p>",
+        transactional: false,
+      }),
+    });
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({
+      delivered: ["fine@example.com"],
+      suppressed: [DEAD],
+    });
+    expect(await sentCount()).toBe(1);
+  });
+
   it("refuses a reply from a Gmail-mapped inbox before Gmail is called", async () => {
     const now = ts();
     await getDb()
