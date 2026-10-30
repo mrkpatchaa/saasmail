@@ -30,7 +30,10 @@ export const webhookDeliveries = sqliteTable(
     frozen: integer("frozen").notNull().default(0),
     /** pending | delivered | failed | cancelled */
     status: text("status").notNull(),
+    /** Attempts claimed so far: counted when an attempt starts. */
     attempts: integer("attempts").notNull().default(0),
+    /** Unix seconds until which one consumer holds the current attempt. */
+    claimedUntil: integer("claimed_until"),
     /** HTTP status of the last attempt. */
     lastStatus: integer("last_status"),
     /** Network error of the last attempt, at most 200 characters. */

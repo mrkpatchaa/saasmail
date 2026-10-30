@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d160dcc8-a969-432e-9d01-a3d5a777fde6",
+  "id": "c07b0b1e-7db1-406b-a3ee-6469bf7c98d1",
   "prevId": "537078a5-66bb-452d-a1ed-db8d1b3a71c6",
   "tables": {
     "accounts": {
@@ -7091,6 +7091,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
+        },
+        "claimed_until": {
+          "name": "claimed_until",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "last_status": {
           "name": "last_status",

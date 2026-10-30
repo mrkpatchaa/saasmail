@@ -8,6 +8,7 @@ CREATE TABLE `webhook_deliveries` (
 	`frozen` integer DEFAULT 0 NOT NULL,
 	`status` text NOT NULL,
 	`attempts` integer DEFAULT 0 NOT NULL,
+	`claimed_until` integer,
 	`last_status` integer,
 	`last_error` text,
 	`next_attempt_at` integer NOT NULL,

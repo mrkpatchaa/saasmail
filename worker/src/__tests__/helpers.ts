@@ -189,7 +189,7 @@ export async function applyMigrations() {
     `CREATE INDEX IF NOT EXISTS delivery_events_campaign_kind_idx ON delivery_events(campaign_id, kind)`,
     `CREATE TABLE IF NOT EXISTS delivery_message_ids (message_id TEXT PRIMARY KEY NOT NULL, sent_email_id TEXT NOT NULL, created_at INTEGER NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS delivery_message_ids_sent_email_idx ON delivery_message_ids(sent_email_id)`,
-    `CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY NOT NULL, source_key TEXT NOT NULL, event TEXT NOT NULL, message_id TEXT NOT NULL, generation INTEGER NOT NULL, payload TEXT, frozen INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_status INTEGER, last_error TEXT, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER)`,
+    `CREATE TABLE IF NOT EXISTS webhook_deliveries (id TEXT PRIMARY KEY NOT NULL, source_key TEXT NOT NULL, event TEXT NOT NULL, message_id TEXT NOT NULL, generation INTEGER NOT NULL, payload TEXT, frozen INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, claimed_until INTEGER, last_status INTEGER, last_error TEXT, next_attempt_at INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS webhook_deliveries_source_key_unique ON webhook_deliveries(source_key)`,
     `CREATE INDEX IF NOT EXISTS webhook_deliveries_created_idx ON webhook_deliveries(created_at)`,
     `CREATE INDEX IF NOT EXISTS webhook_deliveries_generation_status_finished_idx ON webhook_deliveries(generation, status, finished_at)`,

@@ -334,7 +334,7 @@ export function webhookIntent(
     .insert(webhookDeliveries)
     .select(
       sql`SELECT ${deliveryId}, ${sourceKey}, ${input.event}, ${input.message.id}, ${config.generation},
-                 ${JSON.stringify(payload)}, ${opts.frozen ? 1 : 0}, 'pending', 0, NULL, NULL, ${now}, ${now}, NULL
+                 ${JSON.stringify(payload)}, ${opts.frozen ? 1 : 0}, 'pending', 0, NULL, NULL, NULL, ${now}, ${now}, NULL
            WHERE ${opts.guard ?? sql`1`}`,
     )
     .onConflictDoNothing({ target: webhookDeliveries.sourceKey })
