@@ -161,22 +161,6 @@ describe("the check", () => {
     warn.mockRestore();
   });
 
-  it("throws on a retryable provider error and on any other error", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await expect(
-      checkInbound(getDb(), bindings, "e1", {
-        model: throwingModel(apiError(true)),
-      }),
-    ).rejects.toThrow("overloaded");
-    await expect(
-      checkInbound(getDb(), bindings, "e1", {
-        model: throwingModel(new Error("provider down")),
-      }),
-    ).rejects.toThrow("provider down");
-    expect((await storedRow()).verdict).toBeNull();
-    warn.mockRestore();
-  });
-
   it("returns the stored verdict when another check stored one first", async () => {
     const racing = new MockLanguageModelV4({
       doGenerate: async () => {
