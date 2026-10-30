@@ -36,8 +36,8 @@ import {
   sendWebhook,
   sweepWebhookDeliveries,
 } from "../lib/webhook-delivery";
-import { maybeAutoDisable } from "../lib/webhook-config";
-import { classifyQueueMessage, handleQueueBatch } from "../lib/queue-router";
+import { getWebhookConfig, recordFailure } from "../lib/webhook-config";
+import { handleQueueBatch } from "../lib/queue-router";
 import { signWebhookBody } from "../lib/webhook-signature";
 
 describe("buildWebhookPayload", () => {
@@ -180,21 +180,6 @@ describe("outbound delivery job", () => {
     return queue.sent[0] as { type: string; deliveryId: string };
   }
 
-  it("records one pending row and queues a pointer to it", async () => {
-    const message = pointer();
-    expect(message.type).toBe("webhook_delivery");
-    expect(classifyQueueMessage(message)).toBe("webhook_delivery");
-    const [row] = await deliveryRows();
-    expect(row).toMatchObject({
-      id: message.deliveryId,
-      sourceKey: "sent:se-1:message.sent",
-      event: "message.sent",
-      messageId: "se-1",
-      status: "pending",
-      frozen: 0,
-    });
-  });
-
   it("retries a 5xx after 60, 300 and 1800 s, sends the same bytes each time, and fails the 4th attempt with an ack", async () => {
     const fetchImpl = scriptedFetch([503]);
     const { deliveryId } = pointer();
@@ -204,7 +189,7 @@ describe("outbound delivery job", () => {
         { type: "webhook_delivery", deliveryId },
         attempt,
       );
-      await runWebhookDelivery(getDb(), msg, { fetchImpl });
+      await runWebhookDelivery(getDb(), bindings, msg, { fetchImpl });
       if (attempt < 4) {
         expect(msg.ack).not.toHaveBeenCalled();
         delays.push(msg.retry.mock.calls[0][0]);
@@ -242,13 +227,111 @@ describe("outbound delivery job", () => {
     expect(row.finishedAt).not.toBeNull();
   });
 
+  it("posts once when two consumers run the same delivery at the same time", async () => {
+    // The first POST is slow: a second consumer starts while it is in flight.
+    let calls = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      if (calls > 1) return new Response(null, { status: 200 });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return new Response(null, { status: 404 });
+    });
+    const { deliveryId } = pointer();
+    const a = queueMessage({ type: "webhook_delivery", deliveryId });
+    const b = queueMessage({ type: "webhook_delivery", deliveryId });
+    const first = runWebhookDelivery(getDb(), bindings, a, { fetchImpl });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalled());
+    await runWebhookDelivery(getDb(), bindings, b, { fetchImpl });
+    await first;
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(a.ack).toHaveBeenCalledOnce();
+    expect(b.ack).toHaveBeenCalledOnce();
+    const [row] = await deliveryRows();
+    // The row records the one POST that was made.
+    expect(row).toMatchObject({
+      status: "failed",
+      attempts: 1,
+      lastStatus: 404,
+    });
+  });
+
+  it("waits for a send's sent row before freezing its ids, and freezes with nulls after 5 minutes", async () => {
+    queue.sent.length = 0;
+    queue.options.length = 0;
+    const send = (sentEmailId: string) =>
+      recordSendWebhook(bindings, getDb(), {
+        event: "message.sent",
+        sentEmailId,
+        from: "support@saasmail.test",
+        to: "customer@example.com",
+        subject: "Your invoice",
+      });
+    await send("se-2");
+    const [early] = queue.sent;
+    const fetchImpl = scriptedFetch([200]);
+
+    // The caller has not written the sent row yet: no POST, no attempt used.
+    const first = queueMessage(early);
+    await runWebhookDelivery(getDb(), bindings, first, { fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(first.ack).toHaveBeenCalledOnce();
+    expect(first.retry).not.toHaveBeenCalled();
+    expect(queue.sent).toEqual([early, early]);
+    expect(queue.options[1]).toEqual({ delaySeconds: 30 });
+    let rows = await deliveryRows();
+    expect(rows.find((r) => r.messageId === "se-2")).toMatchObject({
+      status: "pending",
+      attempts: 0,
+      frozen: 0,
+    });
+
+    // Once it exists, the delivery carries its ids.
+    await createTestSentEmail({
+      id: "se-2",
+      fromAddress: "support@saasmail.test",
+      toAddress: "customer@example.com",
+      campaignId: "camp-2",
+      conversationId: "conv-2",
+    });
+    await runWebhookDelivery(getDb(), bindings, queueMessage(early), {
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const body = JSON.parse(fetchImpl.mock.calls[0][1]?.body as string);
+    expect(body.message).toMatchObject({
+      id: "se-2",
+      campaignId: "camp-2",
+      conversationId: "conv-2",
+    });
+
+    // A sent row still missing after 5 minutes: sent with null ids.
+    await send("se-3");
+    const late = queue.sent.at(-1) as { deliveryId: string };
+    await getDb()
+      .update(webhookDeliveries)
+      .set({ createdAt: Math.floor(Date.now() / 1000) - 301 })
+      .where(eq(webhookDeliveries.id, late.deliveryId));
+    await runWebhookDelivery(getDb(), bindings, queueMessage(late), {
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const lateBody = JSON.parse(fetchImpl.mock.calls[1][1]?.body as string);
+    expect(lateBody.message).toMatchObject({
+      id: "se-3",
+      campaignId: null,
+      conversationId: null,
+    });
+    rows = await deliveryRows();
+    expect(rows.find((r) => r.messageId === "se-3")?.status).toBe("delivered");
+  });
+
   it("fails a 404 at once", async () => {
     const fetchImpl = scriptedFetch([404]);
     const msg = queueMessage({
       type: "webhook_delivery",
       deliveryId: pointer().deliveryId,
     });
-    await runWebhookDelivery(getDb(), msg, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, msg, { fetchImpl });
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     const [row] = await deliveryRows();
@@ -265,7 +348,7 @@ describe("outbound delivery job", () => {
       type: "webhook_delivery",
       deliveryId: pointer().deliveryId,
     });
-    await runWebhookDelivery(getDb(), msg, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, msg, { fetchImpl });
     expect(msg.retry).toHaveBeenCalledWith({ delaySeconds: 60 });
     const [row] = await deliveryRows();
     expect(row).toMatchObject({
@@ -280,6 +363,7 @@ describe("outbound delivery job", () => {
     const { deliveryId } = pointer();
     await runWebhookDelivery(
       getDb(),
+      bindings,
       queueMessage({ type: "webhook_delivery", deliveryId }),
       { fetchImpl },
     );
@@ -314,11 +398,12 @@ describe("outbound delivery job", () => {
     const { deliveryId } = pointer();
     await runWebhookDelivery(
       getDb(),
+      bindings,
       queueMessage({ type: "webhook_delivery", deliveryId }),
       { fetchImpl },
     );
     const again = queueMessage({ type: "webhook_delivery", deliveryId }, 2);
-    await runWebhookDelivery(getDb(), again, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, again, { fetchImpl });
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(again.ack).toHaveBeenCalledOnce();
   });
@@ -328,7 +413,7 @@ describe("outbound delivery job", () => {
     const { deliveryId } = pointer();
     await configureWebhook(["message.sent"]);
     const msg = queueMessage({ type: "webhook_delivery", deliveryId });
-    await runWebhookDelivery(getDb(), msg, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, msg, { fetchImpl });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(msg.ack).toHaveBeenCalledOnce();
     const [row] = await deliveryRows();
@@ -364,21 +449,58 @@ describe("outbound delivery job", () => {
     }
   });
 
-  it("the sweep resends a lost pointer, finishes a row whose attempts are spent, and prunes old rows", async () => {
+  it("the sweep resends a lost pointer, finishes a row whose 4th attempt died, leaves one in flight, and prunes old rows", async () => {
     const now = Math.floor(Date.now() / 1000);
     const { deliveryId } = pointer();
+    // A second send whose 4th attempt never finishes (the isolate died in
+    // its POST): the row stays pending with the attempt claimed.
+    await createTestSentEmail({ id: "se-2" });
+    await recordSendWebhook(bindings, getDb(), {
+      event: "message.sent",
+      sentEmailId: "se-2",
+      from: "support@saasmail.test",
+      to: "customer@example.com",
+      subject: "Your invoice",
+    });
+    const stuck = queue.sent[1] as { deliveryId: string };
+    const fetch503 = scriptedFetch([503]);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      await runWebhookDelivery(
+        getDb(),
+        bindings,
+        queueMessage(stuck, attempt),
+        { fetchImpl: fetch503 },
+      );
+    }
+    let release!: () => void;
+    const hung = vi.fn<typeof fetch>(
+      () =>
+        new Promise<Response>((_, reject) => {
+          release = () => reject(new Error("isolate gone"));
+        }),
+    );
+    const fourth = runWebhookDelivery(
+      getDb(),
+      bindings,
+      queueMessage(stuck, 4),
+      { fetchImpl: hung },
+    );
+    await vi.waitFor(() => expect(hung).toHaveBeenCalled());
     queue.sent.length = 0;
-    // A second row stuck pending after its 4th attempt, and an old finished one.
+
     const [row] = await deliveryRows();
+    const later = now + 2 * 3600;
     await getDb()
       .insert(webhookDeliveries)
       .values([
+        // Overdue, attempts spent, but an attempt is still in flight.
         {
           ...row,
-          id: "wd_stuck",
-          sourceKey: "sent:se-2:message.sent",
+          id: "wd_inflight",
+          sourceKey: "sent:se-4:message.sent",
           attempts: 4,
-          lastStatus: 500,
+          nextAttemptAt: now - 2 * 3600,
+          claimedUntil: later + 60,
         },
         {
           ...row,
@@ -398,20 +520,29 @@ describe("outbound delivery job", () => {
       pruned: 1,
     });
     expect(queue.sent).toEqual([]);
-    const later = now + 2 * 3600;
     expect(await sweepWebhookDeliveries(bindings, getDb(), later)).toEqual({
       resent: 1,
       failed: 1,
       pruned: 0,
     });
     expect(queue.sent).toEqual([{ type: "webhook_delivery", deliveryId }]);
+
+    // The dead attempt's late outcome changes nothing.
+    release();
+    await fourth;
     const rows = await deliveryRows();
     expect(rows.map((r) => [r.id, r.status]).sort()).toEqual(
       [
         [deliveryId, "pending"],
-        ["wd_stuck", "failed"],
+        [stuck.deliveryId, "failed"],
+        ["wd_inflight", "pending"],
       ].sort(),
     );
+    expect(rows.find((r) => r.id === stuck.deliveryId)).toMatchObject({
+      attempts: 4,
+      lastStatus: 503,
+      payload: null,
+    });
   });
 });
 
@@ -459,27 +590,13 @@ describe("message.received keeps its single inline attempt", () => {
   it("makes one attempt and writes no row when ticked, even while paused", async () => {
     await configureWebhook(["message.received", "message.sent"]);
     const db = getDb();
-    const now = Math.floor(Date.now() / 1000);
     const [{ generation }] = await db.all<{ generation: number }>(
       sql`SELECT json_extract(value, '$.generation') AS generation FROM app_settings WHERE key = 'webhook'`,
     );
     for (let i = 0; i < 20; i += 1) {
-      await db.insert(webhookDeliveries).values({
-        id: `wd_${i}`,
-        sourceKey: `sent:x${i}:message.sent`,
-        event: "message.sent",
-        messageId: `x${i}`,
-        generation,
-        status: "failed",
-        nextAttemptAt: now,
-        createdAt: now,
-        finishedAt: now,
-      });
+      await recordFailure(db, generation, { status: 500, error: null });
     }
-    expect(
-      await maybeAutoDisable(db, generation, { status: 500, error: null }),
-    ).toBe(true);
-    await db.delete(webhookDeliveries);
+    expect((await getWebhookConfig(db))?.disabledAt).not.toBeNull();
 
     const fetchMock = await deliverOnce();
     expect(fetchMock).toHaveBeenCalledOnce();
@@ -531,10 +648,10 @@ describe("POST /api/send with message.sent ticked", () => {
     const { deliveryId } = queue.sent[0] as { deliveryId: string };
     const fetchImpl = scriptedFetch([503, 200]);
     const first = queueMessage({ type: "webhook_delivery", deliveryId }, 1);
-    await runWebhookDelivery(getDb(), first, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, first, { fetchImpl });
     expect(first.retry).toHaveBeenCalledWith({ delaySeconds: 60 });
     const second = queueMessage({ type: "webhook_delivery", deliveryId }, 2);
-    await runWebhookDelivery(getDb(), second, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, second, { fetchImpl });
     expect(second.ack).toHaveBeenCalledOnce();
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);

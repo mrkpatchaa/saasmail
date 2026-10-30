@@ -22,10 +22,13 @@ export async function configureWebhook(
 export function captureQueue(opts: { fail?: boolean } = {}) {
   const original = (env as any).EMAIL_QUEUE;
   const sent: unknown[] = [];
+  /** The options of each `send`, in step with `sent` for single sends. */
+  const options: (QueueSendOptions | undefined)[] = [];
   (env as any).EMAIL_QUEUE = {
-    send: async (body: unknown) => {
+    send: async (body: unknown, sendOptions?: QueueSendOptions) => {
       if (opts.fail) throw new Error("queue unavailable");
       sent.push(body);
+      options.push(sendOptions);
     },
     sendBatch: async (messages: { body: unknown }[]) => {
       if (opts.fail) throw new Error("queue unavailable");
@@ -34,6 +37,7 @@ export function captureQueue(opts: { fail?: boolean } = {}) {
   };
   return {
     sent,
+    options,
     restore: () => {
       (env as any).EMAIL_QUEUE = original;
     },

@@ -305,7 +305,7 @@ export async function handleQueueBatch(
         continue;
       } else if (kind === "webhook_delivery") {
         // Acks or retries itself, and never throws.
-        await runWebhookDelivery(db, msg);
+        await runWebhookDelivery(db, env, msg);
         continue;
       } else {
         const body = msg.body as SuggestReplyMessage;

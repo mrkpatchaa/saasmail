@@ -10,7 +10,12 @@ import {
   vi,
 } from "vitest";
 import { env } from "cloudflare:workers";
-import { applyMigrations, cleanDb, getDb } from "./helpers";
+import {
+  applyMigrations,
+  cleanDb,
+  createTestSentEmail,
+  getDb,
+} from "./helpers";
 import {
   captureQueue,
   configureWebhook,
@@ -31,10 +36,17 @@ import {
 
 const bindings = env as unknown as CloudflareBindings;
 
-function recordSent(
+/** A send's event, after its sent row is written (as the senders do). */
+async function recordSent(
   id: string,
   event: "message.sent" | "message.failed" = "message.sent",
 ) {
+  await createTestSentEmail({
+    id,
+    fromAddress: "support@saasmail.test",
+    toAddress: "customer@example.com",
+    subject: "Your invoice",
+  });
   return recordSendWebhook(bindings, getDb(), {
     event,
     sentEmailId: id,
@@ -73,7 +85,7 @@ describe("outbound delivery edges", () => {
 
     for (let i = 0; i < 20; i += 1) {
       const msg = queueMessage(pointers[i]);
-      await runWebhookDelivery(getDb(), msg, { fetchImpl });
+      await runWebhookDelivery(getDb(), bindings, msg, { fetchImpl });
       expect(msg.ack).toHaveBeenCalledOnce();
       const cfg = await getWebhookConfig(getDb());
       // Paused by the 20th final failure, not before.
@@ -89,7 +101,7 @@ describe("outbound delivery edges", () => {
 
     // The 21st, recorded before the pause, is cancelled without a POST.
     const last = queueMessage(pointers[20]);
-    await runWebhookDelivery(getDb(), last, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, last, { fetchImpl });
     expect(fetchImpl).toHaveBeenCalledTimes(20);
     expect(last.ack).toHaveBeenCalledOnce();
     const rows = await deliveryRows();
@@ -131,6 +143,32 @@ describe("outbound delivery edges", () => {
     expect(inbound).toHaveBeenCalledOnce();
   });
 
+  it("pauses after 20 failures in a row even when the earlier ones were pruned from the log", async () => {
+    await configureWebhook(["message.sent"]);
+    for (let i = 1; i <= 20; i += 1) await recordSent(`se-${i}`);
+    const pointers = queue.sent.map(pointerOf);
+    const fetchImpl = scriptedFetch([404]);
+    for (let i = 0; i < 19; i += 1) {
+      await runWebhookDelivery(getDb(), bindings, queueMessage(pointers[i]), {
+        fetchImpl,
+      });
+    }
+    expect((await getWebhookConfig(getDb()))?.disabledAt).toBeNull();
+
+    // Eight days on, the sweep prunes the 19 finished rows...
+    const later = Math.floor(Date.now() / 1000) + 8 * 24 * 3600;
+    expect(
+      (await sweepWebhookDeliveries(bindings, getDb(), later)).pruned,
+    ).toBe(19);
+
+    // ...and the 20th failure in a row still pauses.
+    await runWebhookDelivery(getDb(), bindings, queueMessage(pointers[19]), {
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(20);
+    expect((await getWebhookConfig(getDb()))?.disabledAt).not.toBeNull();
+  });
+
   it("keeps the 4-attempt cap when the sweep resends a pointer lost after two retried attempts (408, 429)", async () => {
     await configureWebhook(["message.sent"]);
     await recordSent("se-1");
@@ -138,10 +176,10 @@ describe("outbound delivery edges", () => {
     const fetchImpl = scriptedFetch([408, 429, 503]);
 
     const first = queueMessage({ type: "webhook_delivery", deliveryId }, 1);
-    await runWebhookDelivery(getDb(), first, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, first, { fetchImpl });
     expect(first.retry).toHaveBeenCalledWith({ delaySeconds: 60 });
     const second = queueMessage({ type: "webhook_delivery", deliveryId }, 2);
-    await runWebhookDelivery(getDb(), second, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, second, { fetchImpl });
     expect(second.retry).toHaveBeenCalledWith({ delaySeconds: 300 });
     let [row] = await deliveryRows();
     expect(row).toMatchObject({
@@ -160,11 +198,11 @@ describe("outbound delivery edges", () => {
 
     // The resent message starts at msg.attempts = 1, but it is the 3rd attempt.
     const resent = queueMessage({ type: "webhook_delivery", deliveryId }, 1);
-    await runWebhookDelivery(getDb(), resent, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, resent, { fetchImpl });
     expect(resent.retry).toHaveBeenCalledWith({ delaySeconds: 1800 });
     // Its redelivery is the 4th and last: failed and acked, never retried.
     const fourth = queueMessage({ type: "webhook_delivery", deliveryId }, 2);
-    await runWebhookDelivery(getDb(), fourth, { fetchImpl });
+    await runWebhookDelivery(getDb(), bindings, fourth, { fetchImpl });
     expect(fourth.retry).not.toHaveBeenCalled();
     expect(fourth.ack).toHaveBeenCalledOnce();
 

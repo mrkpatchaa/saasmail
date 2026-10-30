@@ -146,6 +146,7 @@ export async function setWebhookConfig(
         url,
         secret: cfg?.secret && cfg.secret.length > 0 ? cfg.secret : null,
         events: WEBHOOK_EVENTS.filter((event) => events.includes(event)),
+        failStreak: 0,
         enabledAt: now,
         disabledAt: null,
         disabledReason: null,
@@ -192,7 +193,8 @@ export async function enableWebhook(
   const rows = await db.all<{ key: string }>(sql`
     UPDATE app_settings
        SET value = json_set(value, '$.disabledAt', NULL, '$.disabledReason', NULL,
-                            '$.enabledAt', ${now}, '$.generation', ${NEXT_GENERATION}),
+                            '$.failStreak', 0, '$.enabledAt', ${now},
+                            '$.generation', ${NEXT_GENERATION}),
            updated_at = ${now},
            updated_by = ${updatedBy}
      WHERE key = ${WEBHOOK_KEY} AND value IS NOT NULL AND json_valid(value)
@@ -208,41 +210,41 @@ export async function enableWebhook(
   return true;
 }
 
+/** The stored streak, read inside the statement that changes it. */
+const STREAK = sql`COALESCE(json_extract(value, '$.failStreak'), 0)`;
+const SAME_GENERATION = (generation: number) =>
+  sql`key = ${WEBHOOK_KEY} AND json_valid(value)
+      AND COALESCE(json_extract(value, '$.generation'), 0) = ${generation}`;
+
 /**
- * After a delivery of `generation` ended failed: pause the outbound events
- * when the last `AUTO_DISABLE_AFTER` deliveries of that generation, since its
- * latest success and its save, all failed. One conditional update, so two
- * consumers finishing the 20th at once pause once, and a stale generation
- * never pauses a newer save. True when this call paused it.
+ * After a delivery of `generation` ended failed: add 1 to the config's
+ * `failStreak` and, at `AUTO_DISABLE_AFTER`, pause the outbound events, in
+ * one statement. Concurrent failures therefore pause once, and a stale
+ * generation never touches a newer save. True when this call paused it (and
+ * recorded `webhook.auto_disabled`).
  */
-export async function maybeAutoDisable(
+export async function recordFailure(
   db: DrizzleD1Database<any>,
   generation: number,
   last: { status: number | null; error: string | null },
   now: number = Math.floor(Date.now() / 1000),
 ): Promise<boolean> {
-  const [row] = await db.all<{ count: number }>(sql`
-    SELECT COUNT(*) AS count FROM webhook_deliveries
-     WHERE generation = ${generation} AND status = 'failed'
-       AND finished_at > COALESCE((SELECT MAX(finished_at) FROM webhook_deliveries
-                                    WHERE generation = ${generation} AND status = 'delivered'), -1)
-       AND finished_at >= COALESCE((SELECT json_extract(value, '$.enabledAt') FROM app_settings
-                                     WHERE key = ${WEBHOOK_KEY} AND json_valid(value)), 0)
-  `);
-  if ((row?.count ?? 0) < AUTO_DISABLE_AFTER) return false;
   const lastResult =
     last.status !== null ? `HTTP ${last.status}` : (last.error ?? "no answer");
   const reason = `${AUTO_DISABLE_AFTER} deliveries in a row failed (last: ${lastResult})`;
-  const paused = await db.all<{ key: string }>(sql`
+  const pauses = sql`${STREAK} + 1 >= ${AUTO_DISABLE_AFTER}`;
+  const [row] = await db.all<{ disabled_at: number | null }>(sql`
     UPDATE app_settings
-       SET value = json_set(value, '$.disabledAt', ${now}, '$.disabledReason', ${reason}),
-           updated_at = ${now}
-     WHERE key = ${WEBHOOK_KEY} AND json_valid(value)
-       AND COALESCE(json_extract(value, '$.generation'), 0) = ${generation}
+       SET value = json_set(value,
+                            '$.failStreak', ${STREAK} + 1,
+                            '$.disabledAt', CASE WHEN ${pauses} THEN ${now} END,
+                            '$.disabledReason', CASE WHEN ${pauses} THEN ${reason} END),
+           updated_at = CASE WHEN ${pauses} THEN ${now} ELSE updated_at END
+     WHERE ${SAME_GENERATION(generation)}
        AND json_extract(value, '$.disabledAt') IS NULL
-     RETURNING key
+     RETURNING json_extract(value, '$.disabledAt') AS disabled_at
   `);
-  if (paused.length === 0) return false;
+  if (row?.disabled_at == null) return false;
   await recordAudit(db, {
     action: AUDIT_ACTIONS.webhookAutoDisabled,
     targetType: "setting",
@@ -251,4 +253,19 @@ export async function maybeAutoDisable(
     details: { key: WEBHOOK_KEY, generation },
   });
   return true;
+}
+
+/**
+ * After a delivery of `generation` was delivered: the run of failures starts
+ * again. Writes nothing when there is no run (the common path).
+ */
+export async function recordSuccess(
+  db: DrizzleD1Database<any>,
+  generation: number,
+): Promise<void> {
+  await db.run(sql`
+    UPDATE app_settings
+       SET value = json_set(value, '$.failStreak', 0)
+     WHERE ${SAME_GENERATION(generation)} AND ${STREAK} > 0
+  `);
 }

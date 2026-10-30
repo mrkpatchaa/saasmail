@@ -1,4 +1,4 @@
-import { and, eq, lt, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import type { DrizzleD1Database } from "drizzle-orm/d1";
 import { nanoid } from "nanoid";
 import { sentEmails } from "../db/sent-emails.schema";
@@ -7,7 +7,8 @@ import { isDemoMode } from "./is-dev";
 import { bracketedMessageId } from "./message-id";
 import {
   getWebhookConfig,
-  maybeAutoDisable,
+  recordFailure,
+  recordSuccess,
   webhookWants,
   type OutboundWebhookEvent,
   type WebhookConfig,
@@ -349,13 +350,17 @@ export function webhookIntent(
 export async function dispatchWebhook(
   env: CloudflareBindings,
   deliveryId: string,
+  opts: { delaySeconds?: number } = {},
 ): Promise<void> {
   try {
     const message: WebhookDeliveryMessage = {
       type: "webhook_delivery",
       deliveryId,
     };
-    await env.EMAIL_QUEUE.send(message);
+    await env.EMAIL_QUEUE.send(
+      message,
+      opts.delaySeconds ? { delaySeconds: opts.delaySeconds } : undefined,
+    );
   } catch (err) {
     console.error(`[webhook] delivery ${deliveryId} not queued:`, err);
   }
@@ -485,51 +490,95 @@ async function freezePayload(
   return JSON.stringify(payload);
 }
 
-/** Finish a pending row; true when this call did it. */
+/** One consumer holds an attempt this long: well past the POST's timeout. */
+const CLAIM_SECONDS = 120;
+/** A send event waits this long for its sent row, then goes without its ids. */
+const SENT_ROW_WAIT_SECONDS = 300;
+const SENT_ROW_RECHECK_SECONDS = 30;
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+/** No consumer holds the row's attempt. */
+function unclaimed(now: number): SQL {
+  return or(
+    isNull(webhookDeliveries.claimedUntil),
+    lt(webhookDeliveries.claimedUntil, now),
+  )!;
+}
+
+/** Held by the claim that set `claimedUntil` to this value. */
+function heldBy(claim: number): SQL {
+  return eq(webhookDeliveries.claimedUntil, claim);
+}
+
+/** Every attempt used and none in flight: left only to be finished. */
+function spent(now: number): SQL {
+  return and(
+    gte(webhookDeliveries.attempts, WEBHOOK_MAX_ATTEMPTS),
+    unclaimed(now),
+  )!;
+}
+
+/** Finish a pending row under `guard`; true when this call did it. */
 async function finishDelivery(
   db: Db,
   id: string,
   status: "delivered" | "failed" | "cancelled",
-  fields: {
-    attempts?: number;
-    lastStatus?: number | null;
-    lastError?: string | null;
-  } = {},
-  now: number = Math.floor(Date.now() / 1000),
+  guard: SQL,
+  fields: { lastStatus?: number | null; lastError?: string | null } = {},
+  now: number = nowSeconds(),
 ): Promise<boolean> {
   const rows = await db
     .update(webhookDeliveries)
-    .set({ status, payload: null, finishedAt: now, ...fields })
+    .set({
+      status,
+      payload: null,
+      claimedUntil: null,
+      finishedAt: now,
+      ...fields,
+    })
     .where(
       and(
         eq(webhookDeliveries.id, id),
         eq(webhookDeliveries.status, "pending"),
+        guard,
       ),
     )
     .returning({ id: webhookDeliveries.id });
   return rows.length > 0;
 }
 
-/** After a final failure; its own errors are only logged. */
+/** A final failure, counted toward the pause when this call made it. */
 async function failDelivery(
   db: Db,
   row: { id: string; generation: number },
-  fields: {
-    attempts?: number;
-    lastStatus: number | null;
-    lastError: string | null;
-  },
+  guard: SQL,
+  fields: { lastStatus: number | null; lastError: string | null },
   now?: number,
-): Promise<void> {
-  if (!(await finishDelivery(db, row.id, "failed", fields, now))) return;
+): Promise<boolean> {
+  if (!(await finishDelivery(db, row.id, "failed", guard, fields, now))) {
+    return false;
+  }
   try {
-    await maybeAutoDisable(db, row.generation, {
+    await recordFailure(db, row.generation, {
       status: fields.lastStatus,
       error: fields.lastError,
     });
   } catch (err) {
-    console.error(`[webhook] auto-disable check failed:`, err);
+    console.error(`[webhook] failure count not updated:`, err);
   }
+  return true;
+}
+
+async function sentRowExists(db: Db, sentEmailId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: sentEmails.id })
+    .from(sentEmails)
+    .where(eq(sentEmails.id, sentEmailId))
+    .limit(1);
+  return Boolean(row);
 }
 
 function retryable(result: WebhookResult): boolean {
@@ -539,30 +588,90 @@ function retryable(result: WebhookResult): boolean {
 
 /**
  * One `webhook_delivery` queue message. Acks or retries the message itself
- * and never throws.
+ * and never throws. Each attempt is claimed on the row first, so two
+ * consumers of the same delivery never POST at once, and the row (not
+ * `msg.attempts`) counts the attempts.
  */
 export async function runWebhookDelivery(
   db: Db,
+  env: CloudflareBindings,
   msg: Pick<Message<unknown>, "body" | "attempts" | "ack" | "retry">,
   opts: { fetchImpl?: typeof fetch } = {},
 ): Promise<void> {
   const deliveryId = (msg.body as WebhookDeliveryMessage).deliveryId;
-  // A sweep's resend starts at attempt 1 again: the row keeps the count.
-  let attempt = msg.attempts;
-  let generation: number | null = null;
+  let claim: number | null = null;
+  let attempt = 0;
+  let generation = 0;
   try {
-    const [row] = await db
-      .select()
+    const [current] = await db
+      .select({
+        status: webhookDeliveries.status,
+        sourceKey: webhookDeliveries.sourceKey,
+        messageId: webhookDeliveries.messageId,
+        frozen: webhookDeliveries.frozen,
+        generation: webhookDeliveries.generation,
+        lastStatus: webhookDeliveries.lastStatus,
+        lastError: webhookDeliveries.lastError,
+        createdAt: webhookDeliveries.createdAt,
+      })
       .from(webhookDeliveries)
       .where(eq(webhookDeliveries.id, deliveryId))
       .limit(1);
     // Finished already (a redelivered message): nothing is sent twice.
-    if (!row || row.status !== "pending") {
+    if (!current || current.status !== "pending") {
       msg.ack();
       return;
     }
+    const now = nowSeconds();
+
+    // A send's caller writes its sent row after the event is recorded: wait
+    // for it (no POST, no attempt used) so the ids can be frozen in.
+    if (
+      !current.frozen &&
+      current.sourceKey.startsWith("sent:") &&
+      now - current.createdAt < SENT_ROW_WAIT_SECONDS &&
+      !(await sentRowExists(db, current.messageId))
+    ) {
+      await dispatchWebhook(env, deliveryId, {
+        delaySeconds: SENT_ROW_RECHECK_SECONDS,
+      });
+      msg.ack();
+      return;
+    }
+
+    const until = now + CLAIM_SECONDS;
+    const [row] = await db
+      .update(webhookDeliveries)
+      .set({
+        attempts: sql`${webhookDeliveries.attempts} + 1`,
+        claimedUntil: until,
+      })
+      .where(
+        and(
+          eq(webhookDeliveries.id, deliveryId),
+          eq(webhookDeliveries.status, "pending"),
+          lt(webhookDeliveries.attempts, WEBHOOK_MAX_ATTEMPTS),
+          unclaimed(now),
+        ),
+      )
+      .returning();
+    if (!row) {
+      // Finished meanwhile, attempts spent (finish it), or another consumer
+      // holds the attempt (the sweep is the backstop).
+      await failDelivery(
+        db,
+        { id: deliveryId, generation: current.generation },
+        spent(now),
+        { lastStatus: current.lastStatus, lastError: current.lastError },
+        now,
+      );
+      msg.ack();
+      return;
+    }
+    claim = until;
+    attempt = row.attempts;
     generation = row.generation;
-    attempt = Math.max(msg.attempts, row.attempts + 1);
+    const held = heldBy(until);
 
     const config = await getWebhookConfig(db);
     if (
@@ -571,14 +680,14 @@ export async function runWebhookDelivery(
       config.generation !== row.generation
     ) {
       // Unticked, paused, or saved since (the URL or secret may differ).
-      await finishDelivery(db, row.id, "cancelled");
+      await finishDelivery(db, row.id, "cancelled", held);
       msg.ack();
       return;
     }
 
     let body = row.payload;
     if (body === null) {
-      await failDelivery(db, row, {
+      await failDelivery(db, row, held, {
         lastStatus: null,
         lastError: "no payload",
       });
@@ -587,32 +696,22 @@ export async function runWebhookDelivery(
     }
     if (!row.frozen) {
       // Frozen before the first POST: every attempt sends exactly this body.
-      const frozen = await freezePayload(db, { ...row, payload: body });
+      body = await freezePayload(db, { ...row, payload: body });
       const stored = await db
         .update(webhookDeliveries)
-        .set({ payload: frozen, frozen: 1 })
+        .set({ payload: body, frozen: 1 })
         .where(
           and(
             eq(webhookDeliveries.id, row.id),
             eq(webhookDeliveries.status, "pending"),
             eq(webhookDeliveries.frozen, 0),
+            held,
           ),
         )
-        .returning({ payload: webhookDeliveries.payload });
-      if (stored.length > 0) {
-        body = frozen;
-      } else {
-        // Another consumer froze it first: send what it stored.
-        const [again] = await db
-          .select({ payload: webhookDeliveries.payload })
-          .from(webhookDeliveries)
-          .where(eq(webhookDeliveries.id, row.id))
-          .limit(1);
-        if (!again?.payload) {
-          msg.ack();
-          return;
-        }
-        body = again.payload;
+        .returning({ id: webhookDeliveries.id });
+      if (stored.length === 0) {
+        msg.ack();
+        return;
       }
     }
 
@@ -624,12 +723,15 @@ export async function runWebhookDelivery(
       opts.fetchImpl ?? fetch,
     );
     const fields = {
-      attempts: attempt,
       lastStatus: result.status ?? null,
       lastError: cut(result.error),
     };
     if (result.ok) {
-      await finishDelivery(db, row.id, "delivered", fields);
+      if (await finishDelivery(db, row.id, "delivered", held, fields)) {
+        await recordSuccess(db, row.generation).catch((err) =>
+          console.error(`[webhook] failure count not reset:`, err),
+        );
+      }
       msg.ack();
       return;
     }
@@ -639,43 +741,66 @@ export async function runWebhookDelivery(
         .update(webhookDeliveries)
         .set({
           ...fields,
-          nextAttemptAt: Math.floor(Date.now() / 1000) + delaySeconds,
+          nextAttemptAt: nowSeconds() + delaySeconds,
+          claimedUntil: null,
         })
         .where(
           and(
             eq(webhookDeliveries.id, row.id),
             eq(webhookDeliveries.status, "pending"),
+            held,
           ),
         );
       msg.retry({ delaySeconds });
       return;
     }
-    await failDelivery(db, row, fields);
+    await failDelivery(db, row, held, fields);
     msg.ack();
   } catch (err) {
     console.error(`[webhook] delivery ${deliveryId} failed:`, err);
+    if (claim === null) {
+      // No attempt was used: try again, or leave the row to the sweep.
+      if (msg.attempts < WEBHOOK_MAX_ATTEMPTS) {
+        msg.retry({ delaySeconds: WEBHOOK_RETRY_DELAYS[msg.attempts - 1] });
+      } else {
+        msg.ack();
+      }
+      return;
+    }
     if (attempt < WEBHOOK_MAX_ATTEMPTS) {
-      msg.retry({ delaySeconds: WEBHOOK_RETRY_DELAYS[attempt - 1] });
+      const delaySeconds = WEBHOOK_RETRY_DELAYS[attempt - 1];
+      // Free the attempt for the retry; if that fails too, the claim expires.
+      await db
+        .update(webhookDeliveries)
+        .set({ claimedUntil: null, nextAttemptAt: nowSeconds() + delaySeconds })
+        .where(
+          and(
+            eq(webhookDeliveries.id, deliveryId),
+            eq(webhookDeliveries.status, "pending"),
+            heldBy(claim),
+          ),
+        )
+        .catch((error) =>
+          console.error(`[webhook] delivery ${deliveryId} not freed:`, error),
+        );
+      msg.retry({ delaySeconds });
       return;
     }
     // The last attempt: finish the row, or leave it to the sweep.
-    if (generation !== null) {
-      await failDelivery(
-        db,
-        { id: deliveryId, generation },
-        { attempts: attempt, lastStatus: null, lastError: cut(String(err)) },
-      ).catch((error) =>
-        console.error(`[webhook] delivery ${deliveryId} not finished:`, error),
-      );
-    }
+    await failDelivery(db, { id: deliveryId, generation }, heldBy(claim), {
+      lastStatus: null,
+      lastError: cut(String(err)),
+    }).catch((error) =>
+      console.error(`[webhook] delivery ${deliveryId} not finished:`, error),
+    );
     msg.ack();
   }
 }
 
 /**
  * Hourly: resend the queue pointer of a pending row whose message was lost,
- * finish one whose attempts are spent, then delete finished rows older than
- * 7 days.
+ * finish one whose attempts are spent (once no attempt is in flight), then
+ * delete rows finished more than 7 days ago.
  */
 export async function sweepWebhookDeliveries(
   env: CloudflareBindings,
@@ -698,22 +823,21 @@ export async function sweepWebhookDeliveries(
       and(
         eq(webhookDeliveries.status, "pending"),
         lt(webhookDeliveries.nextAttemptAt, now - SWEEP_OVERDUE_SECONDS),
+        unclaimed(now),
       ),
     )
     .orderBy(webhookDeliveries.nextAttemptAt)
     .limit(SWEEP_LIMIT);
   for (const row of overdue) {
     if (row.attempts >= WEBHOOK_MAX_ATTEMPTS) {
-      await failDelivery(
+      const failed = await failDelivery(
         db,
         row,
-        {
-          lastStatus: row.lastStatus,
-          lastError: row.lastError,
-        },
+        spent(now),
+        { lastStatus: row.lastStatus, lastError: row.lastError },
         now,
       );
-      counts.failed += 1;
+      if (failed) counts.failed += 1;
       continue;
     }
     await db
@@ -735,8 +859,8 @@ export async function sweepWebhookDeliveries(
       DELETE FROM webhook_deliveries
       WHERE rowid IN (
         SELECT rowid FROM webhook_deliveries
-        WHERE created_at < ${cutoff} AND status <> 'pending'
-        ORDER BY created_at
+        WHERE finished_at < ${cutoff}
+        ORDER BY finished_at
         LIMIT ${PRUNE_BATCH}
       )
     `);
