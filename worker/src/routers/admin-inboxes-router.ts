@@ -1026,20 +1026,28 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
   // names them, so another edit can't write back a purpose read before an
   // admin changed it. Turning it on is guarded in the write itself: mail may
   // land between the check above and this statement.
+  //
+  // A mapped inbox is never a test inbox, whatever another request did
+  // meanwhile: this write sets the source, so it clears the purpose with it.
+  const cloudflareRouted = nextSource === "cloudflare";
   const wantsTest = body.purpose === "test";
   const stillEmpty = sql`NOT EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.recipient} = ${email})`;
-  const canBeTest = sql`(${senderIdentities.purpose} = 'test' OR ${stillEmpty})`;
-  const insertPurpose = {
-    purpose: wantsTest
-      ? sql`CASE WHEN ${stillEmpty} THEN 'test' ELSE 'mail' END`
-      : ("mail" as const),
-    testRetentionDays: wantsTest
-      ? sql`CASE WHEN ${stillEmpty} THEN ${nextTestRetentionDays} ELSE NULL END`
-      : null,
-  };
+  // The row's resulting source is `nextSource`: the upsert writes it.
+  const canBeTest = sql`(${nextSource} = 'cloudflare' AND (${senderIdentities.purpose} = 'test' OR ${stillEmpty}))`;
+  const notTest = { purpose: "mail" as const, testRetentionDays: null };
+  const insertPurpose = !cloudflareRouted
+    ? notTest
+    : {
+        purpose: wantsTest
+          ? sql`CASE WHEN ${stillEmpty} THEN 'test' ELSE 'mail' END`
+          : ("mail" as const),
+        testRetentionDays: wantsTest
+          ? sql`CASE WHEN ${stillEmpty} THEN ${nextTestRetentionDays} ELSE NULL END`
+          : null,
+      };
   const updatePurpose =
-    body.purpose === "mail"
-      ? { purpose: "mail" as const, testRetentionDays: null }
+    !cloudflareRouted || body.purpose === "mail"
+      ? notTest
       : wantsTest
         ? {
             purpose: sql`CASE WHEN ${canBeTest} THEN 'test' ELSE 'mail' END`,

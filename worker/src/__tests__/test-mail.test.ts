@@ -352,6 +352,20 @@ describe("waitForTestMail", () => {
 });
 
 describe("pruneTestMail", () => {
+  it("never prunes a test inbox mapped to Gmail", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await addInbox(TEST_INBOX, "test");
+    // Mapped by another path, as a concurrent edit could leave it.
+    await getDb()
+      .update(senderIdentities)
+      .set({ source: "gmail", gmailAccountId: "g-1" })
+      .where(eq(senderIdentities.email, TEST_INBOX));
+    await addMail({ receivedAt: now - 10 * 24 * 60 * 60 });
+
+    expect(await pruneTestMail(getDb(), env as never, now)).toBe(0);
+    expect(await getDb().select().from(emails)).toHaveLength(1);
+  });
+
   it("keeps mail whose inbox stopped being a test inbox after the candidates were read", async () => {
     const now = Math.floor(Date.now() / 1000);
     await addInbox(TEST_INBOX, "test");

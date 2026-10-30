@@ -245,7 +245,7 @@ function prunableIds(now: number, candidates: string[]) {
   return sql`(
     SELECT e.id FROM ${emails} e
     JOIN ${senderIdentities} si ON si.email = e.recipient
-    WHERE si.purpose = 'test'
+    WHERE si.purpose = 'test' AND si.source = 'cloudflare'
       AND e.received_at <
         ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
       AND e.id IN (SELECT value FROM json_each(${JSON.stringify(candidates)}))
@@ -261,7 +261,8 @@ function prunableIds(now: number, candidates: string[]) {
  * statement re-checks eligibility: an inbox switched back to normal mail, or
  * given a longer retention, in between keeps its mail. State goes before the
  * row, as in `deleteEmailWithAttachments`; files, counts and the audit entry
- * follow for the rows the batch actually deleted.
+ * follow for the rows the batch actually deleted. Only Cloudflare-routed
+ * test inboxes are pruned: a mapped inbox's mail is never deleted here.
  */
 export async function pruneTestMail(
   db: Db,
@@ -274,7 +275,7 @@ export async function pruneTestMail(
       SELECT e.id AS id
       FROM ${emails} e
       JOIN ${senderIdentities} si ON si.email = e.recipient
-      WHERE si.purpose = 'test'
+      WHERE si.purpose = 'test' AND si.source = 'cloudflare'
         AND e.received_at <
           ${now} - COALESCE(si.test_retention_days, ${DEFAULT_TEST_RETENTION_DAYS}) * 86400
       ORDER BY e.received_at, e.id
