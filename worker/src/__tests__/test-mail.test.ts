@@ -13,6 +13,7 @@ import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { handleEmail } from "../email-handler";
 import { emails } from "../db/emails.schema";
+import { people } from "../db/people.schema";
 import { rules } from "../db/rules.schema";
 import { senderIdentities } from "../db/sender-identities.schema";
 import { inboxPermissions } from "../db/inbox-permissions.schema";
@@ -364,6 +365,49 @@ describe("pruneTestMail", () => {
 
     expect(await pruneTestMail(getDb(), env as never, now)).toBe(0);
     expect(await getDb().select().from(emails)).toHaveLength(1);
+  });
+
+  it("deletes R2 keys in chunks of 1,000, after the counts, and survives an R2 failure", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await addInbox(TEST_INBOX, "test");
+    await getDb()
+      .update(people)
+      .set({ totalCount: 5, unreadCount: 5 })
+      .where(eq(people.id, "sender-1"));
+    const ids = [
+      await addMail({ receivedAt: now - 4 * 24 * 60 * 60 }),
+      await addMail({ receivedAt: now - 4 * 24 * 60 * 60 }),
+    ];
+    // 600 attachment rows per message: 1,200 keys in one pass.
+    for (const id of ids) {
+      await env.DB.prepare(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 600)
+         INSERT INTO attachments (id, email_id, kind, filename, content_type, size, r2_key, created_at)
+         SELECT ?1 || '-a' || i, ?1, 'inbound', 'f.txt', 'text/plain', 1, 'attachments/' || ?1 || '/' || i, ?2 FROM n`,
+      )
+        .bind(id, now)
+        .run();
+    }
+    const calls: number[] = [];
+    const r2 = {
+      delete: vi.fn(async (keys: string[]) => {
+        calls.push(keys.length);
+        if (keys.length > 1000) throw new Error("too many keys");
+        // The second chunk fails anyway: the pass must still finish.
+        if (calls.length === 2) throw new Error("R2 unavailable");
+      }),
+    };
+
+    expect(await pruneTestMail(getDb(), { ...env, R2: r2 } as never, now)).toBe(
+      2,
+    );
+    expect(calls).toEqual([1000, 200]);
+    const [person] = await getDb()
+      .select({ total: people.totalCount, unread: people.unreadCount })
+      .from(people)
+      .where(eq(people.id, "sender-1"));
+    expect(person).toEqual({ total: 3, unread: 3 });
+    expect(await getDb().select().from(emails)).toHaveLength(0);
   });
 
   it("keeps mail whose inbox stopped being a test inbox after the candidates were read", async () => {

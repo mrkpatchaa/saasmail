@@ -318,13 +318,6 @@ export async function pruneTestMail(
   }[];
   if (deleted.length === 0) return 0;
 
-  const gone = new Set(deleted.map((row) => row.id));
-  const keys = [
-    ...files.filter((f) => gone.has(f.emailId)).map((f) => f.r2Key),
-    ...deleted.flatMap((row) => (row.rawR2Key ? [row.rawR2Key] : [])),
-  ];
-  if (keys.length > 0) await env.R2.delete(keys);
-
   const counts = new Map<string, { total: number; unread: number }>();
   for (const row of deleted) {
     const c = counts.get(row.personId) ?? { total: 0, unread: 0 };
@@ -350,5 +343,28 @@ export async function pruneTestMail(
       subject: row.subject,
     })),
   );
+
+  // Files last: the rows are gone, so a failure here must not stop the
+  // accounting above, and the next pass could not retry it. A failed chunk's
+  // keys are logged; an orphaned object is the lesser harm.
+  const gone = new Set(deleted.map((row) => row.id));
+  const keys = [
+    ...files.filter((f) => gone.has(f.emailId)).map((f) => f.r2Key),
+    ...deleted.flatMap((row) => (row.rawR2Key ? [row.rawR2Key] : [])),
+  ];
+  for (let start = 0; start < keys.length; start += R2_DELETE_LIMIT) {
+    const chunk = keys.slice(start, start + R2_DELETE_LIMIT);
+    try {
+      await env.R2.delete(chunk);
+    } catch (error) {
+      console.error(
+        `[test-mail] pruned rows' files not deleted from R2: ${chunk.join(", ")}`,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+  }
   return deleted.length;
 }
+
+/** Keys one R2 `delete()` call accepts. */
+const R2_DELETE_LIMIT = 1000;
