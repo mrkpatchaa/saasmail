@@ -176,7 +176,8 @@ describe("webhook events and auto-disable", () => {
       },
       null,
     );
-    const { generation } = await current();
+    const { generation, enabledAt } = await current();
+    const now = enabledAt!;
     await finished(generation, "failed", 19, now);
     expect(
       await maybeAutoDisable(getDb(), generation, { status: 500, error: null }),
@@ -209,7 +210,8 @@ describe("webhook events and auto-disable", () => {
       { url: "https://hook.example.com", secret: null },
       null,
     );
-    const { generation } = await current();
+    const { generation, enabledAt } = await current();
+    const now = enabledAt!;
     await finished(generation, "failed", 20, now);
     await setWebhookConfig(
       getDb(),
@@ -229,7 +231,8 @@ describe("webhook events and auto-disable", () => {
       { url: "https://hook.example.com", secret: null },
       null,
     );
-    const { generation } = await current();
+    const { generation, enabledAt } = await current();
+    const now = enabledAt!;
     await finished(generation, "failed", 15, now);
     await finished(generation, "delivered", 1, now + 1);
     await finished(generation, "cancelled", 10, now + 2);
