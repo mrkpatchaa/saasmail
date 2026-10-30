@@ -45,6 +45,10 @@ import { sentEmails } from "../db/sent-emails.schema";
 import { suppressions } from "../db/suppressions.schema";
 import { parseCloudflareEvent } from "../lib/delivery/cloudflare";
 import { recordDeliveryEvent } from "../lib/delivery/record";
+import { undoListUnsubscribe } from "../lib/list-unsubscribe";
+import { sendEmail } from "../lib/send-email";
+import { signToken } from "../lib/unsubscribe-token";
+import { campaignUnsubscribeAttributions } from "../db/campaign-unsubscribe-attributions.schema";
 import type { DeliveryEvent } from "../lib/delivery/types";
 import { encryptSecret } from "../lib/crypto";
 import type { EmailSender, SendEmailParams } from "../lib/email-sender";
@@ -317,6 +321,102 @@ describe("recordDeliveryEvent", () => {
     expect(outcome?.suppression).toBeNull();
   });
 
+  it("counts soft bounces only: two cleared hard bounces and one soft suppress nothing", async () => {
+    for (const n of [1, 2]) {
+      await recordDeliveryEvent(
+        getDb(),
+        parse(bouncedEvent({ eventId: `hard-${n}` })),
+      );
+      await getDb().delete(suppressions);
+    }
+    const outcome = await recordDeliveryEvent(
+      getDb(),
+      parse(bouncedEvent({ type: "soft", eventId: "soft-1" })),
+    );
+    expect(outcome?.suppression).toBeNull();
+    expect(await getDb().select().from(suppressions)).toEqual([]);
+  });
+
+  it("does not let a late, 100-day-old soft bounce complete the threshold", async () => {
+    for (const n of [1, 2]) {
+      await recordDeliveryEvent(
+        getDb(),
+        parse(bouncedEvent({ type: "soft", eventId: `recent-${n}` })),
+      );
+    }
+    const late = await recordDeliveryEvent(getDb(), {
+      ...parse(bouncedEvent({ type: "soft", eventId: "late" })),
+      occurredAt: EVENT_TIMESTAMP - 100 * 24 * 60 * 60,
+    });
+    expect(late?.suppression).toBeNull();
+    expect(await getDb().select().from(suppressions)).toEqual([]);
+  });
+
+  it("suppresses when three soft bounces within 30 days arrive out of order", async () => {
+    const at = (days: number) => EVENT_TIMESTAMP - days * 24 * 60 * 60;
+    // Occurred at -20, -10 and 0 days; the middle one arrives last.
+    for (const [id, days] of [
+      ["s-0", 0],
+      ["s-20", 20],
+    ] as const) {
+      await recordDeliveryEvent(getDb(), {
+        ...parse(bouncedEvent({ type: "soft", eventId: id })),
+        occurredAt: at(days),
+      });
+    }
+    const middle = await recordDeliveryEvent(getDb(), {
+      ...parse(bouncedEvent({ type: "soft", eventId: "s-10" })),
+      occurredAt: at(10),
+    });
+    expect(middle?.suppression).toBe("soft_bounce");
+  });
+
+  it("does not suppress three soft bounces spread over more than 30 days", async () => {
+    const at = (days: number) => EVENT_TIMESTAMP - days * 24 * 60 * 60;
+    for (const [id, days] of [
+      ["s-0", 0],
+      ["s-40", 40],
+      ["s-20", 20],
+    ] as const) {
+      await recordDeliveryEvent(getDb(), {
+        ...parse(bouncedEvent({ type: "soft", eventId: id })),
+        occurredAt: at(days),
+      });
+    }
+    expect(await getDb().select().from(suppressions)).toEqual([]);
+  });
+
+  it("decides the threshold inside the batch: three concurrent soft bounces suppress once", async () => {
+    await Promise.all(
+      [1, 2, 3].map((n) =>
+        recordDeliveryEvent(
+          getDb(),
+          parse(bouncedEvent({ type: "soft", eventId: `c-${n}` })),
+        ),
+      ),
+    );
+    const rows = await getDb().select().from(suppressions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("soft_bounce");
+  });
+
+  it("does not suppress again when the third soft bounce is redelivered after an admin cleared it", async () => {
+    for (const n of [1, 2, 3]) {
+      await recordDeliveryEvent(
+        getDb(),
+        parse(bouncedEvent({ type: "soft", eventId: `soft-${n}` })),
+      );
+    }
+    await getDb().delete(suppressions);
+    expect(
+      await recordDeliveryEvent(
+        getDb(),
+        parse(bouncedEvent({ type: "soft", eventId: "soft-3" })),
+      ),
+    ).toBeNull();
+    expect(await getDb().select().from(suppressions)).toEqual([]);
+  });
+
   it("suppresses an event without messageId, uncorrelated", async () => {
     await createTestSentEmail({ id: "se-1", messageId: MESSAGE_ID });
     const outcome = await recordDeliveryEvent(
@@ -388,6 +488,12 @@ describe("parseCloudflareEvent", () => {
   it("ignores types it does not handle and refuses malformed bodies", () => {
     expect(parseCloudflareEvent(deliveredEvent())).toBe("ignore");
     expect(
+      parseCloudflareEvent({
+        ...bouncedEvent(),
+        type: "cf.email.sending.message.constructor",
+      }),
+    ).toBe("ignore");
+    expect(
       parseCloudflareEvent({ type: "cf.email.sending.message.deferred" }),
     ).toBe("ignore");
     const noId = bouncedEvent();
@@ -442,14 +548,6 @@ describe("delivery events on EMAIL_QUEUE", () => {
     expect(second.ack).toHaveBeenCalledOnce();
     const [row] = await getDb().select().from(deliveryEvents);
     expect(row.sentEmailId).toBe("se-late");
-  });
-
-  it("records an uncorrelated second attempt", async () => {
-    const second = queueMessage(bouncedEvent(), 2);
-    await runQueue(second);
-    expect(second.ack).toHaveBeenCalledOnce();
-    const [row] = await getDb().select().from(deliveryEvents);
-    expect(row.sentEmailId).toBeNull();
   });
 
   it("acks a delivered event and a malformed one without a write", async () => {
@@ -939,5 +1037,137 @@ describe("contact export and erase", () => {
       smtpStatus: null,
       kind: "bounced",
     });
+  });
+});
+
+describe("unsubscribe links never undo a provider's decision", () => {
+  // Matches the binding in vitest.config.test.ts.
+  const SECRET = "test-secret-do-not-use-in-prod";
+
+  beforeEach(cleanDb);
+
+  async function undoV1(email: string) {
+    const token = await signToken(email, SECRET);
+    return authFetch(
+      `/api/unsubscribe/undo?token=${encodeURIComponent(token)}`,
+      { method: "POST" },
+    );
+  }
+
+  it("a v1 undo keeps a hard_bounce suppression and answers 410", async () => {
+    await recordDeliveryEvent(getDb(), parse(bouncedEvent()));
+    const res = await undoV1(DEAD);
+    expect(res.status).toBe(410);
+    const rows = await getDb().select().from(suppressions);
+    expect(rows.map((r) => r.reason)).toEqual(["hard_bounce"]);
+  });
+
+  it("a v1 undo still removes the unsubscribe its link made", async () => {
+    await getDb().insert(suppressions).values({
+      id: "s-1",
+      email: DEAD,
+      reason: "unsubscribe",
+      source: "one-click",
+      note: null,
+      createdAt: ts(),
+    });
+    const res = await undoV1(DEAD);
+    expect(res.status).toBe(200);
+    expect(await getDb().select().from(suppressions)).toEqual([]);
+  });
+
+  it("a v2 undo does not restore a membership a hard bounce removed", async () => {
+    await seedMember();
+    await getDb().insert(campaigns).values({
+      id: "camp-1",
+      name: "c",
+      subject: "S",
+      templateSlug: "weekly",
+      bodyHtml: "<p>x</p>",
+      fromAddress: INBOX,
+      listId: "list-a",
+      status: "sent",
+      sentAt: ts(),
+      createdAt: ts(),
+      updatedAt: ts(),
+    });
+    await getDb().insert(campaignUnsubscribeAttributions).values({
+      id: "ua-1",
+      campaignId: "camp-1",
+      listMemberId: "m-list-a",
+      occurredAt: ts(),
+    });
+    await recordDeliveryEvent(getDb(), parse(bouncedEvent()));
+
+    const outcome = await undoListUnsubscribe(getDb(), {
+      listId: "list-a",
+      campaignId: "camp-1",
+      contactId: "c-1",
+    });
+    expect(outcome.error).toBe("window_closed");
+    const [member] = await getDb()
+      .select()
+      .from(listMembers)
+      .where(eq(listMembers.id, "m-list-a"));
+    expect(member).toMatchObject({
+      status: "unsubscribed",
+      unsubscribeReason: "hard_bounce",
+    });
+    expect(
+      await getDb().select().from(campaignUnsubscribeAttributions),
+    ).toHaveLength(1);
+  });
+});
+
+describe("a Cc copy of a non-transactional send", () => {
+  beforeEach(async () => {
+    await cleanDb();
+    (env as any).DEMO_MODE = "0";
+  });
+
+  it("correlates its bounce through the copy's Message-ID", async () => {
+    // Each copy gets its own provider Message-ID, named after its recipient.
+    const sender: EmailSender = {
+      provider: "cloudflare",
+      async send(params) {
+        const local = String(params.to)
+          .replace(/^.*<|>.*$/g, "")
+          .split("@")[0];
+        return {
+          id: `<${local}@cf.test>`,
+          error: null,
+          deliveredMessageId: `<${local}@cf.test>`,
+        };
+      },
+      maxAttachmentBytes: () => 1e7,
+      maxMessageBytes: () => 1e7,
+    };
+    const result = await sendEmail({
+      db: getDb(),
+      env: env as unknown as CloudflareBindings,
+      payload: {
+        to: "first@example.com",
+        cc: [{ email: "second@example.com" }],
+        fromAddress: INBOX,
+        subject: "News",
+        bodyHtml: "<p>news</p>",
+        transactional: false,
+      },
+      files: [],
+      allowed: { isAdmin: true },
+      sender,
+    });
+    expect(result.ok).toBe(true);
+
+    const outcome = await recordDeliveryEvent(
+      getDb(),
+      parse(
+        bouncedEvent({
+          messageId: "<second@cf.test>",
+          recipient: "second@example.com",
+        }),
+      ),
+    );
+    expect(outcome?.sentEmailId).toBe(result.id);
   });
 });

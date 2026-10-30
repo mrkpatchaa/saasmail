@@ -17,15 +17,19 @@ With Cloudflare Email Sending, and once the instance's queue is subscribed to th
 
 What each event does:
 
-| Event                                                  | Suppression reason                                        | Newsletter lists                                   | Transactional mail |
-| ------------------------------------------------------ | --------------------------------------------------------- | -------------------------------------------------- | ------------------ |
-| Hard bounce (the address does not exist)               | `hard_bounce`, replacing any other reason the address had | unsubscribed from every list, reason `hard_bounce` | **refused**        |
-| Soft bounce (Cloudflare gave up retrying)              | `soft_bounce` at the third soft bounce within 30 days     | unchanged                                          | sent               |
-| Spam complaint                                         | `complaint`, unless the address is already suppressed     | unsubscribed from every list, reason `complaint`   | sent by saasmail   |
-| Rejected because Cloudflare's own list has the address | `provider`, unless the address is already suppressed      | unchanged                                          | sent by saasmail   |
-| Any other rejection, or a failure                      | none                                                      | unchanged                                          | sent               |
+| Event                                                  | Suppression reason                                                                                                                                     | Newsletter lists                                   | Transactional mail |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------- | ------------------ |
+| Hard bounce (the address does not exist)               | `hard_bounce`, replacing any other reason the address had                                                                                              | unsubscribed from every list, reason `hard_bounce` | **refused**        |
+| Soft bounce (Cloudflare gave up retrying)              | `soft_bounce` at the third soft bounce within any 30 days, by when they occurred (hard bounces do not count), unless the address is already suppressed | unchanged                                          | sent               |
+| Spam complaint                                         | `complaint`, unless the address is already suppressed                                                                                                  | unsubscribed from every list, reason `complaint`   | sent by saasmail   |
+| Rejected because Cloudflare's own list has the address | `provider`, unless the address is already suppressed                                                                                                   | unchanged                                          | sent by saasmail   |
+| Any other rejection, or a failure                      | none                                                                                                                                                   | unchanged                                          | sent               |
 
 Every suppression stops marketing mail: template sends, sequences and campaigns. Only a hard bounce also stops transactional mail, because the address cannot receive anything: a transactional compose (`POST /api/send` with `transactional: true`) or a reply to it (`POST /api/send/reply/{emailId}`, MCP `reply_email`, also from an inbox connected to Gmail or Outlook) is refused with `422` and code `RECIPIENT_HARD_BOUNCED`, naming the `addresses`, and nothing is sent or stored. A non-transactional compose (also MCP `send_email`) goes to the other recipients and lists the address under `suppressed`, as for any suppression. The answer is not kept for the idempotency key, so a retry with the same key sends once the address is removed. A JMAP `EmailSubmission/set` answers `invalidRecipients`; a delayed JMAP send whose recipient hard-bounced while it waited fails instead of going out; an outbox retry with a hard-bounced recipient anywhere in its envelope stops, as for a suppressed one.
+
+A bounce on a copy of a non-transactional send (each recipient gets their own copy) is attached to the message too: saasmail keeps every copy's provider Message-ID.
+
+An unsubscribe link never reverses a provider's decision: its Re-subscribe button removes only the `unsubscribe` suppression the link made (it answers `410` while another reason keeps the address suppressed, also `manual`), and a campaign link does not put back a list membership a hard bounce or complaint removed.
 
 Remove an address on the Suppressions page when it works again. **Cloudflare keeps its own suppression list** for hard bounces and complaints, and removing the address in saasmail does not remove it there: Cloudflare still refuses mail to it until you remove it in the Cloudflare dashboard too. The page says so on those rows.
 

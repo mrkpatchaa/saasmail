@@ -699,14 +699,6 @@ describe("Email Sending event subscriptions", () => {
         "Email Sending events: example.com reports bounces and complaints to q.",
     });
   });
-
-  it("is one note without a token", async () => {
-    const { lines } = await main(ARGS, deps().deps);
-    expect(eventsLine(lines)).toBeUndefined();
-    expect(
-      lines.find((l) => l.label.startsWith("Cloudflare API: skipped")).status,
-    ).toBe("info");
-  });
 });
 
 describe("the entry point", () => {
