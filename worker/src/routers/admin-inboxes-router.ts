@@ -976,9 +976,13 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
 
   // Mail may land between the check above and this write: the switch turns
   // on only if the inbox is still empty as the row is written.
+  const stillEmpty = sql`NOT EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.recipient} = ${email})`;
   const purposeValue = turningOnTest
-    ? sql`CASE WHEN EXISTS (SELECT 1 FROM ${emails} WHERE ${emails.recipient} = ${email}) THEN 'mail' ELSE 'test' END`
+    ? sql`CASE WHEN ${stillEmpty} THEN 'test' ELSE 'mail' END`
     : nextPurpose;
+  const retentionValue = turningOnTest
+    ? sql`CASE WHEN ${stillEmpty} THEN ${nextTestRetentionDays} ELSE NULL END`
+    : nextTestRetentionDays;
 
   await db
     .insert(senderIdentities)
@@ -996,7 +1000,7 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
       gmailAccountId: nextGmailAccountId,
       outlookAccountId: nextOutlookAccountId,
       purpose: purposeValue,
-      testRetentionDays: nextTestRetentionDays,
+      testRetentionDays: retentionValue,
       createdAt: now,
       updatedAt: now,
     })
@@ -1019,7 +1023,7 @@ adminInboxesRouter.openapi(patchInboxRoute, async (c) => {
         gmailAccountId: nextGmailAccountId,
         outlookAccountId: nextOutlookAccountId,
         purpose: purposeValue,
-        testRetentionDays: nextTestRetentionDays,
+        testRetentionDays: retentionValue,
         updatedAt: now,
       },
     });
