@@ -239,7 +239,7 @@ export async function runSuggestedReply(
       )
       .map((message) => ({
         direction: message.direction,
-        subject: message.subject,
+        subject: message.subject?.slice(0, SCREEN_SUBJECT_CHARS) ?? null,
         body: promptBody(message.bodyText, message.bodyHtml),
         occurredAt: message.occurredAt,
       }))

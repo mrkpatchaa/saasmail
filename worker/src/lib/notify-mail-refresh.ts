@@ -47,6 +47,6 @@ export async function notifyMailRefresh(
       ),
     );
   } catch (error) {
-    console.warn("[ai-file] realtime refresh failed:", error);
+    console.warn("[mail-refresh] realtime refresh failed:", error);
   }
 }
