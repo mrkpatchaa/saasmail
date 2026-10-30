@@ -233,7 +233,9 @@ describe("suggested reply consumer", () => {
     ).toHaveLength(0);
     expect(model.doGenerateCalls).toHaveLength(1);
     expect(warn).toHaveBeenCalledWith(
-      "[suggested-reply] injection screen returned empty text; skipping:",
+      expect.stringContaining(
+        "[injection-guard] the check returned empty text",
+      ),
       expect.objectContaining({
         reasoningLength: expect.any(Number),
       }),
