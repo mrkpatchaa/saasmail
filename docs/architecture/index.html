@@ -1,0 +1,4454 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>saasmail Architecture Map</title>
+    <style>
+      /* Layout: a survey sheet. Upper row of areas hangs above the shared-services band, lower row stands below it, so every edge crosses only the band. */
+      :root {
+        --bg: #eef1ef;
+        --sheet: #f7f8f6;
+        --ink: #1d2523;
+        --ink-2: #4c5a56;
+        --rule: #c9d1cd;
+        --accent: #1f6f78;
+        --panel: #ffffff;
+        --chip: #e3e8e5;
+        --sev-high: #b3261e;
+        --sev-med: #a8650a;
+        --sev-low: #5a6b66;
+        --edge: #6f7f7a;
+        --a-shared: #5d6b84;
+        --a-family: #b0563a;
+        --a-maison: #8a6d1f;
+        --a-work: #2f7a4f;
+        --a-reading: #6b4f9a;
+        --a-newtab: #1f6f8a;
+        --a-server: #44525a;
+        --a-admin: #93445f;
+        --a-marketing: #b07a12;
+        --a-lab: #3d6e2e;
+        --f-display:
+          "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua",
+          Georgia, serif;
+        --f-body:
+          "Avenir Next", "Segoe UI", "Helvetica Neue", system-ui, sans-serif;
+        --f-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #141917;
+          --sheet: #1a201e;
+          --ink: #e2e8e5;
+          --ink-2: #9fb0aa;
+          --rule: #34403c;
+          --accent: #5fb3bc;
+          --panel: #1f2624;
+          --chip: #2a3330;
+          --sev-high: #f2867d;
+          --sev-med: #e6ac52;
+          --sev-low: #9fb0aa;
+          --edge: #7d8f89;
+          --a-shared: #93a3c4;
+          --a-family: #e08a6d;
+          --a-maison: #cfae55;
+          --a-work: #6cbf8b;
+          --a-reading: #a98bd8;
+          --a-newtab: #5fb0cc;
+          --a-server: #9aaab3;
+          --a-admin: #d8839f;
+          --a-marketing: #e2b04d;
+          --a-lab: #86bb72;
+          color-scheme: dark;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #141917;
+        --sheet: #1a201e;
+        --ink: #e2e8e5;
+        --ink-2: #9fb0aa;
+        --rule: #34403c;
+        --accent: #5fb3bc;
+        --panel: #1f2624;
+        --chip: #2a3330;
+        --sev-high: #f2867d;
+        --sev-med: #e6ac52;
+        --sev-low: #9fb0aa;
+        --edge: #7d8f89;
+        --a-shared: #93a3c4;
+        --a-family: #e08a6d;
+        --a-maison: #cfae55;
+        --a-work: #6cbf8b;
+        --a-reading: #a98bd8;
+        --a-newtab: #5fb0cc;
+        --a-server: #9aaab3;
+        --a-admin: #d8839f;
+        --a-marketing: #e2b04d;
+        --a-lab: #86bb72;
+        color-scheme: dark;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: var(--bg);
+        color: var(--ink);
+        font: 14px/1.45 var(--f-body);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      header.top {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 16px;
+        padding-block: 10px;
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+        border-bottom: 1px solid var(--rule);
+        background: var(--sheet);
+        z-index: 5;
+      }
+      header.top h1 {
+        font: 600 19px/1.2 var(--f-display);
+        margin: 0;
+        letter-spacing: 0.01em;
+      }
+      .meta {
+        color: var(--ink-2);
+        font: 12px/1.3 var(--f-mono);
+      }
+      .meta b {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .tools {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-left: auto;
+      }
+      button {
+        font: 500 13px/1 var(--f-body);
+        color: var(--ink);
+        background: var(--chip);
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 7px 11px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button:focus-visible,
+      .box:focus-visible,
+      .step:focus-visible,
+      .flow h3:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      button.primary {
+        background: var(--accent);
+        color: var(--sheet);
+        border-color: var(--accent);
+      }
+      #zoomlabel {
+        font: 12px var(--f-mono);
+        color: var(--ink-2);
+        min-width: 9ch;
+        align-self: center;
+        text-align: right;
+      }
+      main {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      #vp {
+        position: relative;
+        flex: 1;
+        overflow: hidden;
+        touch-action: none;
+        cursor: grab;
+        background:
+          radial-gradient(circle, var(--rule) 1px, transparent 1.2px) 0 0 / 24px
+            24px,
+          var(--bg);
+      }
+      #vp.dragging {
+        cursor: grabbing;
+      }
+      #world {
+        position: absolute;
+        left: 0;
+        top: 0;
+        transform-origin: 0 0;
+        --k: 1;
+      }
+      #edges {
+        position: absolute;
+        left: 0;
+        top: 0;
+        overflow: visible;
+        pointer-events: none;
+      }
+      #edges path {
+        fill: none;
+        stroke: var(--edge);
+        stroke-width: calc(1.4px * var(--k));
+        opacity: 0.35;
+      }
+      #edges path.hot {
+        stroke: var(--accent);
+        opacity: 0.95;
+        stroke-width: calc(2.4px * var(--k));
+      }
+      #edges marker path {
+        fill: var(--edge);
+        stroke: none;
+        opacity: 0.6;
+      }
+      #edges .elabel {
+        display: none;
+      }
+      .z2 #edges .elabel,
+      #edges .elabel.hot {
+        display: block;
+      }
+      #edges .elabel rect {
+        fill: var(--sheet);
+        stroke: var(--rule);
+      }
+      #edges .elabel text {
+        fill: var(--ink-2);
+        font: 13px var(--f-mono);
+      }
+      #edges .elabel.hot text {
+        fill: var(--ink);
+      }
+      .area {
+        position: absolute;
+        border: 2px solid var(--rule);
+        border-radius: 4px;
+        background: var(--sheet);
+      }
+      .area > .atitle {
+        position: absolute;
+        left: 24px;
+        font: 600 clamp(44px, calc(20px * var(--k)), 128px)/1 var(--f-display);
+        color: var(--ac);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      .area.up > .atitle {
+        top: 22px;
+      }
+      .area.down > .atitle {
+        bottom: 22px;
+      }
+      .area.shared > .atitle {
+        top: 18px;
+      }
+      .area .asub {
+        position: absolute;
+        left: 26px;
+        font: 15px var(--f-mono);
+        color: var(--ink-2);
+        pointer-events: none;
+      }
+      .z0 .area .asub {
+        display: none;
+      }
+      .area.up > .asub {
+        top: 108px;
+      }
+      .area.down > .asub {
+        bottom: 108px;
+      }
+      .area.shared > .asub {
+        top: 108px;
+      }
+      .z1 .area .asub {
+        font-size: 26px;
+      }
+      .box {
+        position: absolute;
+        width: 260px;
+        height: 110px;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border: 1.5px solid var(--ac);
+        border-left-width: 6px;
+        border-radius: 3px;
+        background: var(--panel);
+        cursor: pointer;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .box .bl {
+        font: 600 clamp(16px, calc(11.5px * var(--k)), 38px)/1.1 var(--f-body);
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow-wrap: anywhere;
+      }
+      .box .bk {
+        font: 11px var(--f-mono);
+        color: var(--ink-2);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }
+      .box .bf {
+        font: 11px var(--f-mono);
+        color: var(--ink-2);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .z0 .box .bk,
+      .z0 .box .bf,
+      .z1 .box .bf {
+        display: none;
+      }
+      .z0 .box .bl,
+      .z1 .box .bl {
+        -webkit-line-clamp: 2;
+      }
+      .box.ext {
+        border-style: dashed;
+        border-left-style: solid;
+      }
+      .box.sel,
+      .step.sel {
+        box-shadow: 0 0 0 4px var(--accent);
+      }
+      .box.dim {
+        opacity: 0.35;
+      }
+      .box .fr {
+        position: absolute;
+        right: 8px;
+        top: 8px;
+        font: 700 11px var(--f-mono);
+        color: var(--sev-high);
+      }
+      .flow {
+        position: absolute;
+        width: 270px;
+        box-sizing: border-box;
+      }
+      .flow h3 {
+        margin: 0 0 8px;
+        font: 600 clamp(15px, calc(10.5px * var(--k)), 40px)/1.15
+          var(--f-display);
+        color: var(--ink);
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      .flow h3 small {
+        display: block;
+        font: 11px/1.3 var(--f-mono);
+        color: var(--ink-2);
+        margin-top: 3px;
+      }
+      .z0 .flow h3 small {
+        display: none;
+      }
+      .step {
+        position: relative;
+        box-sizing: border-box;
+        height: 104px;
+        margin-bottom: 14px;
+        padding: 7px 9px 7px 30px;
+        background: var(--panel);
+        border: 1px solid var(--rule);
+        border-left: 5px solid var(--sc);
+        border-radius: 3px;
+        cursor: pointer;
+        overflow: hidden;
+      }
+      .step:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        bottom: -14px;
+        height: 14px;
+        border-left: 2px solid var(--rule);
+      }
+      .step .n {
+        position: absolute;
+        left: 7px;
+        top: 7px;
+        font: 700 12px var(--f-mono);
+        color: var(--ink-2);
+      }
+      .step .sc {
+        font: 600 11px/1.2 var(--f-body);
+        color: var(--sc);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .step .sa {
+        font: 12px/1.3 var(--f-body);
+        margin: 2px 0;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .step .sf {
+        font: 10.5px/1.25 var(--f-mono);
+        color: var(--ink-2);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .z0 .step > *,
+      .z1 .step .sa,
+      .z1 .step .sf {
+        visibility: hidden;
+      }
+      .z0 .step {
+        background: color-mix(in srgb, var(--sc) 30%, var(--panel));
+      }
+      .z1 .step .sc {
+        font-size: 15px;
+      }
+      .hint {
+        position: absolute;
+        left: max(12px, env(safe-area-inset-left, 0px));
+        bottom: max(12px, env(safe-area-inset-bottom, 0px));
+        background: var(--sheet);
+        border: 1px solid var(--rule);
+        border-radius: 6px;
+        padding: 7px 10px;
+        font-size: 12px;
+        color: var(--ink-2);
+        max-width: min(420px, calc(100% - 24px));
+        pointer-events: none;
+      }
+      aside#panel {
+        width: min(440px, 42vw);
+        flex: none;
+        border-left: 1px solid var(--rule);
+        background: var(--panel);
+        overflow-y: auto;
+        padding-block: 16px 40px;
+        padding-left: 20px;
+        padding-right: max(20px, env(safe-area-inset-right, 0px));
+        box-sizing: border-box;
+      }
+      #panel[hidden] {
+        display: none !important;
+      }
+      #panel .close {
+        float: right;
+      }
+      #panel h2 {
+        font: 600 22px/1.2 var(--f-display);
+        margin: 4px 0 6px;
+        text-wrap: balance;
+      }
+      #panel h4 {
+        font: 600 11px/1.2 var(--f-body);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--ink-2);
+        margin: 20px 0 8px;
+      }
+      #panel p {
+        margin: 0 0 8px;
+        max-width: 62ch;
+      }
+      #panel ul,
+      #panel ol {
+        margin: 0;
+        padding-left: 20px;
+        display: grid;
+        gap: 8px;
+      }
+      #panel li {
+        min-width: 0;
+      }
+      #panel code,
+      .path {
+        font: 12px/1.35 var(--f-mono);
+        color: var(--ink-2);
+        overflow-wrap: anywhere;
+      }
+      #panel .eyebrow {
+        font: 12px var(--f-mono);
+        color: var(--ink-2);
+      }
+      .tag {
+        display: inline-block;
+        font: 600 10.5px/1 var(--f-body);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        padding: 3px 6px;
+        border-radius: 3px;
+        background: var(--chip);
+        color: var(--ink-2);
+        vertical-align: 1px;
+      }
+      .tag.high {
+        background: var(--sev-high);
+        color: var(--panel);
+      }
+      .tag.medium {
+        background: var(--sev-med);
+        color: var(--panel);
+      }
+      .tag.low {
+        background: var(--chip);
+        color: var(--sev-low);
+      }
+      a.jump,
+      button.link {
+        color: var(--accent);
+        background: none;
+        border: 0;
+        padding: 0;
+        font: inherit;
+        cursor: pointer;
+        text-align: left;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+      #panel ol.walk li.cur {
+        font-weight: 600;
+      }
+      #panel ol.walk li.cur::marker {
+        color: var(--accent);
+      }
+      .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 2px;
+        background: var(--ac);
+        margin-right: 6px;
+        vertical-align: 0;
+      }
+      .group {
+        margin-top: 14px;
+      }
+      @media (max-width: 760px) {
+        main {
+          flex-direction: column;
+        }
+        aside#panel {
+          width: auto;
+          height: 58%;
+          border-left: 0;
+          border-top: 1px solid var(--rule);
+          padding-left: max(16px, env(safe-area-inset-left, 0px));
+          padding-right: max(16px, env(safe-area-inset-right, 0px));
+          padding-bottom: max(40px, env(safe-area-inset-bottom, 0px));
+        }
+        header.top h1 {
+          font-size: 17px;
+        }
+        .tools {
+          margin-left: 0;
+        }
+        .hint {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        #world.anim {
+          transition: transform 0.35s ease;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="top">
+      <h1>saasmail Architecture Map</h1>
+      <div class="meta" id="meta"></div>
+      <div class="tools">
+        <button id="bFit" class="primary" type="button">Fit</button>
+        <button id="bIn" type="button" aria-label="Zoom in">+</button>
+        <button id="bOut" type="button" aria-label="Zoom out">−</button>
+        <button id="bFlows" type="button">Flows</button>
+        <button id="bFragile" type="button">Fragile points</button>
+        <button id="bUntraced" type="button">Not traced</button>
+        <span id="zoomlabel"></span>
+      </div>
+    </header>
+    <main>
+      <div
+        id="vp"
+        tabindex="0"
+        aria-label="Architecture canvas. Drag to pan, wheel or pinch to zoom."
+      >
+        <div id="world"><svg id="edges"></svg></div>
+        <div class="hint">
+          Drag to pan. Wheel or pinch to zoom. Zoom in on an area to read its
+          flow steps. Click a box or a step for the walkthrough.
+        </div>
+      </div>
+      <aside id="panel" hidden></aside>
+    </main>
+    <script id="data" type="application/json">
+      {
+        "meta": {
+          "repo": "saasmail",
+          "commit": "a214bf35",
+          "date": "2026-11-02",
+          "steps": 136,
+          "paths": 167,
+          "checkedNote": "First build. The Worker, the web app and the installer were read by hand. Every path on this page was checked to exist. The two most severe fragile points were checked by hand against the code."
+        },
+        "sections": [
+          {
+            "id": "shared",
+            "label": "Cloudflare and outside services",
+            "sub": "Bindings in wrangler.jsonc and the services the Worker calls or is called by"
+          },
+          {
+            "id": "inbound",
+            "label": "Inbound mail",
+            "sub": "Email Routing to the emails table: checks, rules, storage, fan-out"
+          },
+          {
+            "id": "sending",
+            "label": "Sending",
+            "sub": "API sends, the outbox, providers, bounces and suppressions"
+          },
+          {
+            "id": "automation",
+            "label": "Sequences and campaigns",
+            "sub": "Drip sequences, newsletter campaigns, tracking and unsubscribe"
+          },
+          {
+            "id": "agent",
+            "label": "Agent and AI",
+            "sub": "MailAgent chat, suggested replies, AI filing, the injection check"
+          },
+          {
+            "id": "api",
+            "label": "API, auth and protocols",
+            "sub": "Hono app, BetterAuth, API keys, MCP, JMAP, the message read model, webhooks"
+          },
+          {
+            "id": "web",
+            "label": "Web app",
+            "sub": "React SPA in src/, realtime, Web Push, WebMCP"
+          },
+          {
+            "id": "jobs",
+            "label": "Sync, queue and jobs",
+            "sub": "The shared queue, Gmail and Outlook sync, imports, exports, backups"
+          },
+          {
+            "id": "ops",
+            "label": "Install and ops",
+            "sub": "Hourly cron chain, the installer CLI, the doctor, migrations, the audit log"
+          }
+        ],
+        "layout": {
+          "upper": ["inbound", "sending", "automation", "agent"],
+          "lower": ["api", "web", "jobs", "ops"]
+        },
+        "components": [
+          {
+            "id": "email-routing",
+            "label": "Cloudflare Email Routing",
+            "kind": "external",
+            "section": "shared",
+            "files": ["wrangler.jsonc.example", "docs/setup.md"],
+            "summary": "Delivers each inbound message to the Worker's email() handler. A rejection from the handler becomes an SMTP refusal."
+          },
+          {
+            "id": "d1",
+            "label": "D1 database (DB)",
+            "kind": "store",
+            "section": "shared",
+            "files": [
+              "wrangler.jsonc.example",
+              "worker/src/db/schema.ts",
+              "migrations/README.md"
+            ],
+            "summary": "All mail, people, sequences, campaigns, outbox, auth and audit rows. Drizzle schema in worker/src/db."
+          },
+          {
+            "id": "r2",
+            "label": "R2 bucket (R2)",
+            "kind": "store",
+            "section": "shared",
+            "files": [
+              "wrangler.jsonc.example",
+              "worker/src/lib/inbound/store-received.ts"
+            ],
+            "summary": "Attachments, raw messages for JMAP, newsletter images, exports and imports. Backups can use a separate BACKUPS bucket."
+          },
+          {
+            "id": "queue",
+            "label": "EMAIL_QUEUE (saasmail-sequence-emails)",
+            "kind": "service",
+            "section": "shared",
+            "files": [
+              "wrangler.jsonc.example",
+              "worker/src/lib/queue-router.ts"
+            ],
+            "summary": "One shared queue for 14 message kinds. max_batch_size 10, max_retries 3, no dead-letter queue."
+          },
+          {
+            "id": "cron",
+            "label": "Cron trigger (0 * * * *)",
+            "kind": "service",
+            "section": "shared",
+            "files": ["wrangler.jsonc.example", "worker/src/index.ts"],
+            "summary": "Hourly. Runs the scheduled chain, then the Gmail and Outlook sync, then the backfill jobs."
+          },
+          {
+            "id": "do-hub",
+            "label": "NotificationsHub Durable Object",
+            "kind": "worker",
+            "section": "shared",
+            "files": ["worker/src/do/notifications.ts"],
+            "summary": "One object per user. Holds the live WebSockets and sends Web Push to the user's devices."
+          },
+          {
+            "id": "do-agent",
+            "label": "MailAgent Durable Object",
+            "kind": "worker",
+            "section": "shared",
+            "files": ["worker/src/agent/mail-agent.ts"],
+            "summary": "One object per agent session. Keeps the chat transcript in the object's SQLite storage."
+          },
+          {
+            "id": "wf-backfill",
+            "label": "GmailBackfillWorkflow",
+            "kind": "workflow",
+            "section": "shared",
+            "files": [
+              "worker/src/lib/gmail/backfill-job.ts",
+              "wrangler.jsonc.example"
+            ],
+            "summary": "Workflow for the one-year mailbox import of Gmail and Outlook. Optional binding GMAIL_BACKFILL."
+          },
+          {
+            "id": "providers",
+            "label": "Outbound providers",
+            "kind": "external",
+            "section": "shared",
+            "files": [
+              "worker/src/lib/email-sender/providers/cloudflare.ts",
+              "worker/src/lib/email-sender/providers/resend.ts",
+              "worker/src/lib/email-sender/providers/postmark.ts",
+              "worker/src/lib/email-sender/providers/bavimail.ts"
+            ],
+            "summary": "Cloudflare Email Sending, Resend, Postmark or Bavimail. One is chosen per deploy from the secrets."
+          },
+          {
+            "id": "gmail-api",
+            "label": "Gmail API and Microsoft Graph",
+            "kind": "external",
+            "section": "shared",
+            "files": [
+              "worker/src/lib/gmail/api.ts",
+              "worker/src/lib/outlook/api.ts"
+            ],
+            "summary": "Mailbox read, history and send for connected Gmail and Outlook inboxes, with OAuth tokens."
+          },
+          {
+            "id": "ai-models",
+            "label": "Workers AI, Anthropic, OpenAI",
+            "kind": "external",
+            "section": "shared",
+            "files": [
+              "worker/src/lib/agent/provider.ts",
+              "wrangler.jsonc.example"
+            ],
+            "summary": "selectModel picks the model for the agent, suggested replies, AI filing and the injection check."
+          },
+          {
+            "id": "webhook-rx",
+            "label": "Webhook receiver",
+            "kind": "external",
+            "section": "shared",
+            "files": ["worker/src/lib/webhook-delivery.ts"],
+            "summary": "The one HTTPS URL an admin sets. Gets signed message events."
+          },
+          {
+            "id": "mcp-clients",
+            "label": "MCP clients (claude.ai and others)",
+            "kind": "external",
+            "section": "shared",
+            "files": ["worker/src/mcp/http.ts"],
+            "summary": "OAuth clients that call /mcp with a JWT access token."
+          },
+          {
+            "id": "jmap-clients",
+            "label": "JMAP clients",
+            "kind": "external",
+            "section": "shared",
+            "files": ["worker/src/jmap/http.ts", "docs/jmap.md"],
+            "summary": "Mail apps that use /.well-known/jmap and /jmap/api with a session or an sk_ key."
+          },
+          {
+            "id": "push-service",
+            "label": "Browser push services",
+            "kind": "external",
+            "section": "shared",
+            "files": ["worker/src/lib/web-push.ts", "public/sw.js"],
+            "summary": "VAPID-signed, aes128gcm-encrypted pushes to each registered device."
+          },
+          {
+            "id": "assets",
+            "label": "Static assets (ASSETS)",
+            "kind": "service",
+            "section": "shared",
+            "files": ["wrangler.jsonc.example", "worker/src/index.ts"],
+            "summary": "The built SPA. Every unmatched path falls through to it."
+          },
+          {
+            "id": "email-handler",
+            "label": "Email handler",
+            "kind": "worker",
+            "section": "inbound",
+            "files": ["worker/src/email-handler.ts"],
+            "summary": "handleEmail parses the message and runs ingestParsedEmail. Gmail and Outlook sync use the same function."
+          },
+          {
+            "id": "email-parser",
+            "label": "Email parser",
+            "kind": "package",
+            "section": "inbound",
+            "files": ["worker/src/lib/email-parser.ts"],
+            "summary": "parseEmail turns the raw message into ParsedEmail: addresses, bodies, attachments, auth results and spam score."
+          },
+          {
+            "id": "inbound-reject",
+            "label": "Recipient and blocklist checks",
+            "kind": "package",
+            "section": "inbound",
+            "files": [
+              "worker/src/lib/inbound-rejection.ts",
+              "worker/src/lib/blocklist.ts",
+              "worker/src/lib/inbound/subaddress.ts"
+            ],
+            "summary": "Unknown-recipient rejection (when on), sub-address routing for test inboxes, and the silent blocklist drop."
+          },
+          {
+            "id": "spam-filter",
+            "label": "Learning spam filter",
+            "kind": "package",
+            "section": "inbound",
+            "files": [
+              "worker/src/lib/spam/filter.ts",
+              "worker/src/lib/spam/score.ts"
+            ],
+            "summary": "Per-inbox token model. scoreInbound gives a probability for the rules."
+          },
+          {
+            "id": "rules",
+            "label": "Rules engine",
+            "kind": "package",
+            "section": "inbound",
+            "files": [
+              "worker/src/lib/rules/evaluate.ts",
+              "worker/src/lib/rules/match.ts",
+              "worker/src/lib/rules/auto-reply.ts"
+            ],
+            "summary": "selectMatchingRules picks rules before storage. A reject rule refuses at SMTP time. Other actions run after storage."
+          },
+          {
+            "id": "store-received",
+            "label": "Inbound storage",
+            "kind": "package",
+            "section": "inbound",
+            "files": [
+              "worker/src/lib/inbound/store-received.ts",
+              "worker/src/lib/inbound/store-sent.ts"
+            ],
+            "summary": "storeReceivedMessage writes the person, attachments, raw message and emails row. The importer uses it too."
+          },
+          {
+            "id": "inbound-forward",
+            "label": "Inbound forward",
+            "kind": "package",
+            "section": "inbound",
+            "files": ["worker/src/lib/inbound-forward.ts"],
+            "summary": "Forwards a copy to the inbox's forwardTo address, with a loop header."
+          },
+          {
+            "id": "fanout",
+            "label": "Notification fan-out",
+            "kind": "package",
+            "section": "inbound",
+            "files": [
+              "worker/src/lib/notification-fanout.ts",
+              "worker/src/lib/push-preview.ts"
+            ],
+            "summary": "Inbox members plus admins (capped) get a /deliver call on their NotificationsHub."
+          },
+          {
+            "id": "send-router",
+            "label": "Send routes",
+            "kind": "worker",
+            "section": "sending",
+            "files": [
+              "worker/src/routers/send-router.ts",
+              "worker/src/lib/idempotent-send-route.ts"
+            ],
+            "summary": "POST /api/send and /api/send/reply/{emailId}. Idempotency key and the daily send limit apply here."
+          },
+          {
+            "id": "send-email",
+            "label": "sendEmail and replyToEmail",
+            "kind": "package",
+            "section": "sending",
+            "files": ["worker/src/lib/send-email.ts"],
+            "summary": "Builds the message, stages attachments, calls the outbox, writes the sent_emails row and cancels sequences."
+          },
+          {
+            "id": "outbox",
+            "label": "Outbox",
+            "kind": "package",
+            "section": "sending",
+            "files": [
+              "worker/src/lib/outbox.ts",
+              "worker/src/db/outbox-emails.schema.ts"
+            ],
+            "summary": "Write-ahead row before each provider call. Retries transient failures each cron tick, up to MAX_ATTEMPTS."
+          },
+          {
+            "id": "suppression-send",
+            "label": "Suppression check",
+            "kind": "package",
+            "section": "sending",
+            "files": [
+              "worker/src/lib/send.ts",
+              "worker/src/lib/suppressions.ts"
+            ],
+            "summary": "sendWithSuppressionCheck drops suppressed recipients (not for transactional mail) and adds the unsubscribe footer."
+          },
+          {
+            "id": "sending-controls",
+            "label": "Sending pause and daily limits",
+            "kind": "package",
+            "section": "sending",
+            "files": ["worker/src/lib/sending-controls.ts"],
+            "summary": "A pause holds every send in the outbox. reserveDailySend counts API, MCP and JMAP sends per user per day."
+          },
+          {
+            "id": "sender-factory",
+            "label": "Sender factory",
+            "kind": "package",
+            "section": "sending",
+            "files": [
+              "worker/src/lib/email-sender/index.ts",
+              "worker/src/lib/email-sender/for-inbox.ts"
+            ],
+            "summary": "createEmailSender picks Demo, Bavimail, Postmark, Resend, Cloudflare or Noop. createSenderForInbox uses Gmail or Outlook for a mapped inbox."
+          },
+          {
+            "id": "delivery",
+            "label": "Delivery events",
+            "kind": "package",
+            "section": "sending",
+            "files": [
+              "worker/src/lib/delivery/queue.ts",
+              "worker/src/lib/delivery/record.ts",
+              "worker/src/lib/delivery/cloudflare.ts"
+            ],
+            "summary": "Cloudflare Email Sending bounce and complaint events. They add suppressions and fire delivery webhooks."
+          },
+          {
+            "id": "idempotency",
+            "label": "Send idempotency",
+            "kind": "package",
+            "section": "sending",
+            "files": ["worker/src/lib/send-idempotency.ts"],
+            "summary": "withIdempotency stores the answer of a keyed send so a retry gets the same answer."
+          },
+          {
+            "id": "sequences-router",
+            "label": "Sequences routes",
+            "kind": "worker",
+            "section": "automation",
+            "files": ["worker/src/routers/sequences-router.ts"],
+            "summary": "CRUD, POST /{id}/enroll, and DELETE /enrollments/{id} to cancel an enrollment."
+          },
+          {
+            "id": "enroll",
+            "label": "Enrollment",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/lib/enroll-sequence.ts",
+              "worker/src/lib/enrollment-completion.ts"
+            ],
+            "summary": "enrollPersonInSequence writes every step row and queues the first step at once."
+          },
+          {
+            "id": "seq-processor",
+            "label": "Sequence processor",
+            "kind": "package",
+            "section": "automation",
+            "files": ["worker/src/lib/sequence-processor.ts"],
+            "summary": "handleScheduled queues due steps each hour. processSequenceEmail renders the template and sends through the outbox."
+          },
+          {
+            "id": "cancel-seq",
+            "label": "Sequence cancel",
+            "kind": "package",
+            "section": "automation",
+            "files": ["worker/src/lib/cancel-sequence.ts"],
+            "summary": "cancelSequencesForPerson stops pending and queued steps when the person writes in or gets a manual send."
+          },
+          {
+            "id": "templates",
+            "label": "Templates and blocks",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/lib/interpolate.ts",
+              "worker/src/lib/blocks/compile.ts",
+              "worker/src/routers/email-templates-router.ts"
+            ],
+            "summary": "The {{variable}} grammar and the block editor's compiler."
+          },
+          {
+            "id": "campaigns-router",
+            "label": "Campaigns routes",
+            "kind": "worker",
+            "section": "automation",
+            "files": ["worker/src/routers/campaigns-router.ts"],
+            "summary": "Send, schedule, cancel, retry, preview, test-send and stats for newsletter campaigns."
+          },
+          {
+            "id": "campaign-sender",
+            "label": "Campaign sender",
+            "kind": "package",
+            "section": "automation",
+            "files": ["worker/src/lib/campaign-sender.ts"],
+            "summary": "Snapshot, fan-out in pages of 100, one queue message per recipient, bookkeeping and completion."
+          },
+          {
+            "id": "lists",
+            "label": "Lists and list import",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/routers/lists-router.ts",
+              "worker/src/lib/list-import.ts",
+              "worker/src/lib/contacts.ts"
+            ],
+            "summary": "Subscriber lists. CSV imports run in queued pages of 100 rows."
+          },
+          {
+            "id": "tracking",
+            "label": "Open and click tracking",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/lib/campaign-tracking.ts",
+              "worker/src/routers/public-track-router.ts"
+            ],
+            "summary": "Signed open-pixel and click tokens. Clicks redirect only to stored http or https links."
+          },
+          {
+            "id": "unsubscribe",
+            "label": "Unsubscribe",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/routers/unsubscribe-router.ts",
+              "worker/src/lib/unsubscribe-token.ts",
+              "worker/src/lib/list-unsubscribe.ts"
+            ],
+            "summary": "Signed tokens with UNSUBSCRIBE_SECRET. v2 tokens leave one list, with a 7-day undo."
+          },
+          {
+            "id": "newsletter-cron",
+            "label": "Newsletter maintenance",
+            "kind": "package",
+            "section": "automation",
+            "files": [
+              "worker/src/lib/newsletter-cron.ts",
+              "worker/src/lib/newsletter-retention.ts"
+            ],
+            "summary": "Starts scheduled campaigns, sweeps stalled ones after 24 h, purges old events."
+          },
+          {
+            "id": "mail-agent",
+            "label": "MailAgent",
+            "kind": "worker",
+            "section": "agent",
+            "files": [
+              "worker/src/agent/mail-agent.ts",
+              "worker/src/agent/auth.ts"
+            ],
+            "summary": "AIChatAgent per session. authorizeMailAgentRequest checks the user, the passkey and the session owner."
+          },
+          {
+            "id": "agent-tools",
+            "label": "Agent tools",
+            "kind": "package",
+            "section": "agent",
+            "files": [
+              "worker/src/lib/agent/tools.ts",
+              "worker/src/lib/agent/playbook.ts"
+            ],
+            "summary": "Read, state and draft tools. Five tools need the person's approval, at most 5 per turn. No send tool."
+          },
+          {
+            "id": "suggest-reply",
+            "label": "Suggested replies",
+            "kind": "package",
+            "section": "agent",
+            "files": [
+              "worker/src/lib/agent/suggest-reply.ts",
+              "worker/src/routers/suggested-replies-router.ts"
+            ],
+            "summary": "Drafts a reply for inboxes with agentAutodraft on. A person uses or dismisses it."
+          },
+          {
+            "id": "injection-guard",
+            "label": "Prompt-injection check",
+            "kind": "package",
+            "section": "agent",
+            "files": ["worker/src/lib/injection-guard.ts"],
+            "summary": "checkInbound screens one message with a classifier model. It blocks only unattended work."
+          },
+          {
+            "id": "ai-file",
+            "label": "AI filing",
+            "kind": "package",
+            "section": "agent",
+            "files": [
+              "worker/src/lib/triage/ai-file.ts",
+              "worker/src/lib/triage/folders.ts"
+            ],
+            "summary": "fileWithAi moves a message into a described folder with the triage model."
+          },
+          {
+            "id": "model-select",
+            "label": "Model selection",
+            "kind": "package",
+            "section": "agent",
+            "files": ["worker/src/lib/agent/provider.ts"],
+            "summary": "selectModel and getAgentStatus read the configured provider keys."
+          },
+          {
+            "id": "hono-app",
+            "label": "Hono app and middleware",
+            "kind": "worker",
+            "section": "api",
+            "files": ["worker/src/index.ts", "worker/src/db/middleware.ts"],
+            "summary": "Mounts every router. Order: db, logger, audit actor, CORS, auth, passkey, allowed inboxes, admin gate."
+          },
+          {
+            "id": "better-auth",
+            "label": "BetterAuth",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/auth/index.ts",
+              "worker/src/auth/rate-limit-storage.ts",
+              "worker/src/auth/audit-hooks.ts"
+            ],
+            "summary": "Sessions, passkeys, admin, JWT and the OAuth provider for MCP. Rate limits in D1."
+          },
+          {
+            "id": "request-auth",
+            "label": "Request auth",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/lib/request-auth.ts",
+              "worker/src/lib/crypto.ts"
+            ],
+            "summary": "resolveRequestAuth tries the session cookie, then a Bearer sk_ key by its hash."
+          },
+          {
+            "id": "passkey-gate",
+            "label": "Passkey gate",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/middleware/require-passkey.ts",
+              "worker/src/middleware/auth-route-passkey-gate.ts",
+              "worker/src/lib/is-dev.ts"
+            ],
+            "summary": "Session users without a passkey get 403. API keys pass. DISABLE_PASSKEY_GATE and DEMO_MODE turn it off."
+          },
+          {
+            "id": "inbox-perms",
+            "label": "Inbox permissions",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/middleware/inject-allowed-inboxes.ts",
+              "worker/src/lib/inbox-permissions.ts"
+            ],
+            "summary": "resolveAllowedInboxes sets which inboxes a user can read and send from."
+          },
+          {
+            "id": "api-keys",
+            "label": "API keys",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/routers/api-keys-router.ts",
+              "worker/src/db/api-keys.schema.ts"
+            ],
+            "summary": "One sk_ key per user, hashed at rest, no scopes. Issuing one needs a passkey."
+          },
+          {
+            "id": "mcp",
+            "label": "MCP server",
+            "kind": "worker",
+            "section": "api",
+            "files": [
+              "worker/src/mcp/http.ts",
+              "worker/src/mcp/server.ts",
+              "worker/src/mcp/resource.ts",
+              "worker/src/auth/scopes.ts"
+            ],
+            "summary": "Streamable HTTP at /mcp. Offline JWT check, then client, user and ban checks. 17 tools behind 3 scopes."
+          },
+          {
+            "id": "jmap",
+            "label": "JMAP server",
+            "kind": "worker",
+            "section": "api",
+            "files": [
+              "worker/src/jmap/http.ts",
+              "worker/src/jmap/methods.ts",
+              "worker/src/jmap/auth.ts"
+            ],
+            "summary": "Session, method calls, uploads, downloads and EventSource push."
+          },
+          {
+            "id": "jmap-submission",
+            "label": "JMAP submission",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/jmap/submission.ts",
+              "worker/src/jmap/release.ts",
+              "worker/src/jmap/recovery.ts"
+            ],
+            "summary": "EmailSubmission/set with optional delay. Delayed sends go through the queue and the hourly release."
+          },
+          {
+            "id": "messages",
+            "label": "Message read model",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/lib/messages/query.ts",
+              "worker/src/lib/messages/state.ts",
+              "worker/src/routers/messages-router.ts",
+              "worker/src/routers/mail-state-router.ts"
+            ],
+            "summary": "queryMessages is the one union of emails and sent_emails. state.ts owns every state write."
+          },
+          {
+            "id": "webhooks",
+            "label": "Webhooks",
+            "kind": "package",
+            "section": "api",
+            "files": [
+              "worker/src/lib/webhook-delivery.ts",
+              "worker/src/lib/webhook-config.ts",
+              "worker/src/lib/webhook-signature.ts",
+              "worker/src/routers/webhooks-router.ts"
+            ],
+            "summary": "One admin-set URL. Signed body, 4 attempts at 60 s, 5 min and 30 min, auto-disable after 20 failures."
+          },
+          {
+            "id": "public-routes",
+            "label": "Public routes",
+            "kind": "worker",
+            "section": "api",
+            "files": [
+              "worker/src/routers/setup-router.ts",
+              "worker/src/routers/invites-router.ts",
+              "worker/src/routers/bootstrap-router.ts",
+              "worker/src/routers/public-assets-router.ts"
+            ],
+            "summary": "Setup, invites, health, config, unsubscribe, tracking and newsletter images need no session."
+          },
+          {
+            "id": "spa",
+            "label": "React SPA",
+            "kind": "ui",
+            "section": "web",
+            "files": ["src/App.tsx", "src/main.tsx"],
+            "summary": "Routes for mail, people, templates, sequences, lists, campaigns, inboxes, settings and admin pages."
+          },
+          {
+            "id": "api-client",
+            "label": "API client",
+            "kind": "ui",
+            "section": "web",
+            "files": ["src/lib/api.ts", "src/lib/auth-client.ts"],
+            "summary": "apiFetch wraps every /api call. auth-client is the BetterAuth client with passkeys."
+          },
+          {
+            "id": "mail-ui",
+            "label": "Mail page",
+            "kind": "ui",
+            "section": "web",
+            "files": [
+              "src/pages/MailPage.tsx",
+              "src/hooks/useMailList.ts",
+              "src/hooks/useMailMessages.ts"
+            ],
+            "summary": "Folder lists, threads, compose and the reading pane."
+          },
+          {
+            "id": "realtime-hook",
+            "label": "Realtime hook",
+            "kind": "ui",
+            "section": "web",
+            "files": ["src/hooks/useRealtimeUpdates.ts"],
+            "summary": "One WebSocket to /api/notifications/stream. Dispatches inbox, export and suggested-reply events."
+          },
+          {
+            "id": "sw",
+            "label": "Service worker and push",
+            "kind": "ui",
+            "section": "web",
+            "files": ["public/sw.js", "src/lib/push.ts"],
+            "summary": "Subscribes with the VAPID key from /api/notifications. Shows OS notifications and opens the message on click."
+          },
+          {
+            "id": "webmcp",
+            "label": "WebMCP tools",
+            "kind": "ui",
+            "section": "web",
+            "files": [
+              "src/webmcp/runtime.ts",
+              "src/webmcp/bridge.tsx",
+              "src/webmcp/registerTools.tsx"
+            ],
+            "summary": "In-page tools for a browser agent. Read tools call api.ts, action tools drive the UI."
+          },
+          {
+            "id": "agent-panel",
+            "label": "Agent panel",
+            "kind": "ui",
+            "section": "web",
+            "files": [
+              "src/agent/AgentChatSession.tsx",
+              "src/agent/AgentContext.tsx"
+            ],
+            "summary": "Chat UI for the MailAgent over /agents/mail-agent/*, with approval buttons."
+          },
+          {
+            "id": "queue-router",
+            "label": "Queue consumer",
+            "kind": "worker",
+            "section": "jobs",
+            "files": ["worker/src/lib/queue-router.ts"],
+            "summary": "classifyQueueMessage then one handler per kind. Slices run one per batch. Unknown messages are acked."
+          },
+          {
+            "id": "gmail-sync",
+            "label": "Gmail sync",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/gmail/sync.ts",
+              "worker/src/lib/gmail/token.ts",
+              "worker/src/lib/gmail/route-inbox.ts"
+            ],
+            "summary": "Hourly history poll of each connected Gmail account. New mail goes through ingestParsedEmail."
+          },
+          {
+            "id": "outlook-sync",
+            "label": "Outlook sync",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/outlook/sync.ts",
+              "worker/src/lib/outlook/token.ts"
+            ],
+            "summary": "Hourly delta poll of each connected Outlook account."
+          },
+          {
+            "id": "backfill-job",
+            "label": "Mailbox backfill",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/gmail/backfill-job.ts",
+              "worker/src/lib/gmail/backfill.ts",
+              "worker/src/lib/outlook/backfill.ts"
+            ],
+            "summary": "The one-year import. Runs as a Workflow where bound, else inside the cron budget."
+          },
+          {
+            "id": "mail-import",
+            "label": "Mail import",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/import/mail-import.ts",
+              "worker/src/lib/import/mbox-reader.ts",
+              "worker/src/routers/imports-router.ts"
+            ],
+            "summary": "mbox upload in parts to R2, then queued slices. A stuck message is skipped after 3 tries."
+          },
+          {
+            "id": "mail-export",
+            "label": "Mail export",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/export/mail-export.ts",
+              "worker/src/routers/exports-router.ts"
+            ],
+            "summary": "Queued slices write the export to R2. The cron reaps old ones."
+          },
+          {
+            "id": "backups",
+            "label": "Backups",
+            "kind": "package",
+            "section": "jobs",
+            "files": [
+              "worker/src/lib/backup/run.ts",
+              "worker/src/lib/backup/tables.ts",
+              "worker/src/lib/backup/crypto.ts",
+              "worker/src/routers/backups-router.ts"
+            ],
+            "summary": "Encrypted dump of every table not in EXCLUDED_TABLES, step by step through the queue."
+          },
+          {
+            "id": "thread-backfill",
+            "label": "Thread backfill",
+            "kind": "package",
+            "section": "jobs",
+            "files": ["worker/src/lib/messages/thread-backfill.ts"],
+            "summary": "Recomputes thread keys in queued slices."
+          },
+          {
+            "id": "cron-chain",
+            "label": "Scheduled chain",
+            "kind": "worker",
+            "section": "ops",
+            "files": ["worker/src/index.ts"],
+            "summary": "scheduledChain runs about 20 jobs in order. Each step catches its own failure."
+          },
+          {
+            "id": "installer",
+            "label": "Installer CLI",
+            "kind": "package",
+            "section": "ops",
+            "files": [
+              "scripts/saasmail/cli.ts",
+              "scripts/saasmail/plan.ts",
+              "scripts/saasmail/apply.ts",
+              "scripts/saasmail/cloudflare.ts"
+            ],
+            "summary": "yarn saasmail install, status and upgrade. Plans, provisions and deploys through the Cloudflare REST API."
+          },
+          {
+            "id": "doctor",
+            "label": "Doctor",
+            "kind": "package",
+            "section": "ops",
+            "files": [
+              "worker/src/lib/doctor/index.ts",
+              "worker/src/routers/admin-doctor-router.ts",
+              "scripts/doctor.mjs"
+            ],
+            "summary": "Checks bindings, secrets, migrations, inbound, the outbox and backups, and the last cron tick."
+          },
+          {
+            "id": "migrations",
+            "label": "Migrations",
+            "kind": "store",
+            "section": "ops",
+            "files": [
+              "migrations/README.md",
+              "drizzle.config.ts",
+              "scripts/check-migrations.mjs"
+            ],
+            "summary": "drizzle-kit migrations. Never hand-authored. The test schema in helpers.ts follows each one."
+          },
+          {
+            "id": "audit",
+            "label": "Audit log",
+            "kind": "package",
+            "section": "ops",
+            "files": [
+              "worker/src/lib/audit/record.ts",
+              "worker/src/lib/audit/context.ts",
+              "worker/src/lib/audit/prune.ts",
+              "worker/src/routers/admin-audit-router.ts"
+            ],
+            "summary": "runWithAudit names the actor of each request, cron tick or queue batch. Pruned by age."
+          },
+          {
+            "id": "restore",
+            "label": "Backup restore script",
+            "kind": "package",
+            "section": "ops",
+            "files": ["scripts/restore-backup.mjs"],
+            "summary": "Decrypts and restores a backup into a D1 database."
+          }
+        ],
+        "edges": [
+          {
+            "from": "email-routing",
+            "to": "email-handler",
+            "label": "email() event",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "email-parser",
+            "label": "parseEmail",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "inbound-reject",
+            "label": "unknown recipient, blocklist",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "spam-filter",
+            "label": "scoreInbound",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "rules",
+            "label": "select and run rules",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "store-received",
+            "label": "storeReceivedMessage",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "store-received",
+            "to": "d1",
+            "label": "people, emails rows",
+            "file": "worker/src/lib/inbound/store-received.ts"
+          },
+          {
+            "from": "store-received",
+            "to": "r2",
+            "label": "attachments, raw message",
+            "file": "worker/src/lib/inbound/store-received.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "fanout",
+            "label": "notify inbox members",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "fanout",
+            "to": "do-hub",
+            "label": "POST /deliver",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "do-hub",
+            "to": "push-service",
+            "label": "Web Push",
+            "file": "worker/src/do/notifications.ts"
+          },
+          {
+            "from": "do-hub",
+            "to": "realtime-hook",
+            "label": "WebSocket frames",
+            "file": "worker/src/do/notifications.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "webhooks",
+            "label": "message.received",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "inbound-forward",
+            "label": "forwardInbound",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "inbound-forward",
+            "to": "providers",
+            "label": "forward copy",
+            "file": "worker/src/lib/inbound-forward.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "cancel-seq",
+            "label": "sender replied",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "email-handler",
+            "to": "queue",
+            "label": "suggest_reply",
+            "file": "worker/src/email-handler.ts"
+          },
+          {
+            "from": "rules",
+            "to": "queue",
+            "label": "ai_file",
+            "file": "worker/src/lib/rules/evaluate.ts"
+          },
+          {
+            "from": "send-router",
+            "to": "send-email",
+            "label": "sendEmail, replyToEmail",
+            "file": "worker/src/routers/send-router.ts"
+          },
+          {
+            "from": "send-router",
+            "to": "sending-controls",
+            "label": "reserveDailySend",
+            "file": "worker/src/lib/idempotent-send-route.ts"
+          },
+          {
+            "from": "send-router",
+            "to": "idempotency",
+            "label": "withIdempotency",
+            "file": "worker/src/lib/idempotent-send-route.ts"
+          },
+          {
+            "from": "send-email",
+            "to": "outbox",
+            "label": "sendViaOutbox",
+            "file": "worker/src/lib/send-email.ts"
+          },
+          {
+            "from": "outbox",
+            "to": "suppression-send",
+            "label": "sendWithSuppressionCheck",
+            "file": "worker/src/lib/outbox.ts"
+          },
+          {
+            "from": "suppression-send",
+            "to": "sender-factory",
+            "label": "sender.send",
+            "file": "worker/src/lib/send.ts"
+          },
+          {
+            "from": "sender-factory",
+            "to": "providers",
+            "label": "HTTP or send_email binding",
+            "file": "worker/src/lib/email-sender/index.ts"
+          },
+          {
+            "from": "sender-factory",
+            "to": "gmail-api",
+            "label": "send as the mapped inbox",
+            "file": "worker/src/lib/email-sender/for-inbox.ts"
+          },
+          {
+            "from": "outbox",
+            "to": "d1",
+            "label": "outbox_emails",
+            "file": "worker/src/lib/outbox.ts"
+          },
+          {
+            "from": "outbox",
+            "to": "webhooks",
+            "label": "message.sent, message.failed",
+            "file": "worker/src/lib/outbox.ts"
+          },
+          {
+            "from": "send-email",
+            "to": "d1",
+            "label": "sent_emails",
+            "file": "worker/src/lib/send-email.ts"
+          },
+          {
+            "from": "providers",
+            "to": "queue",
+            "label": "cf.email.sending events",
+            "file": "wrangler.jsonc.example"
+          },
+          {
+            "from": "queue",
+            "to": "queue-router",
+            "label": "batch of up to 10",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "delivery",
+            "label": "delivery_event",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "delivery",
+            "to": "d1",
+            "label": "suppressions, delivery_events",
+            "file": "worker/src/lib/delivery/record.ts"
+          },
+          {
+            "from": "delivery",
+            "to": "webhooks",
+            "label": "message.bounced, complained",
+            "file": "worker/src/lib/delivery/queue.ts"
+          },
+          {
+            "from": "webhooks",
+            "to": "webhook-rx",
+            "label": "signed POST",
+            "file": "worker/src/lib/webhook-delivery.ts"
+          },
+          {
+            "from": "sequences-router",
+            "to": "enroll",
+            "label": "enrollPersonInSequence",
+            "file": "worker/src/routers/sequences-router.ts"
+          },
+          {
+            "from": "enroll",
+            "to": "queue",
+            "label": "first step",
+            "file": "worker/src/lib/enroll-sequence.ts"
+          },
+          {
+            "from": "cron",
+            "to": "cron-chain",
+            "label": "scheduled()",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "seq-processor",
+            "label": "handleScheduled",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "seq-processor",
+            "to": "queue",
+            "label": "due steps",
+            "file": "worker/src/lib/sequence-processor.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "seq-processor",
+            "label": "sequence_email",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "seq-processor",
+            "to": "templates",
+            "label": "interpolate",
+            "file": "worker/src/lib/sequence-processor.ts"
+          },
+          {
+            "from": "seq-processor",
+            "to": "outbox",
+            "label": "sendViaOutbox",
+            "file": "worker/src/lib/sequence-processor.ts"
+          },
+          {
+            "from": "campaigns-router",
+            "to": "campaign-sender",
+            "label": "snapshotCampaign",
+            "file": "worker/src/routers/campaigns-router.ts"
+          },
+          {
+            "from": "campaigns-router",
+            "to": "queue",
+            "label": "campaign_fan_out",
+            "file": "worker/src/routers/campaigns-router.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "campaign-sender",
+            "label": "fan-out page, campaign_send",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "campaign-sender",
+            "to": "queue",
+            "label": "sendBatch per page",
+            "file": "worker/src/lib/campaign-sender.ts"
+          },
+          {
+            "from": "campaign-sender",
+            "to": "tracking",
+            "label": "rewrite links, open pixel",
+            "file": "worker/src/lib/campaign-sender.ts"
+          },
+          {
+            "from": "campaign-sender",
+            "to": "unsubscribe",
+            "label": "v2 unsubscribe URL",
+            "file": "worker/src/lib/campaign-sender.ts"
+          },
+          {
+            "from": "campaign-sender",
+            "to": "outbox",
+            "label": "sendViaOutbox",
+            "file": "worker/src/lib/campaign-sender.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "newsletter-cron",
+            "label": "runNewsletterMaintenance",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "newsletter-cron",
+            "to": "campaigns-router",
+            "label": "start scheduled campaigns",
+            "file": "worker/src/lib/newsletter-cron.ts"
+          },
+          {
+            "from": "lists",
+            "to": "queue",
+            "label": "list_import pages",
+            "file": "worker/src/lib/list-import.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "lists",
+            "label": "list_import",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "agent-panel",
+            "to": "mail-agent",
+            "label": "/agents/mail-agent/*",
+            "file": "src/agent/AgentChatSession.tsx"
+          },
+          {
+            "from": "hono-app",
+            "to": "mail-agent",
+            "label": "routeAgentRequest",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "mail-agent",
+            "to": "do-agent",
+            "label": "session object",
+            "file": "worker/src/agent/mail-agent.ts"
+          },
+          {
+            "from": "mail-agent",
+            "to": "agent-tools",
+            "label": "createAgentTools",
+            "file": "worker/src/agent/mail-agent.ts"
+          },
+          {
+            "from": "mail-agent",
+            "to": "ai-models",
+            "label": "streamText",
+            "file": "worker/src/agent/mail-agent.ts"
+          },
+          {
+            "from": "agent-tools",
+            "to": "messages",
+            "label": "queryMessages, state",
+            "file": "worker/src/lib/agent/tools.ts"
+          },
+          {
+            "from": "agent-tools",
+            "to": "injection-guard",
+            "label": "screen messages read",
+            "file": "worker/src/lib/agent/tools.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "suggest-reply",
+            "label": "suggest_reply",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "suggest-reply",
+            "to": "injection-guard",
+            "label": "checkInbound",
+            "file": "worker/src/lib/agent/suggest-reply.ts"
+          },
+          {
+            "from": "suggest-reply",
+            "to": "ai-models",
+            "label": "draft",
+            "file": "worker/src/lib/agent/suggest-reply.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "ai-file",
+            "label": "ai_file",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "ai-file",
+            "to": "injection-guard",
+            "label": "checkInbound",
+            "file": "worker/src/lib/triage/ai-file.ts"
+          },
+          {
+            "from": "ai-file",
+            "to": "model-select",
+            "label": "triageModel",
+            "file": "worker/src/lib/triage/ai-file.ts"
+          },
+          {
+            "from": "injection-guard",
+            "to": "ai-models",
+            "label": "classifier call",
+            "file": "worker/src/lib/injection-guard.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "better-auth",
+            "label": "/api/auth/*",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "request-auth",
+            "label": "every /api request",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "request-auth",
+            "to": "better-auth",
+            "label": "getSession",
+            "file": "worker/src/lib/request-auth.ts"
+          },
+          {
+            "from": "request-auth",
+            "to": "api-keys",
+            "label": "sk_ hash lookup",
+            "file": "worker/src/lib/request-auth.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "passkey-gate",
+            "label": "requirePasskey",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "inbox-perms",
+            "label": "injectAllowedInboxes",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "public-routes",
+            "label": "no session",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "hono-app",
+            "to": "assets",
+            "label": "SPA catch-all",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "mcp-clients",
+            "to": "mcp",
+            "label": "POST /mcp with JWT",
+            "file": "worker/src/mcp/http.ts"
+          },
+          {
+            "from": "mcp-clients",
+            "to": "better-auth",
+            "label": "OAuth and discovery",
+            "file": "worker/src/mcp/http.ts"
+          },
+          {
+            "from": "mcp",
+            "to": "messages",
+            "label": "read tools",
+            "file": "worker/src/mcp/server.ts"
+          },
+          {
+            "from": "mcp",
+            "to": "send-email",
+            "label": "send_email, reply_email",
+            "file": "worker/src/mcp/server.ts"
+          },
+          {
+            "from": "mcp",
+            "to": "enroll",
+            "label": "enroll_sequence",
+            "file": "worker/src/mcp/server.ts"
+          },
+          {
+            "from": "jmap-clients",
+            "to": "jmap",
+            "label": "/jmap/api",
+            "file": "worker/src/jmap/http.ts"
+          },
+          {
+            "from": "jmap",
+            "to": "request-auth",
+            "label": "authenticateJmap",
+            "file": "worker/src/jmap/auth.ts"
+          },
+          {
+            "from": "jmap",
+            "to": "jmap-submission",
+            "label": "EmailSubmission/set",
+            "file": "worker/src/jmap/methods.ts"
+          },
+          {
+            "from": "jmap-submission",
+            "to": "outbox",
+            "label": "sendSubmission",
+            "file": "worker/src/jmap/submission.ts"
+          },
+          {
+            "from": "jmap-submission",
+            "to": "queue",
+            "label": "jmap_submission_release",
+            "file": "worker/src/jmap/release.ts"
+          },
+          {
+            "from": "messages",
+            "to": "d1",
+            "label": "emails union sent_emails",
+            "file": "worker/src/lib/messages/query.ts"
+          },
+          {
+            "from": "spa",
+            "to": "api-client",
+            "label": "fetch /api",
+            "file": "src/lib/api.ts"
+          },
+          {
+            "from": "api-client",
+            "to": "hono-app",
+            "label": "/api/*",
+            "file": "src/lib/api.ts"
+          },
+          {
+            "from": "mail-ui",
+            "to": "api-client",
+            "label": "fetchMessages",
+            "file": "src/hooks/useMailMessages.ts"
+          },
+          {
+            "from": "realtime-hook",
+            "to": "do-hub",
+            "label": "/api/notifications/stream",
+            "file": "src/hooks/useRealtimeUpdates.ts"
+          },
+          {
+            "from": "push-service",
+            "to": "sw",
+            "label": "push event",
+            "file": "public/sw.js"
+          },
+          {
+            "from": "webmcp",
+            "to": "api-client",
+            "label": "read tools",
+            "file": "src/webmcp/tools/read.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "outbox",
+            "label": "processOutbox",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "gmail-sync",
+            "label": "syncAllGmailAccounts",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "outlook-sync",
+            "label": "syncAllOutlookAccounts",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "backfill-job",
+            "label": "ensureBackfillJobs",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "backups",
+            "label": "runBackupSchedule",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "audit",
+            "label": "pruneAuditEvents",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "cron-chain",
+            "to": "doctor",
+            "label": "recordCronTick",
+            "file": "worker/src/index.ts"
+          },
+          {
+            "from": "gmail-sync",
+            "to": "gmail-api",
+            "label": "history.list, messages.get",
+            "file": "worker/src/lib/gmail/sync.ts"
+          },
+          {
+            "from": "outlook-sync",
+            "to": "gmail-api",
+            "label": "Graph delta",
+            "file": "worker/src/lib/outlook/sync.ts"
+          },
+          {
+            "from": "gmail-sync",
+            "to": "email-handler",
+            "label": "ingestParsedEmail",
+            "file": "worker/src/lib/gmail/sync.ts"
+          },
+          {
+            "from": "outlook-sync",
+            "to": "email-handler",
+            "label": "ingestParsedEmail",
+            "file": "worker/src/lib/outlook/sync.ts"
+          },
+          {
+            "from": "backfill-job",
+            "to": "wf-backfill",
+            "label": "GMAIL_BACKFILL.create",
+            "file": "worker/src/lib/gmail/backfill-job.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "mail-import",
+            "label": "mail_import slice",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "mail-export",
+            "label": "mail_export slice",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "backups",
+            "label": "backup_step",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "thread-backfill",
+            "label": "thread_backfill slice",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "queue-router",
+            "to": "jmap-submission",
+            "label": "release",
+            "file": "worker/src/lib/queue-router.ts"
+          },
+          {
+            "from": "mail-import",
+            "to": "store-received",
+            "label": "storeReceivedMessage",
+            "file": "worker/src/lib/import/mail-import.ts"
+          },
+          {
+            "from": "mail-import",
+            "to": "r2",
+            "label": "uploaded parts",
+            "file": "worker/src/lib/import/mail-import.ts"
+          },
+          {
+            "from": "mail-export",
+            "to": "r2",
+            "label": "export file",
+            "file": "worker/src/lib/export/mail-export.ts"
+          },
+          {
+            "from": "backups",
+            "to": "r2",
+            "label": "encrypted dump",
+            "file": "worker/src/lib/backup/run.ts"
+          },
+          {
+            "from": "restore",
+            "to": "d1",
+            "label": "restore rows",
+            "file": "scripts/restore-backup.mjs"
+          },
+          {
+            "from": "installer",
+            "to": "d1",
+            "label": "create, migrate",
+            "file": "scripts/saasmail/apply.ts"
+          },
+          {
+            "from": "installer",
+            "to": "queue",
+            "label": "create queue",
+            "file": "scripts/saasmail/apply.ts"
+          },
+          {
+            "from": "installer",
+            "to": "email-routing",
+            "label": "routing rule",
+            "file": "scripts/saasmail/apply-mail.ts"
+          },
+          {
+            "from": "migrations",
+            "to": "d1",
+            "label": "drizzle-kit apply",
+            "file": "migrations/README.md"
+          },
+          {
+            "from": "doctor",
+            "to": "d1",
+            "label": "read checks",
+            "file": "worker/src/lib/doctor/index.ts"
+          }
+        ],
+        "flows": [
+          {
+            "id": "inbound",
+            "name": "Inbound mail to the inbox",
+            "section": "inbound",
+            "summary": "One message from Email Routing becomes an emails row, then rules, notifications, webhook, forward and sequence cancel run.",
+            "steps": [
+              {
+                "component": "email-routing",
+                "file": "worker/src/index.ts",
+                "symbol": "email()",
+                "action": "Email Routing calls the Worker's email() handler. The audit actor is system inbound."
+              },
+              {
+                "component": "email-handler",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "handleEmail, parseEmail",
+                "action": "The handler parses the raw message into ParsedEmail."
+              },
+              {
+                "component": "inbound-reject",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "rejectsUnknownRecipients, splitSubaddress",
+                "action": "An address that is no inbox and has no members is rejected when the setting is on. A test inbox takes plus addresses."
+              },
+              {
+                "component": "inbound-reject",
+                "file": "worker/src/lib/blocklist.ts",
+                "symbol": "isBlocked",
+                "action": "A blocked sender is dropped without a trace."
+              },
+              {
+                "component": "d1",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "emails.messageId + recipient",
+                "action": "A Message-ID already stored for this inbox returns duplicate."
+              },
+              {
+                "component": "spam-filter",
+                "file": "worker/src/lib/spam/filter.ts",
+                "symbol": "scoreInbound",
+                "action": "The learning filter scores the message. A failure leaves the score null."
+              },
+              {
+                "component": "rules",
+                "file": "worker/src/lib/rules/evaluate.ts",
+                "symbol": "selectMatchingRules, rejectionOf",
+                "action": "Rules are matched. A reject rule records the match and refuses the message at SMTP time."
+              },
+              {
+                "component": "store-received",
+                "file": "worker/src/lib/inbound/store-received.ts",
+                "symbol": "storeReceivedMessage",
+                "action": "Person row, attachments and raw message to R2, conversation id, thread key and emails row in one batch."
+              },
+              {
+                "component": "rules",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "setSystemSpamState, runMatchedRules",
+                "action": "Spam over the inbox threshold is filed as spam. Otherwise the rule actions run."
+              },
+              {
+                "component": "fanout",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "computeFanoutTargets",
+                "action": "Inbox members and admins get a /deliver call on their hub, in waitUntil."
+              },
+              {
+                "component": "webhooks",
+                "file": "worker/src/lib/webhook-delivery.ts",
+                "symbol": "deliverWebhook",
+                "action": "The message.received webhook is recorded and sent."
+              },
+              {
+                "component": "inbound-forward",
+                "file": "worker/src/lib/inbound-forward.ts",
+                "symbol": "forwardInbound",
+                "action": "A copy goes to the inbox's forwardTo address."
+              },
+              {
+                "component": "cancel-seq",
+                "file": "worker/src/lib/cancel-sequence.ts",
+                "symbol": "cancelSequencesForPerson",
+                "action": "The sender's open sequence steps are cancelled. A failure is logged only."
+              }
+            ]
+          },
+          {
+            "id": "realtime",
+            "name": "Realtime notice and Web Push",
+            "section": "inbound",
+            "summary": "A stored message reaches open tabs over a WebSocket and closed devices over Web Push.",
+            "steps": [
+              {
+                "component": "realtime-hook",
+                "file": "src/hooks/useRealtimeUpdates.ts",
+                "symbol": "new WebSocket",
+                "action": "Each open tab connects to /api/notifications/stream."
+              },
+              {
+                "component": "hono-app",
+                "file": "worker/src/routers/notifications-router.ts",
+                "symbol": "stream route",
+                "action": "The router checks the upgrade and passes it to the user's hub."
+              },
+              {
+                "component": "do-hub",
+                "file": "worker/src/do/notifications.ts",
+                "symbol": "/connect",
+                "action": "The hub keeps the socket for the user."
+              },
+              {
+                "component": "fanout",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "NOTIFICATIONS_HUB.idFromName(userId)",
+                "action": "On new mail the handler posts the preview to /deliver on each target hub."
+              },
+              {
+                "component": "do-hub",
+                "file": "worker/src/do/notifications.ts",
+                "symbol": "/deliver",
+                "action": "The hub sends a frame to each live socket and a push to each device."
+              },
+              {
+                "component": "push-service",
+                "file": "worker/src/lib/web-push.ts",
+                "symbol": "sendPush, encryptAes128Gcm",
+                "action": "The push is VAPID-signed and aes128gcm-encrypted in the Worker."
+              },
+              {
+                "component": "sw",
+                "file": "public/sw.js",
+                "symbol": "push, notificationclick",
+                "action": "The service worker shows the OS notification and opens the message on click."
+              }
+            ]
+          },
+          {
+            "id": "send-api",
+            "name": "Send through POST /api/send",
+            "section": "sending",
+            "summary": "An API or UI send goes through idempotency, the daily limit, the outbox and one provider, then lands in sent_emails.",
+            "steps": [
+              {
+                "component": "send-router",
+                "file": "worker/src/routers/send-router.ts",
+                "symbol": "sendEmailRoute",
+                "action": "The route validates the body against SendEmailSchema."
+              },
+              {
+                "component": "send-router",
+                "file": "worker/src/lib/idempotent-send-route.ts",
+                "symbol": "respondIdempotently, reserveDailySend",
+                "action": "A repeated Idempotency-Key replays the stored answer. The daily send limit is reserved."
+              },
+              {
+                "component": "send-email",
+                "file": "worker/src/lib/send-email.ts",
+                "symbol": "sendEmail, assertInboxAllowed",
+                "action": "The from address must be an inbox the user can use. Transactional mail to a hard-bounced address is refused."
+              },
+              {
+                "component": "send-email",
+                "file": "worker/src/lib/send-email.ts",
+                "symbol": "stageSentAttachments",
+                "action": "Attachments are staged to R2 under the sent id."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "sendViaOutbox",
+                "action": "A pending outbox row is written before the provider call, due in one hour."
+              },
+              {
+                "component": "suppression-send",
+                "file": "worker/src/lib/send.ts",
+                "symbol": "sendWithSuppressionCheck",
+                "action": "Suppressed recipients are dropped. A pause swaps in the paused sender."
+              },
+              {
+                "component": "sender-factory",
+                "file": "worker/src/lib/email-sender/index.ts",
+                "symbol": "createEmailSender",
+                "action": "The provider call goes to Bavimail, Postmark, Resend or Cloudflare."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "sendViaOutbox",
+                "action": "Sent: the row is deleted. Transient: it stays pending. Permanent: it is failed. The webhook is recorded after."
+              },
+              {
+                "component": "send-email",
+                "file": "worker/src/lib/send-email.ts",
+                "symbol": "sentEmails insert, cancelSequencesForPerson",
+                "action": "The sent_emails row is written, the person's sequences stop and the send is audited."
+              }
+            ]
+          },
+          {
+            "id": "outbox-retry",
+            "name": "Outbox retry and pause drain",
+            "section": "sending",
+            "summary": "Pending rows are retried once per cron tick. A resume after a pause drains held rows through the queue.",
+            "steps": [
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "scheduledChain",
+                "action": "Each hourly tick calls processOutbox after the sequence dispatch."
+              },
+              {
+                "component": "sending-controls",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "isSendingPaused",
+                "action": "Nothing is retried while sending is paused."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "processOutbox",
+                "action": "Up to 200 due pending rows are read."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "attemptOutboxRow",
+                "action": "Each row is claimed, sent again with its stored headers and resolved."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/outbox.ts",
+                "symbol": "finalizeOutboxRow, bookkeepingOwnerOf",
+                "action": "A campaign or sequence row waits in bookkeeping_pending until its owner confirms."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "outbox_drain",
+                "action": "On resume, outbox_drain messages send held rows 50 at a time, then release overdue JMAP sends."
+              }
+            ]
+          },
+          {
+            "id": "delivery-events",
+            "name": "Bounce or complaint to suppression",
+            "section": "sending",
+            "summary": "Cloudflare Email Sending events arrive on the queue, match a sent message, add a suppression and fire a webhook.",
+            "steps": [
+              {
+                "component": "providers",
+                "file": "docs/email-providers.md",
+                "symbol": "cf.email.sending.message.*",
+                "action": "The sending domain's events are subscribed to EMAIL_QUEUE. Other providers report nothing."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "classifyQueueMessage",
+                "action": "A cf.email.sending type is a delivery_event."
+              },
+              {
+                "component": "delivery",
+                "file": "worker/src/lib/delivery/cloudflare.ts",
+                "symbol": "parseCloudflareEvent",
+                "action": "The event is parsed. A malformed one is acked and logged."
+              },
+              {
+                "component": "delivery",
+                "file": "worker/src/lib/delivery/record.ts",
+                "symbol": "correlateDeliveryEvent",
+                "action": "The Message-ID is matched to a sent message. No match on the first try waits 60 s once."
+              },
+              {
+                "component": "delivery",
+                "file": "worker/src/lib/delivery/record.ts",
+                "symbol": "recordDeliveryEvent",
+                "action": "A hard bounce or complaint suppresses the address. 3 soft bounces in 30 days also do."
+              },
+              {
+                "component": "webhooks",
+                "file": "worker/src/lib/delivery/queue.ts",
+                "symbol": "deliveryWebhook, dispatchWebhook",
+                "action": "message.bounced, message.complained or message.failed goes to the webhook."
+              }
+            ]
+          },
+          {
+            "id": "sequence",
+            "name": "Sequence enrollment and each step",
+            "section": "automation",
+            "summary": "Enrollment writes all steps. The first is queued at once, later ones each hour when due.",
+            "steps": [
+              {
+                "component": "sequences-router",
+                "file": "worker/src/routers/sequences-router.ts",
+                "symbol": "POST /{id}/enroll",
+                "action": "An enroll call names the person, the inbox and the variables. MCP enroll_sequence does the same."
+              },
+              {
+                "component": "enroll",
+                "file": "worker/src/lib/enroll-sequence.ts",
+                "symbol": "enrollPersonInSequence",
+                "action": "A person with an active enrollment is refused. Every step row is written, the first as queued."
+              },
+              {
+                "component": "queue",
+                "file": "worker/src/lib/enroll-sequence.ts",
+                "symbol": "EMAIL_QUEUE.send",
+                "action": "The first step goes on the queue at once."
+              },
+              {
+                "component": "seq-processor",
+                "file": "worker/src/lib/sequence-processor.ts",
+                "symbol": "handleScheduled",
+                "action": "Each hour, due pending steps are set to queued, then sent to the queue."
+              },
+              {
+                "component": "seq-processor",
+                "file": "worker/src/lib/sequence-processor.ts",
+                "symbol": "processSequenceEmail",
+                "action": "Only a queued step of an active enrollment goes on. An existing outbox row means a redelivery and is repaired."
+              },
+              {
+                "component": "templates",
+                "file": "worker/src/lib/interpolate.ts",
+                "symbol": "interpolate",
+                "action": "Person and enrollment variables fill the template. A parse error fails the step."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/sequence-processor.ts",
+                "symbol": "sendViaOutbox",
+                "action": "The step goes through the outbox and gets a sent_emails row."
+              },
+              {
+                "component": "enroll",
+                "file": "worker/src/lib/enrollment-completion.ts",
+                "symbol": "completeEnrollmentIfDone",
+                "action": "With no outstanding step, the enrollment completes."
+              },
+              {
+                "component": "cancel-seq",
+                "file": "worker/src/lib/cancel-sequence.ts",
+                "symbol": "cancelSequencesForPerson",
+                "action": "A reply or a manual send cancels the pending and queued steps."
+              }
+            ]
+          },
+          {
+            "id": "campaign",
+            "name": "Campaign send to a list",
+            "section": "automation",
+            "summary": "A campaign is frozen, fanned out in pages, and sent one queue message per recipient.",
+            "steps": [
+              {
+                "component": "campaigns-router",
+                "file": "worker/src/routers/campaigns-router.ts",
+                "symbol": "POST /{id}/send",
+                "action": "The send needs UNSUBSCRIBE_SECRET and passes the provider capacity check."
+              },
+              {
+                "component": "campaign-sender",
+                "file": "worker/src/lib/campaign-sender.ts",
+                "symbol": "snapshotCampaign",
+                "action": "The body is frozen. Later edits cannot change mail already going out."
+              },
+              {
+                "component": "campaigns-router",
+                "file": "worker/src/routers/campaigns-router.ts",
+                "symbol": "asyncJobs campaign_fan_out",
+                "action": "A fan-out job row is written and its first message queued."
+              },
+              {
+                "component": "campaign-sender",
+                "file": "worker/src/lib/campaign-sender.ts",
+                "symbol": "runCampaignFanOutPage",
+                "action": "Each page of 100 members gets recipient rows and one sendBatch. The cursor moves only after both succeed."
+              },
+              {
+                "component": "campaign-sender",
+                "file": "worker/src/lib/campaign-sender.ts",
+                "symbol": "claimRecipient, sendCampaignRecipient",
+                "action": "Each recipient is claimed, so a duplicate message does nothing."
+              },
+              {
+                "component": "tracking",
+                "file": "worker/src/lib/campaign-tracking.ts",
+                "symbol": "applyRecipientTracking",
+                "action": "Links and the open pixel get the recipient's signed tokens."
+              },
+              {
+                "component": "outbox",
+                "file": "worker/src/lib/campaign-sender.ts",
+                "symbol": "sendViaOutbox",
+                "action": "The mail goes through the outbox with the list's unsubscribe header."
+              },
+              {
+                "component": "campaign-sender",
+                "file": "worker/src/lib/campaign-sender.ts",
+                "symbol": "completeCampaignBookkeeping, checkCampaignCompletion",
+                "action": "Bookkeeping is written, then the campaign ends sent or completed_with_failures."
+              },
+              {
+                "component": "newsletter-cron",
+                "file": "worker/src/lib/newsletter-cron.ts",
+                "symbol": "runCampaignPass",
+                "action": "Each hour, scheduled campaigns start and stalled ones are swept after 24 h."
+              }
+            ]
+          },
+          {
+            "id": "track-unsub",
+            "name": "Open, click and unsubscribe",
+            "section": "automation",
+            "summary": "Public routes check signed tokens, record the event and redirect or unsubscribe.",
+            "steps": [
+              {
+                "component": "tracking",
+                "file": "worker/src/routers/public-track-router.ts",
+                "symbol": "/track/open/{token}",
+                "action": "The open pixel verifies its token and records the open."
+              },
+              {
+                "component": "tracking",
+                "file": "worker/src/lib/campaign-tracking.ts",
+                "symbol": "verifyClickToken, resolveClickDestination",
+                "action": "A click needs a link of the same campaign, and only http or https URLs redirect."
+              },
+              {
+                "component": "unsubscribe",
+                "file": "worker/src/routers/unsubscribe-router.ts",
+                "symbol": "/unsubscribe",
+                "action": "The unsubscribe link and the List-Unsubscribe POST land here without a session."
+              },
+              {
+                "component": "unsubscribe",
+                "file": "worker/src/lib/unsubscribe-token.ts",
+                "symbol": "verifyUnsubscribeToken",
+                "action": "The token is checked with UNSUBSCRIBE_SECRET."
+              },
+              {
+                "component": "unsubscribe",
+                "file": "worker/src/lib/list-unsubscribe.ts",
+                "symbol": "applyListUnsubscribe, undoListUnsubscribe",
+                "action": "A v2 token leaves one list, with a 7-day undo. A v1 token suppresses the address."
+              }
+            ]
+          },
+          {
+            "id": "agent-chat",
+            "name": "Native agent chat",
+            "section": "agent",
+            "summary": "A person chats with the MailAgent. It reads mail through tools and only drafts, never sends.",
+            "steps": [
+              {
+                "component": "agent-panel",
+                "file": "src/agent/AgentChatSession.tsx",
+                "symbol": "useAgentChat",
+                "action": "The panel opens a session and connects to /agents/mail-agent/<name>."
+              },
+              {
+                "component": "mail-agent",
+                "file": "worker/src/agent/auth.ts",
+                "symbol": "authorizeMailAgentRequest",
+                "action": "Each connect and request checks auth, the passkey and that the session belongs to the user."
+              },
+              {
+                "component": "mail-agent",
+                "file": "worker/src/agent/mail-agent.ts",
+                "symbol": "MailAgent.onChatMessage",
+                "action": "The turn runs streamText with the selected model and the tools."
+              },
+              {
+                "component": "agent-tools",
+                "file": "worker/src/lib/agent/tools.ts",
+                "symbol": "createAgentTools",
+                "action": "Read tools use queryMessages. Quoted mail carries the untrusted-mail notice."
+              },
+              {
+                "component": "injection-guard",
+                "file": "worker/src/lib/agent/tools.ts",
+                "symbol": "FLAGGED_MAIL_NOTICE",
+                "action": "A stored injection verdict is shown to the model, but reads are not blocked."
+              },
+              {
+                "component": "agent-tools",
+                "file": "worker/src/lib/agent/tools.ts",
+                "symbol": "AGENT_APPROVAL_TOOL_NAMES",
+                "action": "Enroll, cancel, add to list, assign and link need approval, at most 5 per turn."
+              },
+              {
+                "component": "do-agent",
+                "file": "worker/src/agent/mail-agent.ts",
+                "symbol": "onFinish",
+                "action": "The transcript is saved in the object's SQLite storage."
+              }
+            ]
+          },
+          {
+            "id": "suggest-file",
+            "name": "Suggested reply and AI filing",
+            "section": "agent",
+            "summary": "Unattended model work on inbound mail, gated by the injection check.",
+            "steps": [
+              {
+                "component": "email-handler",
+                "file": "worker/src/email-handler.ts",
+                "symbol": "shouldEnqueueSuggestedReply",
+                "action": "Autodraft on, not spam, a model set and not automated mail: a suggest_reply message is queued."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "suggest_reply",
+                "action": "The consumer runs it, up to 3 tries 30 s apart."
+              },
+              {
+                "component": "suggest-reply",
+                "file": "worker/src/lib/agent/suggest-reply.ts",
+                "symbol": "runSuggestedReply",
+                "action": "A message already answered, spam or trashed is skipped."
+              },
+              {
+                "component": "injection-guard",
+                "file": "worker/src/lib/injection-guard.ts",
+                "symbol": "checkInbound",
+                "action": "A classifier screens the current message. A flagged one gets no draft."
+              },
+              {
+                "component": "suggest-reply",
+                "file": "worker/src/lib/agent/suggest-reply.ts",
+                "symbol": "postProcessSuggestedReply",
+                "action": "The draft is cleaned and stored. A person uses or dismisses it."
+              },
+              {
+                "component": "ai-file",
+                "file": "worker/src/lib/triage/ai-file.ts",
+                "symbol": "fileWithAi",
+                "action": "An ai_file rule action asks the triage model for a folder after the same check."
+              }
+            ]
+          },
+          {
+            "id": "auth",
+            "name": "Request auth on /api",
+            "section": "api",
+            "summary": "Every /api request outside the public paths needs a session or an sk_ key, then a passkey and an inbox list.",
+            "steps": [
+              {
+                "component": "hono-app",
+                "file": "worker/src/index.ts",
+                "symbol": "isUnauthenticatedPath",
+                "action": "Auth, setup, invites, unsubscribe, health and config skip the pipeline."
+              },
+              {
+                "component": "hono-app",
+                "file": "worker/src/index.ts",
+                "symbol": "POST /api/auth/sign-in/email",
+                "action": "Password sign-in is refused for a user with a passkey, rate-limited and audited."
+              },
+              {
+                "component": "better-auth",
+                "file": "worker/src/auth/index.ts",
+                "symbol": "createAuth",
+                "action": "BetterAuth handles /api/auth/* with passkey, admin, JWT and OAuth provider plugins."
+              },
+              {
+                "component": "request-auth",
+                "file": "worker/src/lib/request-auth.ts",
+                "symbol": "resolveRequestAuth",
+                "action": "A session cookie wins. Else a Bearer sk_ key is hashed and looked up."
+              },
+              {
+                "component": "passkey-gate",
+                "file": "worker/src/middleware/require-passkey.ts",
+                "symbol": "passkeyRequired",
+                "action": "A session user with no passkey gets 403 PASSKEY_REQUIRED. API keys pass."
+              },
+              {
+                "component": "inbox-perms",
+                "file": "worker/src/lib/inbox-permissions.ts",
+                "symbol": "resolveAllowedInboxes",
+                "action": "The inboxes the user can read and send from go on the context."
+              },
+              {
+                "component": "hono-app",
+                "file": "worker/src/index.ts",
+                "symbol": "requireAdmin",
+                "action": "Admin, contacts, OAuth apps, suppressions and webhook routes need role admin."
+              }
+            ]
+          },
+          {
+            "id": "mcp",
+            "name": "MCP tool call over OAuth",
+            "section": "api",
+            "summary": "An MCP client finds the auth server, gets a token and calls tools under three scopes.",
+            "steps": [
+              {
+                "component": "mcp",
+                "file": "worker/src/mcp/http.ts",
+                "symbol": "registerMcpRoutes",
+                "action": "Discovery documents are served at the origin root before the SPA catch-all."
+              },
+              {
+                "component": "better-auth",
+                "file": "worker/src/auth/index.ts",
+                "symbol": "oauthProvider",
+                "action": "The client registers, the user consents on /consent, and BetterAuth issues a JWT."
+              },
+              {
+                "component": "mcp",
+                "file": "worker/src/mcp/http.ts",
+                "symbol": "verifyAccessTokenLocally",
+                "action": "The token is checked offline against the JWKS."
+              },
+              {
+                "component": "mcp",
+                "file": "worker/src/mcp/http.ts",
+                "symbol": "oauthClients.disabled, users.banned",
+                "action": "Each call checks that the client is not revoked and the user exists and is not banned."
+              },
+              {
+                "component": "mcp",
+                "file": "worker/src/mcp/server.ts",
+                "symbol": "guard, hasScope",
+                "action": "Each tool needs email:read, email:send or email:manage."
+              },
+              {
+                "component": "sending-controls",
+                "file": "worker/src/mcp/server.ts",
+                "symbol": "reserveDailySend, withIdempotency",
+                "action": "Send tools count against the daily limit and are idempotent."
+              }
+            ]
+          },
+          {
+            "id": "jmap-send",
+            "name": "JMAP send with a delay",
+            "section": "api",
+            "summary": "A JMAP client creates a draft and submits it. A delayed send is released by the queue.",
+            "steps": [
+              {
+                "component": "jmap",
+                "file": "worker/src/jmap/http.ts",
+                "symbol": "/jmap/api",
+                "action": "The method calls arrive in one POST."
+              },
+              {
+                "component": "jmap",
+                "file": "worker/src/jmap/auth.ts",
+                "symbol": "authenticateJmap",
+                "action": "Same auth as /api, then the passkey check and the allowed inboxes."
+              },
+              {
+                "component": "jmap",
+                "file": "worker/src/jmap/email-set.ts",
+                "symbol": "emailSet",
+                "action": "Email/set creates the draft."
+              },
+              {
+                "component": "jmap-submission",
+                "file": "worker/src/jmap/submission.ts",
+                "symbol": "emailSubmissionSet, createSubmission",
+                "action": "EmailSubmission/set claims the draft and reserves the daily send."
+              },
+              {
+                "component": "jmap-submission",
+                "file": "worker/src/jmap/release.ts",
+                "symbol": "enqueueRelease",
+                "action": "A delayed send is queued with its delay, at most 24 h."
+              },
+              {
+                "component": "jmap-submission",
+                "file": "worker/src/jmap/release.ts",
+                "symbol": "releaseScheduledSubmission",
+                "action": "When due, only the caller whose claim succeeds sends it through the outbox."
+              },
+              {
+                "component": "jmap-submission",
+                "file": "worker/src/jmap/recovery.ts",
+                "symbol": "runJmapSubmissionMaintenance",
+                "action": "Each hour, stuck claims are recovered and old submissions pruned."
+              }
+            ]
+          },
+          {
+            "id": "web-mail",
+            "name": "Web app reads and changes mail",
+            "section": "web",
+            "summary": "The mail page lists the union of received and sent mail and writes state through one module.",
+            "steps": [
+              {
+                "component": "spa",
+                "file": "src/App.tsx",
+                "symbol": "Route /mail",
+                "action": "A signed-in user with a passkey reaches the mail page."
+              },
+              {
+                "component": "mail-ui",
+                "file": "src/hooks/useMailMessages.ts",
+                "symbol": "useMailMessages, fetchMessages",
+                "action": "The mail hook asks the API client for a page of messages."
+              },
+              {
+                "component": "api-client",
+                "file": "src/lib/api.ts",
+                "symbol": "fetchMessages, apiFetch",
+                "action": "The client calls GET /api/messages with the folder and cursor."
+              },
+              {
+                "component": "messages",
+                "file": "worker/src/routers/messages-router.ts",
+                "symbol": "queryMessages",
+                "action": "The router reads the union of emails and sent_emails, scoped to the allowed inboxes."
+              },
+              {
+                "component": "messages",
+                "file": "worker/src/routers/mail-state-router.ts",
+                "symbol": "setMailboxState, setUserState",
+                "action": "Read, star, archive, spam and folder moves go through state.ts."
+              },
+              {
+                "component": "realtime-hook",
+                "file": "src/hooks/useRealtimeUpdates.ts",
+                "symbol": "dispatchInboxRefresh",
+                "action": "A realtime frame refreshes the list."
+              }
+            ]
+          },
+          {
+            "id": "queue-consume",
+            "name": "Queue batch consumer",
+            "section": "jobs",
+            "summary": "One shared queue. The consumer sorts each message by kind and decides ack or retry.",
+            "steps": [
+              {
+                "component": "queue",
+                "file": "worker/src/index.ts",
+                "symbol": "queue()",
+                "action": "A batch of up to 10 arrives with audit actor system queue."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "isDemoMode",
+                "action": "A demo deploy acks everything."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "classifyQueueMessage",
+                "action": "A message with no type and a sequenceEmailId is a sequence step. An unknown one is acked and logged."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "sliceRan",
+                "action": "Only one export, import, backfill or backup slice runs per batch. Others are queued again."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "SliceBusyError, MAIL_EXPORT_MAX_ATTEMPTS",
+                "action": "A busy slice retries in 150 s. A slice that failed 3 times fails its job."
+              },
+              {
+                "component": "queue-router",
+                "file": "worker/src/lib/queue-router.ts",
+                "symbol": "msg.retry",
+                "action": "Other failures retry. After max_retries 3 the queue drops the message."
+              }
+            ]
+          },
+          {
+            "id": "gmail-sync",
+            "name": "Gmail and Outlook hourly sync",
+            "section": "jobs",
+            "summary": "Connected mailboxes are polled each hour. New mail goes through the same ingest as live mail.",
+            "steps": [
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "scheduled()",
+                "action": "After the scheduled chain, the cron syncs Gmail, then Outlook, then the backfill jobs."
+              },
+              {
+                "component": "gmail-sync",
+                "file": "worker/src/lib/gmail/sync.ts",
+                "symbol": "syncAllGmailAccounts",
+                "action": "Each account syncs on its own. A failure is stored where the admin UI shows it."
+              },
+              {
+                "component": "gmail-sync",
+                "file": "worker/src/lib/gmail/token.ts",
+                "symbol": "getAccessToken",
+                "action": "The OAuth token is refreshed from the encrypted grant."
+              },
+              {
+                "component": "gmail-sync",
+                "file": "worker/src/lib/gmail/sync.ts",
+                "symbol": "syncAccount",
+                "action": "The history cursor gives new messages, up to a 50-message budget per run."
+              },
+              {
+                "component": "email-handler",
+                "file": "worker/src/lib/gmail/sync.ts",
+                "symbol": "ingestParsedEmail",
+                "action": "Each message goes through the inbound pipeline with its Gmail ids."
+              },
+              {
+                "component": "outlook-sync",
+                "file": "worker/src/lib/outlook/sync.ts",
+                "symbol": "syncAllOutlookAccounts",
+                "action": "Outlook accounts sync next, and skip the import if Gmail took it this tick."
+              },
+              {
+                "component": "backfill-job",
+                "file": "worker/src/lib/gmail/backfill-job.ts",
+                "symbol": "ensureBackfillJobs, GmailBackfillWorkflow",
+                "action": "The one-year import runs as a Workflow where GMAIL_BACKFILL is bound."
+              }
+            ]
+          },
+          {
+            "id": "backup",
+            "name": "Backups, exports and imports",
+            "section": "jobs",
+            "summary": "Long jobs run as queued slices that write to R2 and resume after a crash.",
+            "steps": [
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "runBackupSchedule",
+                "action": "The cron starts a scheduled backup. An admin can start one too."
+              },
+              {
+                "component": "backups",
+                "file": "worker/src/lib/backup/run.ts",
+                "symbol": "startBackup",
+                "action": "A run row is written only when none is running. Step 0 is queued."
+              },
+              {
+                "component": "backups",
+                "file": "worker/src/lib/backup/run.ts",
+                "symbol": "runBackupStep",
+                "action": "Each step dumps rows of the tables not in EXCLUDED_TABLES, encrypted, to R2."
+              },
+              {
+                "component": "mail-export",
+                "file": "worker/src/lib/export/mail-export.ts",
+                "symbol": "runMailExportSlice",
+                "action": "An export writes its file in slices. The cron reaps expired ones."
+              },
+              {
+                "component": "mail-import",
+                "file": "worker/src/lib/import/mail-import.ts",
+                "symbol": "uploadImportPart, completeImportUpload",
+                "action": "An mbox is uploaded in parts, then queued."
+              },
+              {
+                "component": "mail-import",
+                "file": "worker/src/lib/import/mail-import.ts",
+                "symbol": "runMailImportSlice",
+                "action": "Each slice stores messages with storeReceivedMessage or storeSentMessage. No rules, webhooks or forwards run."
+              },
+              {
+                "component": "restore",
+                "file": "scripts/restore-backup.mjs",
+                "symbol": "readManifest, verifyFiles, decryptFrames",
+                "action": "The restore script decrypts a backup into a D1 database."
+              }
+            ]
+          },
+          {
+            "id": "cron",
+            "name": "Hourly cron chain",
+            "section": "ops",
+            "summary": "About 20 jobs in a fixed order. Each catches its own error, so a later one still runs.",
+            "steps": [
+              {
+                "component": "cron",
+                "file": "wrangler.jsonc.example",
+                "symbol": "crons 0 * * * *",
+                "action": "The trigger fires each hour."
+              },
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "handleScheduled",
+                "action": "Sequence dispatch runs first."
+              },
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "processOutbox, runNewsletterMaintenance",
+                "action": "Outbox retry and newsletter maintenance share one catch."
+              },
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "pruneJmapChanges, pruneAuditEvents, pruneSendIdempotency",
+                "action": "Pruning jobs run next, each with its own catch."
+              },
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "sweepWebhookDeliveries",
+                "action": "Webhook deliveries left due are sent again."
+              },
+              {
+                "component": "cron-chain",
+                "file": "worker/src/index.ts",
+                "symbol": "reapMailExports, reapMailImports, runBackupSchedule",
+                "action": "Long jobs are reaped or started."
+              },
+              {
+                "component": "doctor",
+                "file": "worker/src/lib/doctor/cron.ts",
+                "symbol": "recordCronTick",
+                "action": "The last step records the tick for the doctor."
+              }
+            ]
+          },
+          {
+            "id": "install",
+            "name": "Install and check an instance",
+            "section": "ops",
+            "summary": "The CLI plans and applies the Cloudflare resources. The doctor checks the running instance.",
+            "steps": [
+              {
+                "component": "installer",
+                "file": "scripts/saasmail/cli.ts",
+                "symbol": "install, status, upgrade",
+                "action": "yarn saasmail runs one of three commands."
+              },
+              {
+                "component": "installer",
+                "file": "scripts/saasmail/plan.ts",
+                "symbol": "computePlan, planDigest",
+                "action": "The plan lists what will be made. State is kept in the gitignored .saasmail/."
+              },
+              {
+                "component": "installer",
+                "file": "scripts/saasmail/apply.ts",
+                "symbol": "install, provision",
+                "action": "D1, R2, the queue, secrets and the routing rule are made through the Cloudflare REST API."
+              },
+              {
+                "component": "migrations",
+                "file": "migrations/README.md",
+                "symbol": "yarn db:migrate:prod",
+                "action": "Migrations are applied to the remote D1."
+              },
+              {
+                "component": "doctor",
+                "file": "worker/src/routers/admin-doctor-router.ts",
+                "symbol": "GET /api/admin/doctor",
+                "action": "An admin runs the doctor from the app."
+              },
+              {
+                "component": "doctor",
+                "file": "worker/src/lib/doctor/index.ts",
+                "symbol": "runDoctor, DOCTOR_CHECKS",
+                "action": "Bindings, secrets, migrations, inbound, outbox and backups, and the cron tick are checked."
+              }
+            ]
+          }
+        ],
+        "invariants": [
+          {
+            "text": "Only queryMessages reads the union of emails and sent_emails. No router or tool merges them itself.",
+            "file": "AGENTS.md",
+            "component": "messages"
+          },
+          {
+            "text": "Every message state write goes through messages/state.ts. A hard delete calls deleteMessageState first.",
+            "file": "AGENTS.md",
+            "component": "messages"
+          },
+          {
+            "text": "Live mail and imported mail are stored by storeReceivedMessage only. Only live mail runs rules, notifications, webhooks and forwards.",
+            "file": "worker/src/lib/inbound/store-received.ts",
+            "component": "store-received"
+          },
+          {
+            "text": "A failed storage batch deletes the R2 files it wrote.",
+            "file": "worker/src/lib/inbound/store-received.ts",
+            "component": "store-received"
+          },
+          {
+            "text": "emails has a unique index on Message-ID and recipient, so a duplicate cannot be stored twice.",
+            "file": "worker/src/db/emails.schema.ts",
+            "component": "d1"
+          },
+          {
+            "text": "Before storage, the handler writes nothing but a rejection's audit row and the rejecting rule's match count.",
+            "file": "docs/architecture.md",
+            "component": "email-handler"
+          },
+          {
+            "text": "A send writes its outbox row before the provider call. A throw deletes the row, so no hidden retry follows.",
+            "file": "worker/src/lib/outbox.ts",
+            "component": "outbox"
+          },
+          {
+            "text": "A provider-accepted row with an owner stays bookkeeping_pending until the owner confirms, so a crash cannot cause a duplicate.",
+            "file": "worker/src/lib/outbox.ts",
+            "component": "outbox"
+          },
+          {
+            "text": "A webhook row is written after the send's own writes, in a call that never throws.",
+            "file": "AGENTS.md",
+            "component": "webhooks"
+          },
+          {
+            "text": "Gmail and Outlook sends are refused, never held in the outbox.",
+            "file": "AGENTS.md",
+            "component": "sender-factory"
+          },
+          {
+            "text": "A Gmail-mapped inbox with no token throws. It never falls back to another provider.",
+            "file": "worker/src/lib/email-sender/for-inbox.ts",
+            "component": "sender-factory"
+          },
+          {
+            "text": "Transactional sends skip the suppression list. Marketing sends address each recipient alone.",
+            "file": "worker/src/lib/send.ts",
+            "component": "suppression-send"
+          },
+          {
+            "text": "Every terminal sequence branch goes through failStep, so the enrollment completes.",
+            "file": "worker/src/lib/sequence-processor.ts",
+            "component": "seq-processor"
+          },
+          {
+            "text": "A queue message with no type and a sequenceEmailId is a sequence step, so a deploy does not drop old messages.",
+            "file": "worker/src/lib/queue-router.ts",
+            "component": "queue-router"
+          },
+          {
+            "text": "A campaign's body is frozen at start. The fan-out cursor moves only after inserts and sendBatch both succeed.",
+            "file": "worker/src/lib/campaign-sender.ts",
+            "component": "campaign-sender"
+          },
+          {
+            "text": "A campaign cannot start without UNSUBSCRIBE_SECRET.",
+            "file": "worker/src/routers/campaigns-router.ts",
+            "component": "campaigns-router"
+          },
+          {
+            "text": "A click redirects only to a stored http or https link of the same campaign.",
+            "file": "worker/src/lib/campaign-tracking.ts",
+            "component": "tracking"
+          },
+          {
+            "text": "The injection check blocks only unattended work. The agent has no send tool and a person reviews every draft.",
+            "file": "AGENTS.md",
+            "component": "injection-guard"
+          },
+          {
+            "text": "An agent session answers only its owner.",
+            "file": "worker/src/agent/auth.ts",
+            "component": "mail-agent"
+          },
+          {
+            "text": "MCP checks the client, the user and the ban on every call, though the token is verified offline.",
+            "file": "worker/src/mcp/http.ts",
+            "component": "mcp"
+          },
+          {
+            "text": "Issuing an API key needs a passkey.",
+            "file": "worker/src/routers/api-keys-router.ts",
+            "component": "api-keys"
+          },
+          {
+            "text": "A new table is backed up unless it is in EXCLUDED_TABLES. backups.test.ts fails until each table is one or the other.",
+            "file": "AGENTS.md",
+            "component": "backups"
+          },
+          {
+            "text": "The native agent packages are exact-pinned and upgraded together in one PR.",
+            "file": "AGENTS.md",
+            "component": "mail-agent"
+          },
+          {
+            "text": "Migrations come from drizzle-kit only. The test schema in helpers.ts changes in the same PR.",
+            "file": "AGENTS.md",
+            "component": "migrations"
+          },
+          {
+            "text": "Each cron step catches its own error, so one failure does not stop the chain.",
+            "file": "worker/src/index.ts",
+            "component": "cron-chain"
+          },
+          {
+            "text": "Discovery routes are registered before the SPA catch-all.",
+            "file": "worker/src/mcp/http.ts",
+            "component": "mcp"
+          }
+        ],
+        "fragile": [
+          {
+            "text": "A sequence step stuck in queued has no automatic recovery. handleScheduled sets queued before EMAIL_QUEUE.send, and the queue drops a message after 3 retries with no dead-letter queue. The enrollment then stays active and enrollPersonInSequence refuses that person in any sequence. Hand check: confirmed, no code moves queued back to pending. DELETE /api/sequences/enrollments/{id} clears it by hand.",
+            "file": "worker/src/lib/sequence-processor.ts",
+            "component": "seq-processor",
+            "severity": "high"
+          },
+          {
+            "text": "An API key ignores a ban. resolveRequestAuth loads the user row but never reads users.banned, so a banned user's sk_ key keeps /api, JMAP and the agent. MCP checks the ban. Hand check: confirmed. No ban UI exists, only the BetterAuth admin endpoint. Deleting the user removes the key.",
+            "file": "worker/src/lib/request-auth.ts",
+            "component": "request-auth",
+            "severity": "medium"
+          },
+          {
+            "text": "MAX_ATTEMPTS for the outbox counts cron ticks, not hours. A change to the hourly cron changes the retry window, and quota-blocked mail can fail before the daily reset.",
+            "file": "worker/src/lib/outbox.ts",
+            "component": "outbox",
+            "severity": "medium"
+          },
+          {
+            "text": "An API key has no scopes and no expiry. An admin's key opens every admin route. Documented in docs/users-and-api-keys.md.",
+            "file": "worker/src/db/api-keys.schema.ts",
+            "component": "api-keys",
+            "severity": "medium"
+          },
+          {
+            "text": "processOutbox and runNewsletterMaintenance share one catch. A throw in the outbox skips scheduled campaign starts and the stall sweep for that hour.",
+            "file": "worker/src/index.ts",
+            "component": "cron-chain",
+            "severity": "low"
+          },
+          {
+            "text": "Only Cloudflare Email Sending reports bounces and complaints. On Resend, Postmark or Bavimail no address is suppressed automatically. Documented.",
+            "file": "docs/suppressions.md",
+            "component": "delivery",
+            "severity": "low"
+          },
+          {
+            "text": "Gmail and Outlook mail arrives on an hourly poll, so it can be up to an hour late and fires notifications late. Documented.",
+            "file": "docs/gmail.md",
+            "component": "gmail-sync",
+            "severity": "low"
+          },
+          {
+            "text": "DISABLE_PASSKEY_GATE=true or DEMO_MODE=1 turns off the passkey gate. DEMO_MODE also acks every queue message and sends nothing. A wrong var in production changes both.",
+            "file": "worker/src/lib/is-dev.ts",
+            "component": "passkey-gate",
+            "severity": "low"
+          },
+          {
+            "text": "The scheduled() outer catch logs every failure as gmail sync failed, so a backfill error reads like a sync error.",
+            "file": "worker/src/index.ts",
+            "component": "cron-chain",
+            "severity": "low"
+          },
+          {
+            "text": "One shared queue carries 14 message kinds. A dedicated campaign queue is deferred, so a big campaign shares batches with sequence steps and slices.",
+            "file": "worker/src/lib/queue-router.ts",
+            "component": "queue-router",
+            "severity": "low"
+          }
+        ],
+        "untraced": [
+          {
+            "text": "What Email Routing does with the message when handleEmail throws (storage fails). The handler has no outer catch.",
+            "section": "inbound"
+          },
+          {
+            "text": "The body of runMatchedRules actions other than spam, snooze and ai_file, for example auto-reply limits.",
+            "section": "inbound"
+          },
+          {
+            "text": "The provider classes' own error mapping to transient or permanent, beyond classify.ts.",
+            "section": "sending"
+          },
+          {
+            "text": "How replyToEmail threads headers and picks Gmail or Outlook. Only sendEmail was read in full.",
+            "section": "sending"
+          },
+          {
+            "text": "How the stall sweep in runCampaignPass repairs a campaign. Only its constants were read.",
+            "section": "automation"
+          },
+          {
+            "text": "The MailAgent turn body between onChatMessage and onFinish, and how approvals resume.",
+            "section": "agent"
+          },
+          {
+            "text": "JMAP EventSource push and the blob and upload paths. Only the routes were listed.",
+            "section": "api"
+          },
+          {
+            "text": "The WebMCP action tools and the bridge's UI actions.",
+            "section": "web"
+          },
+          {
+            "text": "The Gmail syncAccount body and mirrorSentMessage. Only the docstrings and the ingest call were read.",
+            "section": "jobs"
+          },
+          {
+            "text": "The installer's apply steps one by one, and the upgrade command.",
+            "section": "ops"
+          }
+        ]
+      }
+    </script>
+    <script>
+      (function () {
+        "use strict";
+        var D = JSON.parse(document.getElementById("data").textContent);
+        var $ = function (s) {
+          return document.querySelector(s);
+        };
+        var hint = document.querySelector(".hint"),
+          vp = $("#vp"),
+          world = $("#world"),
+          svg = $("#edges"),
+          panel = $("#panel");
+        var SVGNS = "http://www.w3.org/2000/svg";
+        var BOX_W = 260,
+          BOX_H = 110,
+          GAP = 22,
+          FLOW_W = 270,
+          FLOW_GAP = 30,
+          STEP_H = 118,
+          PAD = 40,
+          HEAD = 170;
+        function el(tag, cls, text) {
+          var e = document.createElement(tag);
+          if (cls) e.className = cls;
+          if (text != null) e.textContent = text;
+          return e;
+        }
+        function esc(s) {
+          return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+          });
+        }
+
+        $("#meta").innerHTML =
+          "repo <b>" +
+          esc(D.meta.repo) +
+          "</b> · built from <b>" +
+          esc(D.meta.commit) +
+          "</b> · " +
+          esc(D.meta.date) +
+          " · " +
+          D.components.length +
+          " boxes · " +
+          D.flows.length +
+          " flows · " +
+          D.meta.steps +
+          " steps";
+
+        var comp = {},
+          sec = {};
+        D.sections.forEach(function (s) {
+          sec[s.id] = s;
+          s.comps = [];
+          s.flows = [];
+        });
+        D.components.forEach(function (c) {
+          comp[c.id] = c;
+          sec[c.section].comps.push(c);
+        });
+        D.flows.forEach(function (f) {
+          sec[f.section].flows.push(f);
+        });
+
+        /* ---------- layout ---------- */
+        var rects = {}; // id -> {x,y,w,h}
+        function layoutSection(s, x, y, dir) {
+          var nF = s.flows.length,
+            nC = s.comps.length;
+          var cols = Math.max(
+            2,
+            Math.min(nC, Math.max(nF, Math.ceil(Math.sqrt(nC * 1.6)))),
+          );
+          if (s.id === "shared") cols = Math.ceil(nC / 2);
+          var rows = Math.ceil(nC / cols);
+          var compW = cols * BOX_W + (cols - 1) * GAP;
+          var flowW = nF ? nF * FLOW_W + (nF - 1) * FLOW_GAP : 0;
+          var w = Math.max(compW, flowW, 900) + PAD * 2;
+          var compH = rows * BOX_H + (rows - 1) * GAP;
+          var maxSteps = 0;
+          s.flows.forEach(function (f) {
+            maxSteps = Math.max(maxSteps, f.steps.length);
+          });
+          var flowH = nF ? 90 + maxSteps * STEP_H : 0;
+          var h = HEAD + compH + (nF ? 60 + flowH : 0) + PAD;
+          s.rect = { x: x, y: y, w: w, h: h };
+          // components sit next to the band: bottom of an upper area, top of a lower area
+          var cy =
+            dir === "up"
+              ? y + h - PAD - compH
+              : y + (s.id === "shared" ? HEAD : PAD);
+          var cx0 = x + (w - compW) / 2;
+          s.comps.forEach(function (c, i) {
+            rects[c.id] = {
+              x: cx0 + (i % cols) * (BOX_W + GAP),
+              y: cy + Math.floor(i / cols) * (BOX_H + GAP),
+              w: BOX_W,
+              h: BOX_H,
+            };
+          });
+          var fy = dir === "up" ? y + HEAD : y + PAD + compH + 60;
+          var fx0 = x + (w - flowW) / 2;
+          s.flows.forEach(function (f, i) {
+            f.rect = {
+              x: fx0 + i * (FLOW_W + FLOW_GAP),
+              y: fy,
+              w: FLOW_W,
+              h: 90 + f.steps.length * STEP_H,
+            };
+          });
+          if (dir === "down") {
+            s.rect.h = h + HEAD - PAD;
+          }
+          return s.rect;
+        }
+        var upper = D.layout.upper.map(function (id) {
+          return sec[id];
+        });
+        var lower = D.layout.lower.map(function (id) {
+          return sec[id];
+        });
+        var SG = 60;
+        function rowWidthProbe(list, dir) {
+          var x = 0;
+          list.forEach(function (s) {
+            var r = layoutSection(s, x, 0, dir);
+            x += r.w + SG;
+          });
+          return x - SG;
+        }
+        var wUp = rowWidthProbe(upper, "up"),
+          wLo = rowWidthProbe(lower, "down");
+        var shared = sec.shared;
+        var sharedR = layoutSection(shared, 0, 0, "shared");
+        var W = Math.max(wUp, wLo, sharedR.w);
+        var hUp = 0;
+        upper.forEach(function (s) {
+          hUp = Math.max(hUp, s.rect.h);
+        });
+        // place upper row bottom-aligned
+        var x = (W - wUp) / 2;
+        upper.forEach(function (s) {
+          var h0 = s.rect.h;
+          layoutSection(s, x, hUp - h0, "up");
+          x += s.rect.w + SG;
+        });
+        var bandY = hUp + SG;
+        // shared band spans the full width
+        (function () {
+          var nC = shared.comps.length,
+            cols = Math.max(1, Math.floor((W - PAD * 2 + GAP) / (BOX_W + GAP)));
+          cols = Math.min(cols, nC);
+          var rows = Math.ceil(nC / cols);
+          var compW = cols * BOX_W + (cols - 1) * GAP;
+          shared.rect = {
+            x: 0,
+            y: bandY,
+            w: W,
+            h: HEAD + rows * (BOX_H + GAP) - GAP + PAD,
+          };
+          var cx0 = (W - compW) / 2;
+          shared.comps.forEach(function (c, i) {
+            rects[c.id] = {
+              x: cx0 + (i % cols) * (BOX_W + GAP),
+              y: bandY + HEAD + Math.floor(i / cols) * (BOX_H + GAP),
+              w: BOX_W,
+              h: BOX_H,
+            };
+          });
+        })();
+        var loY = shared.rect.y + shared.rect.h + SG;
+        x = (W - wLo) / 2;
+        lower.forEach(function (s) {
+          layoutSection(s, x, loY, "down");
+          x += s.rect.w + SG;
+        });
+        var H = 0;
+        lower.forEach(function (s) {
+          H = Math.max(H, s.rect.y + s.rect.h);
+        });
+        H = Math.max(H, shared.rect.y + shared.rect.h);
+        world.style.width = W + "px";
+        world.style.height = H + "px";
+        svg.setAttribute("width", W);
+        svg.setAttribute("height", H);
+        svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+        /* ---------- render ---------- */
+        var fragileBy = {},
+          invBy = {};
+        D.fragile.forEach(function (f, i) {
+          f.i = i;
+          (fragileBy[f.component] = fragileBy[f.component] || []).push(f);
+        });
+        D.invariants.forEach(function (v) {
+          (invBy[v.component] = invBy[v.component] || []).push(v);
+        });
+        var boxEl = {},
+          stepEl = {};
+        D.sections.forEach(function (s) {
+          var a = el(
+            "div",
+            "area " +
+              (s.id === "shared"
+                ? "shared"
+                : D.layout.upper.indexOf(s.id) >= 0
+                  ? "up"
+                  : "down"),
+          );
+          a.style.cssText =
+            "left:" +
+            s.rect.x +
+            "px;top:" +
+            s.rect.y +
+            "px;width:" +
+            s.rect.w +
+            "px;height:" +
+            s.rect.h +
+            "px;--ac:var(--a-" +
+            s.id +
+            ")";
+          a.appendChild(el("div", "atitle", s.label));
+          a.appendChild(el("div", "asub", s.sub || ""));
+          world.appendChild(a);
+        });
+        D.components.forEach(function (c) {
+          var r = rects[c.id],
+            b = el("div", "box" + (c.kind === "external" ? " ext" : ""));
+          b.style.cssText =
+            "left:" +
+            r.x +
+            "px;top:" +
+            r.y +
+            "px;--ac:var(--a-" +
+            c.section +
+            ")";
+          b.tabIndex = 0;
+          b.setAttribute("role", "button");
+          b.appendChild(el("div", "bk", c.kind));
+          b.appendChild(el("div", "bl", c.label));
+          b.appendChild(el("div", "bf", (c.files && c.files[0]) || ""));
+          var hi = (fragileBy[c.id] || []).filter(function (f) {
+            return f.severity === "high";
+          }).length;
+          if (hi) {
+            var fr = el("div", "fr", "!" + hi);
+            fr.title = hi + " high fragile point(s)";
+            b.appendChild(fr);
+          }
+          b.dataset.id = c.id;
+          boxEl[c.id] = b;
+          world.appendChild(b);
+        });
+        D.flows.forEach(function (f) {
+          var w = el("div", "flow");
+          w.style.cssText = "left:" + f.rect.x + "px;top:" + f.rect.y + "px";
+          var h = el("h3");
+          h.textContent = f.name;
+          h.tabIndex = 0;
+          h.dataset.flow = f.id;
+          h.appendChild(el("small", null, f.steps.length + " steps"));
+          w.appendChild(h);
+          f.steps.forEach(function (st, i) {
+            var c = comp[st.component];
+            var s = el("div", "step");
+            s.tabIndex = 0;
+            s.setAttribute("role", "button");
+            s.style.setProperty(
+              "--sc",
+              "var(--a-" + (c ? c.section : "shared") + ")",
+            );
+            s.appendChild(el("span", "n", String(i + 1)));
+            s.appendChild(el("div", "sc", c ? c.label : st.component));
+            s.appendChild(el("div", "sa", st.action));
+            s.appendChild(
+              el("div", "sf", st.file + (st.symbol ? "  ·  " + st.symbol : "")),
+            );
+            s.dataset.flow = f.id;
+            s.dataset.i = i;
+            stepEl[f.id + ":" + i] = s;
+            w.appendChild(s);
+          });
+          world.appendChild(w);
+        });
+        // edges
+        var defs = document.createElementNS(SVGNS, "defs");
+        defs.innerHTML =
+          '<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker>';
+        svg.appendChild(defs);
+        var edgeEls = [];
+        function anchor(r, toward) {
+          var cx = r.x + r.w / 2,
+            cy = r.y + r.h / 2;
+          if (Math.abs(toward.y - cy) > r.h)
+            return { x: cx, y: toward.y > cy ? r.y + r.h : r.y, v: true };
+          return { x: toward.x > cx ? r.x + r.w : r.x, y: cy, v: false };
+        }
+        var pairCount = {};
+        D.edges.forEach(function (e, i) {
+          var a = rects[e.from],
+            b = rects[e.to];
+          if (!a || !b || e.from === e.to) return;
+          var key = [e.from, e.to].sort().join("|");
+          var k = (pairCount[key] = (pairCount[key] || 0) + 1);
+          var ca = { x: a.x + a.w / 2, y: a.y + a.h / 2 },
+            cb = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+          var p = anchor(a, cb),
+            q = anchor(b, ca),
+            off = (k - 1) * 18;
+          var d;
+          if (p.v && q.v) {
+            var my = (p.y + q.y) / 2;
+            d =
+              "M" +
+              (p.x + off) +
+              "," +
+              p.y +
+              " C" +
+              (p.x + off) +
+              "," +
+              my +
+              " " +
+              (q.x + off) +
+              "," +
+              my +
+              " " +
+              (q.x + off) +
+              "," +
+              q.y;
+          } else {
+            var mx = (p.x + q.x) / 2;
+            d =
+              "M" +
+              p.x +
+              "," +
+              (p.y + off) +
+              " C" +
+              mx +
+              "," +
+              (p.y + off) +
+              " " +
+              mx +
+              "," +
+              (q.y + off) +
+              " " +
+              q.x +
+              "," +
+              (q.y + off);
+          }
+          var path = document.createElementNS(SVGNS, "path");
+          path.setAttribute("d", d);
+          path.setAttribute("marker-end", "url(#ah)");
+          svg.appendChild(path);
+          var g = document.createElementNS(SVGNS, "g");
+          g.setAttribute("class", "elabel");
+          var t = document.createElementNS(SVGNS, "text");
+          t.textContent =
+            e.label.length > 60 ? e.label.slice(0, 58) + "…" : e.label;
+          g.appendChild(t);
+          svg.appendChild(g);
+          edgeEls.push({ e: e, path: path, g: g, t: t });
+        });
+        function placeLabels() {
+          edgeEls.forEach(function (o) {
+            if (o.placed) return;
+            var L = o.path.getTotalLength(),
+              m = o.path.getPointAtLength(L / 2);
+            o.t.setAttribute("x", m.x);
+            o.t.setAttribute("y", m.y + 4);
+            o.t.setAttribute("text-anchor", "middle");
+            var bb;
+            try {
+              bb = o.t.getBBox();
+            } catch (_) {
+              return;
+            }
+            if (!bb.width) return;
+            var r = document.createElementNS(SVGNS, "rect");
+            r.setAttribute("x", bb.x - 4);
+            r.setAttribute("y", bb.y - 2);
+            r.setAttribute("width", bb.width + 8);
+            r.setAttribute("height", bb.height + 4);
+            r.setAttribute("rx", 3);
+            o.g.insertBefore(r, o.t);
+            o.placed = true;
+          });
+        }
+
+        /* ---------- view ---------- */
+        var view = { s: 0.1, x: 0, y: 0 };
+        function level(s) {
+          return s < 0.22 ? 0 : s < 0.6 ? 1 : 2;
+        }
+        var lastLvl = -1;
+        function apply() {
+          world.style.transform =
+            "translate(" +
+            view.x +
+            "px," +
+            view.y +
+            "px) scale(" +
+            view.s +
+            ")";
+          world.style.setProperty("--k", (1 / view.s).toFixed(4));
+          var l = level(view.s);
+          if (l !== lastLvl) {
+            vp.classList.remove("z0", "z1", "z2");
+            vp.classList.add("z" + l);
+            lastLvl = l;
+            if (l === 2) placeLabels();
+          }
+          $("#zoomlabel").textContent = Math.round(view.s * 100) + "%";
+        }
+        var MIN = 0.02,
+          MAX = 2.5;
+        function zoomAt(f, px, py) {
+          var ns = Math.min(MAX, Math.max(MIN, view.s * f));
+          f = ns / view.s;
+          view.x = px - (px - view.x) * f;
+          view.y = py - (py - view.y) * f;
+          view.s = ns;
+          apply();
+        }
+        function fitRect(r, anim, padPx) {
+          var vw = vp.clientWidth,
+            vh = vp.clientHeight,
+            p = padPx == null ? 24 : padPx;
+          if (typeof lastSize !== "undefined") lastSize = { w: vw, h: vh };
+          var s = Math.min((vw - 2 * p) / r.w, (vh - 2 * p) / r.h, MAX);
+          view.s = s;
+          view.x = (vw - r.w * s) / 2 - r.x * s;
+          view.y = (vh - r.h * s) / 2 - r.y * s;
+          if (anim) {
+            world.classList.add("anim");
+            setTimeout(function () {
+              world.classList.remove("anim");
+            }, 400);
+          }
+          apply();
+        }
+        function fit(anim) {
+          fitRect({ x: 0, y: 0, w: W, h: H }, anim);
+        }
+        $("#bFit").onclick = function () {
+          fit(true);
+        };
+        $("#bIn").onclick = function () {
+          zoomAt(1.5, vp.clientWidth / 2, vp.clientHeight / 2);
+        };
+        $("#bOut").onclick = function () {
+          zoomAt(1 / 1.5, vp.clientWidth / 2, vp.clientHeight / 2);
+        };
+        vp.addEventListener(
+          "wheel",
+          function (ev) {
+            ev.preventDefault();
+            var r = vp.getBoundingClientRect();
+            var dy = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaY;
+            zoomAt(
+              Math.exp(-dy * (ev.ctrlKey ? 0.006 : 0.0018)),
+              ev.clientX - r.left,
+              ev.clientY - r.top,
+            );
+          },
+          { passive: false },
+        );
+        vp.addEventListener("keydown", function (ev) {
+          var step = 80;
+          if (ev.key === "+" || ev.key === "=")
+            zoomAt(1.3, vp.clientWidth / 2, vp.clientHeight / 2);
+          else if (ev.key === "-")
+            zoomAt(1 / 1.3, vp.clientWidth / 2, vp.clientHeight / 2);
+          else if (ev.key === "ArrowLeft") {
+            view.x += step;
+            apply();
+          } else if (ev.key === "ArrowRight") {
+            view.x -= step;
+            apply();
+          } else if (ev.key === "ArrowUp") {
+            view.y += step;
+            apply();
+          } else if (ev.key === "ArrowDown") {
+            view.y -= step;
+            apply();
+          } else if (ev.key === "Enter" && ev.target !== vp) {
+            ev.target.click();
+          } else return;
+          ev.preventDefault();
+        });
+        // pointers: capture only after a real drag starts, so clicks still reach boxes
+        var pts = new Map(),
+          drag = null,
+          pinch = null,
+          moved = false;
+        vp.addEventListener("pointerdown", function (ev) {
+          if (ev.button !== 0 && ev.pointerType === "mouse") return;
+          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+          if (pts.size === 1) {
+            drag = {
+              id: ev.pointerId,
+              x0: ev.clientX,
+              y0: ev.clientY,
+              vx: view.x,
+              vy: view.y,
+              on: false,
+            };
+            moved = false;
+          }
+          if (pts.size === 2) {
+            var a = Array.from(pts.values());
+            drag = null;
+            moved = true;
+            pinch = {
+              d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y),
+              s: view.s,
+            };
+            pts.forEach(function (_, id) {
+              try {
+                vp.setPointerCapture(id);
+              } catch (_) {}
+            });
+          }
+        });
+        vp.addEventListener("pointermove", function (ev) {
+          if (!pts.has(ev.pointerId)) return;
+          pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+          if (pinch && pts.size === 2) {
+            var a = Array.from(pts.values()),
+              r = vp.getBoundingClientRect();
+            var d = Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y);
+            zoomAt(
+              (pinch.s * d) / pinch.d / view.s,
+              (a[0].x + a[1].x) / 2 - r.left,
+              (a[0].y + a[1].y) / 2 - r.top,
+            );
+            return;
+          }
+          if (!drag || drag.id !== ev.pointerId) return;
+          var dx = ev.clientX - drag.x0,
+            dy = ev.clientY - drag.y0;
+          if (!drag.on && Math.hypot(dx, dy) > 5) {
+            drag.on = true;
+            moved = true;
+            hint.hidden = true;
+            vp.classList.add("dragging");
+            try {
+              vp.setPointerCapture(ev.pointerId);
+            } catch (_) {}
+          }
+          if (drag.on) {
+            view.x = drag.vx + dx;
+            view.y = drag.vy + dy;
+            apply();
+          }
+        });
+        function endPtr(ev) {
+          pts.delete(ev.pointerId);
+          if (pts.size < 2) pinch = null;
+          if (drag && drag.id === ev.pointerId) {
+            drag = null;
+            vp.classList.remove("dragging");
+          }
+        }
+        vp.addEventListener("pointerup", endPtr);
+        vp.addEventListener("pointercancel", endPtr);
+        // keep the same point in the middle when the canvas changes size (panel opens, window resizes)
+        var lastSize = { w: vp.clientWidth, h: vp.clientHeight };
+        function keepCenter() {
+          var w = vp.clientWidth,
+            h = vp.clientHeight;
+          if (w === lastSize.w && h === lastSize.h) return;
+          view.x += (w - lastSize.w) / 2;
+          view.y += (h - lastSize.h) / 2;
+          lastSize = { w: w, h: h };
+          apply();
+        }
+        if (window.ResizeObserver) new ResizeObserver(keepCenter).observe(vp);
+        window.addEventListener("resize", keepCenter);
+        // focus (Tab, or a test click) must not scroll the canvas: pan to the item instead
+        vp.addEventListener("scroll", function () {
+          vp.scrollTop = 0;
+          vp.scrollLeft = 0;
+        });
+        world.addEventListener("focusin", function (ev) {
+          var t = ev.target.closest(".box,.step,.flow h3");
+          if (!t) return;
+          var r = t.getBoundingClientRect(),
+            v = vp.getBoundingClientRect();
+          if (
+            r.left >= v.left &&
+            r.right <= v.right &&
+            r.top >= v.top &&
+            r.bottom <= v.bottom
+          )
+            return;
+          view.x += v.left + v.width / 2 - (r.left + r.width / 2);
+          view.y += v.top + v.height / 2 - (r.top + r.height / 2);
+          apply();
+        });
+
+        /* ---------- selection and panel ---------- */
+        function clearSel() {
+          document.querySelectorAll(".sel").forEach(function (n) {
+            n.classList.remove("sel");
+          });
+          edgeEls.forEach(function (o) {
+            o.path.classList.remove("hot");
+            o.g.classList.remove("hot");
+          });
+        }
+        function hotEdges(id) {
+          edgeEls.forEach(function (o) {
+            if (o.e.from === id || o.e.to === id) {
+              o.path.classList.add("hot");
+              o.g.classList.add("hot");
+            }
+          });
+          placeLabels();
+        }
+        function sevRank(s) {
+          return s === "high" ? 0 : s === "medium" ? 1 : 2;
+        }
+        function fragLi(f) {
+          return (
+            '<li><span class="tag ' +
+            esc(f.severity) +
+            '">' +
+            esc(f.severity) +
+            "</span> " +
+            esc(f.text) +
+            "<br><code>" +
+            esc(f.file) +
+            "</code></li>"
+          );
+        }
+        function invLi(v) {
+          return (
+            "<li>" + esc(v.text) + "<br><code>" + esc(v.file) + "</code></li>"
+          );
+        }
+        function compLink(id) {
+          var c = comp[id];
+          return c
+            ? '<button class="link" data-go-comp="' +
+                esc(id) +
+                '">' +
+                esc(c.label) +
+                "</button>"
+            : esc(id);
+        }
+        function flowsThrough(id) {
+          var out = [];
+          D.flows.forEach(function (f) {
+            f.steps.forEach(function (s, i) {
+              if (s.component === id) out.push({ f: f, i: i });
+            });
+          });
+          return out;
+        }
+        function openPanel(html) {
+          panel.innerHTML =
+            '<button class="close" type="button" id="pClose">Close</button>' +
+            html;
+          panel.hidden = false;
+          panel.scrollTop = 0;
+          $("#pClose").onclick = closePanel;
+        }
+        function closePanel() {
+          panel.hidden = true;
+          clearSel();
+        }
+        function showComp(id, zoom) {
+          var c = comp[id];
+          if (!c) return;
+          clearSel();
+          boxEl[id].classList.add("sel");
+          hotEdges(id);
+          var s = sec[c.section];
+          var outE = D.edges.filter(function (e) {
+              return e.from === id;
+            }),
+            inE = D.edges.filter(function (e) {
+              return e.to === id;
+            });
+          var fl = flowsThrough(id);
+          var fr = (fragileBy[id] || []).slice().sort(function (a, b) {
+            return sevRank(a.severity) - sevRank(b.severity);
+          });
+          var h =
+            '<div class="eyebrow"><span class="dot" style="--ac:var(--a-' +
+            s.id +
+            ')"></span>' +
+            esc(s.label) +
+            " · " +
+            esc(c.kind) +
+            "</div><h2>" +
+            esc(c.label) +
+            "</h2><p>" +
+            esc(c.summary) +
+            "</p>";
+          if (c.files && c.files.length)
+            h +=
+              "<h4>Files</h4><ul>" +
+              c.files
+                .map(function (f) {
+                  return "<li><code>" + esc(f) + "</code></li>";
+                })
+                .join("") +
+              "</ul>";
+          if (fl.length)
+            h +=
+              "<h4>Flows through it</h4><ul>" +
+              fl
+                .map(function (o) {
+                  return (
+                    '<li><button class="link" data-go-step="' +
+                    esc(o.f.id) +
+                    ":" +
+                    o.i +
+                    '">' +
+                    esc(o.f.name) +
+                    ", step " +
+                    (o.i + 1) +
+                    "</button></li>"
+                  );
+                })
+                .join("") +
+              "</ul>";
+          if (outE.length)
+            h +=
+              "<h4>Talks to</h4><ul>" +
+              outE
+                .map(function (e) {
+                  return (
+                    "<li>" +
+                    compLink(e.to) +
+                    ": " +
+                    esc(e.label) +
+                    "<br><code>" +
+                    esc(e.file) +
+                    "</code></li>"
+                  );
+                })
+                .join("") +
+              "</ul>";
+          if (inE.length)
+            h +=
+              "<h4>Called by</h4><ul>" +
+              inE
+                .map(function (e) {
+                  return (
+                    "<li>" +
+                    compLink(e.from) +
+                    ": " +
+                    esc(e.label) +
+                    "<br><code>" +
+                    esc(e.file) +
+                    "</code></li>"
+                  );
+                })
+                .join("") +
+              "</ul>";
+          if (invBy[id])
+            h +=
+              "<h4>Invariants</h4><ul>" +
+              invBy[id].map(invLi).join("") +
+              "</ul>";
+          if (fr.length)
+            h +=
+              "<h4>Fragile points</h4><ul>" + fr.map(fragLi).join("") + "</ul>";
+          openPanel(h);
+          if (zoom) {
+            var r = rects[id];
+            fitRect(
+              { x: r.x - 400, y: r.y - 300, w: r.w + 800, h: r.h + 600 },
+              true,
+            );
+          }
+        }
+        function showStep(fid, i, zoom) {
+          var f = D.flows.filter(function (x) {
+            return x.id === fid;
+          })[0];
+          if (!f) return;
+          clearSel();
+          var st = f.steps[i];
+          if (st) {
+            stepEl[fid + ":" + i].classList.add("sel");
+            if (boxEl[st.component]) boxEl[st.component].classList.add("sel");
+          }
+          var s = sec[f.section];
+          var h =
+            '<div class="eyebrow"><span class="dot" style="--ac:var(--a-' +
+            s.id +
+            ')"></span>' +
+            esc(s.label) +
+            " · flow</div><h2>" +
+            esc(f.name) +
+            "</h2><p>" +
+            esc(f.summary || "") +
+            "</p>";
+          h +=
+            '<h4>Step by step</h4><ol class="walk">' +
+            f.steps
+              .map(function (x, j) {
+                return (
+                  "<li" +
+                  (j === i ? ' class="cur"' : "") +
+                  '><button class="link" data-go-step="' +
+                  esc(fid) +
+                  ":" +
+                  j +
+                  '">' +
+                  esc(
+                    comp[x.component] ? comp[x.component].label : x.component,
+                  ) +
+                  "</button>: " +
+                  esc(x.action) +
+                  "<br><code>" +
+                  esc(x.file) +
+                  (x.symbol ? " · " + esc(x.symbol) : "") +
+                  "</code></li>"
+                );
+              })
+              .join("") +
+            "</ol>";
+          if (st) {
+            var inv = (invBy[st.component] || []).concat(
+              D.invariants.filter(function (v) {
+                return v.file === st.file && v.component !== st.component;
+              }),
+            );
+            var fr = (fragileBy[st.component] || []).concat(
+              D.fragile.filter(function (x) {
+                return x.file === st.file && x.component !== st.component;
+              }),
+            );
+            fr.sort(function (a, b) {
+              return sevRank(a.severity) - sevRank(b.severity);
+            });
+            h +=
+              "<h4>At step " +
+              (i + 1) +
+              ": " +
+              compLink(st.component) +
+              "</h4>";
+            if (inv.length)
+              h +=
+                "<h4>Invariants that hold here</h4><ul>" +
+                inv.map(invLi).join("") +
+                "</ul>";
+            if (fr.length)
+              h +=
+                "<h4>Fragile points here</h4><ul>" +
+                fr.map(fragLi).join("") +
+                "</ul>";
+            if (!inv.length && !fr.length)
+              h +=
+                '<p class="eyebrow">No invariant or fragile point was recorded for this step.</p>';
+          }
+          openPanel(h);
+          if (zoom) {
+            var r = f.rect;
+            var sy = r.y + 90 + i * STEP_H;
+            fitRect({ x: r.x - 300, y: sy - 260, w: r.w + 600, h: 620 }, true);
+          }
+        }
+        function showFlowList() {
+          clearSel();
+          var h =
+            "<h2>Flows</h2><p>" +
+            D.flows.length +
+            " flows. Each one is drawn under its area. Pick one to zoom to it.</p>";
+          D.sections.forEach(function (s) {
+            if (!s.flows.length) return;
+            h +=
+              '<div class="group"><h4><span class="dot" style="--ac:var(--a-' +
+              s.id +
+              ')"></span>' +
+              esc(s.label) +
+              "</h4><ul>" +
+              s.flows
+                .map(function (f) {
+                  return (
+                    '<li><button class="link" data-go-step="' +
+                    esc(f.id) +
+                    ':0">' +
+                    esc(f.name) +
+                    '</button> <span class="eyebrow">' +
+                    f.steps.length +
+                    " steps</span></li>"
+                  );
+                })
+                .join("") +
+              "</ul></div>";
+          });
+          openPanel(h);
+        }
+        function showFragile() {
+          clearSel();
+          var all = D.fragile.slice().sort(function (a, b) {
+            return sevRank(a.severity) - sevRank(b.severity);
+          });
+          var n = { high: 0, medium: 0, low: 0 };
+          all.forEach(function (f) {
+            n[f.severity]++;
+          });
+          var h =
+            "<h2>Fragile points</h2><p>" +
+            all.length +
+            " points: " +
+            n.high +
+            " high, " +
+            n.medium +
+            " medium, " +
+            n.low +
+            " low. " +
+            esc(D.meta.checkedNote || "") +
+            "</p><ul>" +
+            all
+              .map(function (f) {
+                return (
+                  '<li><span class="tag ' +
+                  esc(f.severity) +
+                  '">' +
+                  esc(f.severity) +
+                  "</span> " +
+                  compLink(f.component) +
+                  ": " +
+                  esc(f.text) +
+                  "<br><code>" +
+                  esc(f.file) +
+                  "</code></li>"
+                );
+              })
+              .join("") +
+            "</ul>";
+          openPanel(h);
+        }
+        function showUntraced() {
+          clearSel();
+          var h =
+            "<h2>Not traced</h2><p>The readers could not trace these parts from the code. They are listed here instead of guessed.</p>";
+          D.sections.forEach(function (s) {
+            var u = D.untraced.filter(function (x) {
+              return x.section === s.id;
+            });
+            if (!u.length) return;
+            h +=
+              '<div class="group"><h4><span class="dot" style="--ac:var(--a-' +
+              s.id +
+              ')"></span>' +
+              esc(s.label) +
+              "</h4><ul>" +
+              u
+                .map(function (x) {
+                  return "<li>" + esc(x.text) + "</li>";
+                })
+                .join("") +
+              "</ul></div>";
+          });
+          openPanel(h);
+        }
+        $("#bFlows").onclick = showFlowList;
+        $("#bFragile").onclick = showFragile;
+        $("#bUntraced").onclick = showUntraced;
+        world.addEventListener("click", function (ev) {
+          if (moved) {
+            moved = false;
+            return;
+          }
+          var b = ev.target.closest(".box");
+          if (b) {
+            showComp(b.dataset.id, false);
+            return;
+          }
+          var s = ev.target.closest(".step");
+          if (s) {
+            showStep(s.dataset.flow, +s.dataset.i, false);
+            return;
+          }
+          var h = ev.target.closest(".flow h3");
+          if (h) {
+            showStep(h.dataset.flow, 0, true);
+            return;
+          }
+        });
+        panel.addEventListener("click", function (ev) {
+          var t = ev.target.closest("[data-go-comp],[data-go-step]");
+          if (!t) return;
+          if (t.dataset.goComp) showComp(t.dataset.goComp, true);
+          else {
+            var p = t.dataset.goStep.split(":");
+            showStep(p[0], +p[1], true);
+          }
+        });
+        document.addEventListener("keydown", function (ev) {
+          if (ev.key === "Escape" && !panel.hidden) closePanel();
+        });
+        window.__map = {
+          view: view,
+          fit: fit,
+          showComp: showComp,
+          showStep: showStep,
+          W: W,
+          H: H,
+        };
+        fit(false);
+      })();
+    </script>
+  </body>
+</html>
